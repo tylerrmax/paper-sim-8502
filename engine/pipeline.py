@@ -257,11 +257,7 @@ def _run_locked(db_path=DB, cfg=None):
                     qty, price, fee = existing_fills[key_new]
                     _replay_fill(sim, s, side, qty, price, fee, d)
                     continue
-                if key_old in existing_fills and key_old != key_new:
-                    # 旧口径成交（T 日收盘价）：原样重放
-                    qty, price, fee = existing_fills[key_old]
-                    _replay_fill(sim, s, side, qty, price, fee, sig_d)
-                    continue
+                # 旧口径成交由底部"历史成交补重放"统一处理（按执行日期），此处不重复处理
                 # 门禁（信号日维度）
                 ap = con.execute(
                     "SELECT decision FROM approvals WHERE date=? AND account=?"
@@ -297,9 +293,10 @@ def _run_locked(db_path=DB, cfg=None):
                 except ValueError:
                     continue
                 con.execute(
-                    "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl)"
-                    " VALUES(?,?,?,?,?,?,?,?)",
-                    (d, aid, s, side, qty, round(px, 6), round(fee, 4), round(pnl, 2)))
+                    "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl,signal_date,strategy_version)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (d, aid, s, side, qty, round(px, 6), round(fee, 4), round(pnl, 2), sig_d,
+                     cfg.get("meta", {}).get("version", "unknown")))
             pending = still_pending
 
             # ===== Phase 2：从今日收盘生成新信号，加入 pending =====

@@ -422,12 +422,12 @@ if tab == "🏠 工作台":
         st.markdown("""
         | 步骤 | 位置 | 动作 |
         |------|------|------|
-        | 1️⃣ 搜索 | 📈 行情与信号 → 标的搜索 | 输入代码，三行情源看K线 |
-        | 2️⃣ 选股 | 📈 行情与信号 → ⭐关注 | 加入自选，一键切换 |
-        | 3️⃣ 验证 | 🌐 市场全景 | 看RSI/MACD/ADX/布林带技术形态 |
-        | 4️⃣ 交付 | 📝 交易执行 → 待建条件单 | 复制信号价格数量 |
-        | 5️⃣ 券商兑现 | 同花顺App | 手动建条件单 |
-        | 6️⃣ 回执 | 📝 交易执行 → 回执录入 | 成交后登记，闭环完成 |
+        | 1️⃣ 搜索 | 🔍 选股 → 全市场搜索 | 输入代码，新浪K线直看 |
+        | 2️⃣ 选股 | 🔍 选股 → 技术形态 | 看RSI/MACD/ADX/布林带 |
+        | 3️⃣ 交付 | 📝 交易 → 待建条件单 | 一键复制去同花顺 |
+        | 4️⃣ 券商兑现 | 同花顺App | 手动建条件单 |
+        | 5️⃣ 回执 | 📝 交易 → 回执录入 | 成交后登记，闭环完成 |
+        | 6️⃣ 复盘 | 🛡 验证 | 看毕业进度与风控 |
         """)
 
     # ---- 1. 风险警报区（最优先）：阻断原因置顶 ----
@@ -721,12 +721,9 @@ elif tab == "🔍 选股":
 
 elif tab == "📝 交易":
     st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)
-    st.markdown('<div class="alert-banner info">'
-                'Web不连接券商、不发送订单。看完下面的信号后，前往券商 App 手动建立条件单，'
-                '成交后再回到这里录入回执。<br>'
-                '⚠️ 执行口径声明：模拟成交按信号日收盘价+滑点；人工实盘为下一交易日执行，'
-                '两者时点不一致，回测结果不直接等于实盘可兑现结果。'
-                '</div>', unsafe_allow_html=True)
+    st.markdown('<div class="alert-banner info" style="font-size:13px">'
+                'Web不连券商。复制下方条件单去同花顺手动建单，成交后回来录入回执。</div>',
+                unsafe_allow_html=True)
 
     # 待建条件单提醒（数据提醒，用户看完自行去券商手动下单）
     st.subheader("待建条件单")
@@ -864,7 +861,7 @@ elif tab == "💰 账户":
         st.table(rows)
 
         # TradingView 级 K线（每个持仓标的）
-        st.subheader("持仓K线（TradingView 级）")
+        st.subheader("持仓K线")
         from engine.tv_charts import kline_html
         # 取该账户的买卖信号用于标记
         sig_marks = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "

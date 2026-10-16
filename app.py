@@ -165,9 +165,9 @@ table { color: #e8ecf1; }
 
 st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_html=True)
 
-# 云端数据时效（一行小字，不占地方）
-if IS_CLOUD and CLOUD_DATA_ASOF:
-    st.caption(f"☁️ 只读 · 数据截至 {CLOUD_DATA_ASOF}")
+# 数据日期（交易员需要知道数据新旧，不说教）
+if CLOUD_DATA_ASOF:
+    st.caption(f"数据截至 {CLOUD_DATA_ASOF}")
 
 # ============ 行情状态四态判定 + 数字格式化助手 ============
 from datetime import datetime, timedelta
@@ -656,7 +656,7 @@ elif tab == "🔍 选股":
                 st.caption(f"数据来源：新浪财经 · {code}")
             else:
                 st.warning("请输入6位A股代码或港股代码")
-    st.caption("市场面 + 技术形态 | 数据来自本地 market_data，每日收盘更新")
+    st.caption("市场面 + 技术形态")
     from engine.indicators import rsi, macd, bollinger, ma_align, adx as calc_adx, market_regime
     from engine.signals import moving_average
     # ---- 市场面：涨跌分布 ----
@@ -721,9 +721,6 @@ elif tab == "🔍 选股":
 
 elif tab == "📝 交易":
     st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)
-    st.markdown('<div class="alert-banner info" style="font-size:13px">'
-                'Web不连券商。复制下方条件单去同花顺手动建单，成交后回来录入回执。</div>',
-                unsafe_allow_html=True)
 
     # 待建条件单提醒（数据提醒，用户看完自行去券商手动下单）
     st.subheader("待建条件单")
@@ -758,10 +755,7 @@ elif tab == "📝 交易":
 
     # 券商回执录入（四态按钮反馈：已提交→执行中→已生效/失败）
     st.subheader("🧾 券商回执录入")
-    st.caption("在券商成交后，在此录入实际成交，回执独立对账")
-    if IS_CLOUD:
-        st.info("☁️ 云端版为只读展示，回执录入请使用本地版本。")
-    else:
+    if not IS_CLOUD:
         # 按钮状态机：session_state 持久化上次操作结果
         if "receipt_state" not in st.session_state:
             st.session_state.receipt_state = None  # None/已提交/执行中/已生效/失败

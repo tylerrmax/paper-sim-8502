@@ -540,26 +540,49 @@ elif tab == "💰 成交与本账":
                          "浮盈亏": f"{upl:+,.0f} ({upl_pct:+.1f}%)"})
         st.table(rows)
 
-        # 60日K线 + MA20（每个持仓标的）
-        st.subheader("持仓K线（60日 + MA20）")
+        # TradingView 级 K线（每个持仓标的）
+        st.subheader("持仓K线（TradingView 级）")
+        from engine.tv_charts import kline_html
+        # 取该账户的买卖信号用于标记
+        sig_marks = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "
+                      "ORDER BY date", (acct, "__none__"))  # 占位，下面按标的重查
         for s, qty, avg, last, mv in pos:
-            bars = q("SELECT date,open,high,low,close FROM market_data"
-                     " WHERE symbol=? ORDER BY date DESC LIMIT 60", (s,))
+            bars = q("SELECT date,open,high,low,close,volume FROM market_data"
+                     " WHERE symbol=? ORDER BY date DESC LIMIT 120", (s,))
             if len(bars) >= 20:
-                bars = bars[::-1]  # 正序
-                dates = [b[0] for b in bars]
-                closes = [b[4] for b in bars]
-                # MA20
-                ma20 = []
-                for i in range(len(closes)):
-                    if i >= 19:
-                        ma20.append(sum(closes[i-19:i+1]) / 20)
+                bars = bars[::-1]
+                # 关键位线：成本 / 止损 / 止盈
+                pls = [{"price": round(avg, 4), "title": f"成本 {avg:.2f}",
+                        "color": "#1890ff"}]
+                strat = strategy_of(acct)
+                if strat == "buyback":
+                    pls.append({"price": round(avg * 0.95, 4),
+                                "title": f"止损 {avg*0.95:.2f} (-5%)",
+                                "color": "#f6465d"})
+                    pls.append({"price": round(avg * 1.15, 4),
+                                "title": f"止盈 {avg*1.15:.2f} (+15%)",
+                                "color": "#2ebd85"})
+                # 信号标记
+                sm = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "
+                       "ORDER BY date DESC LIMIT 20", (acct, s))
+                marks = []
+                for d, sd in sm:
+                    if sd == "BUY":
+                        marks.append({"time": d, "position": "belowBar",
+                                      "shape": "arrowUp", "text": "买",
+                                      "color": "#2ebd85"})
                     else:
-                        ma20.append(None)
-                import pandas as pd
-                df = pd.DataFrame({"收盘": closes, "MA20": ma20}, index=dates)
-                st.write(f"**{s}**（成本 {avg:.2f}，现价 {last:.2f}）")
-                st.line_chart(df)
+                        marks.append({"time": d, "position": "aboveBar",
+                                      "shape": "arrowDown", "text": "卖",
+                                      "color": "#f6465d"})
+                upl = (last - avg) * qty if last and avg else 0
+                upl_pct = (last - avg) / avg * 100 if last and avg else 0
+                st.write(f"**{s}** 成本 {avg:.2f} · 现价 {last:.2f} · "
+                         f"浮盈亏 {upl:+,.0f} ({upl_pct:+.1f}%)")
+                st.components.v1.html(
+                    kline_html(f"{acct}_{s}", bars, price_lines=pls,
+                               markers=marks, height=420),
+                    height=430)
             else:
                 st.write(f"**{s}**：数据不足（{len(bars)}根）")
     else:

@@ -110,6 +110,15 @@ def _run_locked(db_path=DB, cfg=None):
         print("WARN control.mode 非法值 %r，已 fail-safe 视为 manual" % (mode,))
         mode = "manual"
 
+    # 暂停期信号黑名单：暂停期间生成的信号永不自动补成交（恢复后只执行新信号）
+    # 该表跨轮持久，不随 signals 重算删除
+    con.execute("""CREATE TABLE IF NOT EXISTS pause_skipped_signals(
+        date TEXT, account TEXT, symbol TEXT, side TEXT,
+        PRIMARY KEY(date, account, symbol, side))""")
+    pause_blacklist = set(
+        r[:4] for r in con.execute(
+            "SELECT date,account,symbol,side FROM pause_skipped_signals"))
+
     buy_frac = cfg.get("sizing", {}).get("buy_frac", 0.5)
     slippage = cfg["fees"].get("slippage", 0.0)
     lots = cfg.get("lots", {})
@@ -196,14 +205,21 @@ def _run_locked(db_path=DB, cfg=None):
                     _replay_fill(sim, s, side, qty, price, fee, d)
                     continue
                 # 新信号门禁：明确跳过的信号永不成交（任何模式）；
-                # 暂停只记信号不成交；手动模式需批准才成交
+                # 暂停期黑名单信号永不补成交；暂停只记信号不成交；手动模式需批准才成交
                 ap = con.execute(
                     "SELECT decision FROM approvals WHERE date=? AND account=?"
                     " AND symbol=? AND side=?", (d, aid, s, side)).fetchone()
                 ap = ap[0] if ap else None
                 if ap == "skipped":
                     continue
+                if key in pause_blacklist:
+                    continue  # 暂停期积压信号：恢复后不补成交
                 if status == "paused":
+                    # 暂停期信号记入黑名单：恢复后永不自动成交
+                    con.execute(
+                        "INSERT OR IGNORE INTO pause_skipped_signals(date,account,symbol,side)"
+                        " VALUES(?,?,?,?)", (d, aid, s, side))
+                    pause_blacklist.add(key)
                     continue
                 if mode == "manual" and ap != "approved":
                     continue

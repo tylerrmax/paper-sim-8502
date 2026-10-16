@@ -27,6 +27,24 @@ def moving_average(closes, n):
     return out
 
 
+def atr(highs, lows, closes, n=14):
+    """Average True Range：返回与输入等长的 ATR 序列，不足窗口为 None。
+    TR = max(high-low, |high-prev_close|, |low-prev_close|)"""
+    out = [None] * len(closes)
+    trs = []
+    for i in range(len(closes)):
+        if i == 0:
+            tr = highs[i] - lows[i]
+        else:
+            tr = max(highs[i] - lows[i],
+                     abs(highs[i] - closes[i-1]),
+                     abs(lows[i] - closes[i-1]))
+        trs.append(tr)
+        if i >= n - 1:
+            out[i] = sum(trs[i-n+1:i+1]) / n
+    return out
+
+
 def gen_signals(dates, closes, ma_long=20):
     """输入等长 dates / closes。返回 [(date, side, price)]，side ∈ {BUY, SELL}。
     price 为信号参考价（当日收盘），实际成交价由 pipeline 按执行假设调整。"""

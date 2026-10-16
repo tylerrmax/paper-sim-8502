@@ -362,7 +362,7 @@ with top4:
                 unsafe_allow_html=True)
 
 # ============ 导航（对标人工交易终端工作流） ============
-tab = st.sidebar.radio("板块", ["🏠 工作台", "📈 行情与信号", "📝 交易执行", "💰 持仓与账本", "🛡 验证与风控", "⚙ 系统与审计"])
+tab = st.sidebar.radio("板块", ["🏠 工作台", "🌐 市场全景", "📈 行情与信号", "📝 交易执行", "💰 持仓与账本", "🛡 验证与风控", "⚙ 系统与审计"])
 st.sidebar.markdown("---")
 
 # 侧边栏：控制
@@ -635,6 +635,71 @@ if tab == "🏠 工作台":
 # ================================================================
 # 📈 行情与信号：实时行情 + 策略规则 + 触发线
 # ================================================================
+elif tab == "🌐 市场全景":
+    st.header("🌐 市场全景")
+    st.caption("市场面 + 技术形态 | 数据来自本地 market_data，每日收盘更新")
+    from engine.indicators import rsi, macd, bollinger, ma_align, adx as calc_adx, market_regime
+    from engine.signals import moving_average
+    # ---- 市场面：涨跌分布 ----
+    st.subheader("📊 涨跌分布")
+    adv, dec, flat = 0, 0, 0
+    for sym in SYMBOL_CN:
+        rows = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 2", (sym,))
+        if len(rows) == 2 and rows[0][0] and rows[1][0]:
+            chg = (rows[0][0] - rows[1][0]) / rows[1][0]
+            if chg > 0.001: adv += 1
+            elif chg < -0.001: dec += 1
+            else: flat += 1
+    c1, c2, c3 = st.columns(3)
+    c1.metric("上涨", adv)
+    c2.metric("下跌", dec)
+    c3.metric("持平", flat)
+    # ---- 技术形态：每个标的指标面板 ----
+    st.subheader("📐 技术形态")
+    for sym in sorted(SYMBOL_CN.keys()):
+        bars = q("SELECT date,open,high,low,close,volume FROM market_data WHERE symbol=? ORDER BY date", (sym,))
+        if len(bars) < 30:
+            continue
+        dates = [r[0] for r in bars]
+        opens = [r[1] for r in bars]
+        highs = [r[2] for r in bars]
+        lows = [r[3] for r in bars]
+        closes = [r[4] for r in bars]
+        vols = [r[5] for r in bars]
+        last_c = closes[-1]
+        # 指标
+        rsi_v = rsi(closes)[-1]
+        dif, dea, hist = macd(closes)
+        macd_h = hist[-1]
+        upper, mid, lower = bollinger(closes)
+        adx_v = calc_adx(highs, lows, closes)[-1]
+        regime = market_regime(adx_v)
+        align = ma_align(closes)
+        ma20 = moving_average(closes, 20)[-1]
+        # 信号标签
+        tags = []
+        if rsi_v and rsi_v > 70: tags.append("⚠️ RSI超买")
+        elif rsi_v and rsi_v < 30: tags.append("💡 RSI超卖")
+        if macd_h and macd_h > 0: tags.append("🟢 MACD多头")
+        else: tags.append("🔴 MACD空头")
+        if regime == "trend": tags.append("📈 趋势市")
+        elif regime == "range": tags.append("📊 震荡市")
+        if align > 0.5: tags.append("✅ 均线多头")
+        elif align < -0.5: tags.append("❌ 均线空头")
+        if last_c and upper[-1] and last_c > upper[-1]: tags.append("🔥 突破上轨")
+        if last_c and lower[-1] and last_c < lower[-1]: tags.append("🧊 跌破下轨")
+        with st.expander(f"{sym_name(sym)} @ {last_c:.2f} | {' '.join(tags)}", expanded=False):
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            cc1.metric("RSI(14)", f"{rsi_v:.1f}" if rsi_v else "-")
+            cc2.metric("ADX(14)", f"{adx_v:.1f}" if adx_v else "-")
+            cc3.metric("MACD柱", f"{macd_h:.3f}" if macd_h else "-")
+            cc4.metric("均线排列", f"{align:+.2f}")
+            st.write(f"MA20: {ma20:.2f}" if ma20 else "MA20: -",
+                     f"| 布林上轨: {upper[-1]:.2f}" if upper[-1] else "",
+                     f"| 中轨: {mid[-1]:.2f}" if mid[-1] else "",
+                     f"| 下轨: {lower[-1]:.2f}" if lower[-1] else "")
+            st.write(f"市场状态: **{regime}** | 20日均线: {'站上' if last_c and ma20 and last_c > ma20 else '跌破'}")
+
 elif tab == "📈 行情与信号":
     st.markdown('<div class="section-head">📈 行情与信号</div>', unsafe_allow_html=True)
 

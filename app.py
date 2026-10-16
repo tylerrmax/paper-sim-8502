@@ -316,7 +316,7 @@ def render_ticker():
         ts_show = ts if ts else "--"
         items.append(
             f'<span style="margin-right:24px; white-space:nowrap;">'
-            f'<b>{sym}</b> <span class="num">{price_s}</span> '
+            f'<b>{sym_name(sym)}</b> <span class="num">{price_s}</span> '
             f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span> '
             f'{badge}<span style="color:#5a6270;font-size:10px"> {ts_show}</span></span>')
     if not items:
@@ -410,7 +410,21 @@ else:
 
 accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY account")]
          or ["sim_a", "sim_hk", "sim_crypto"])
-ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密"}
+ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
+# 标的代码→中文名（展示用，查不到时回退显示代码）
+SYMBOL_CN = {
+    "002446": "盛路通信",
+    "688305": "科德数控",
+    "300827": "上能电气",
+    "600150": "中国船舶",
+    "002639": "雪人股份",
+    "HK9660": "地平线机器人",
+    "HK0354": "中软国际",
+    "BTCUSDT": "比特币",
+}
+def sym_name(code):
+    """标的显示名：代码+中文名，如 '002446 盛路通信'"""
+    return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
 acct = st.sidebar.selectbox("账户", accts, format_func=lambda x: f"{x}（{ACCT_CN.get(x, x)}）")
 
 # ================================================================
@@ -476,7 +490,7 @@ if tab == "🏠 工作台":
                 d, nav, pnl_day, ret = r[0]
                 pnl_cls = "up" if (pnl_day or 0) >= 0 else "down"
                 st.markdown(
-                    f'<div class="kpi-card"><div class="kpi-label">{aid}（{ACCT_CN.get(aid, aid)}·{ccy}）</div>'
+                    f'<div class="kpi-card"><div class="kpi-label">{ACCT_CN.get(aid, aid)}·{ccy}</div>'
                     f'<div class="kpi-value">{fmt_money(nav)}</div>'
                     f'<div class="kpi-value {pnl_cls}" style="font-size:14px">当日 {pnl_day:+,.2f} · 累计 {ret*100:+.2f}%</div>'
                     f'<div style="margin-top:6px"><span class="strategy-badge {sname}">'
@@ -495,7 +509,7 @@ if tab == "🏠 工作台":
     if sig_today:
         for s, side, px in sig_today:
             color = "🟢" if side == "BUY" else "🔴"
-            st.write(f"{color} **{s}** {side} @ {px}")
+            st.write(f"{color} **{sym_name(s)}** {side} @ {px}")
     else:
         st.write("今日暂无信号")
     # 待审批（仅手动模式）
@@ -660,7 +674,7 @@ elif tab == "📝 交易执行":
     # 待建条件单提醒（数据提醒，用户看完自行去券商手动下单）
     st.subheader("待建条件单")
     sigs = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
-                LEFT JOIN fills f ON s.date=f.date AND s.account=f.account
+                LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
                   AND s.symbol=f.symbol AND s.side=f.side
                 WHERE s.account=? AND f.id IS NULL
                   AND s.date >= date('now','-7 days')
@@ -756,7 +770,7 @@ elif tab == "💰 持仓与账本":
         for s, qty, avg, last, mv in pos:
             upl = (last - avg) * qty if last and avg else 0
             upl_pct = (last - avg) / avg * 100 if last and avg else 0
-            rows.append({"标的": s, "数量": qty, "均价": f"{avg:.2f}", "现价": f"{last:.2f}",
+            rows.append({"标的": sym_name(s), "数量": qty, "均价": f"{avg:.2f}", "现价": f"{last:.2f}",
                          "市值": f"{mv:,.2f}",
                          "浮盈亏": f"{upl:+,.0f} ({upl_pct:+.1f}%)"})
         st.table(rows)

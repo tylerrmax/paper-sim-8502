@@ -100,7 +100,8 @@ st.set_page_config(page_title="独立交易终端", layout="wide", page_icon="�
 st.markdown("""
 <style>
 /* 全局：深色终端底 */
-.main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #e8ecf1; }
+.main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #1a1a2e; }
+@media (prefers-color-scheme: dark) { .main-title { color: #e8ecf1; } }
 .sub-title { font-size: 13px; color: #8a8f9c; margin-bottom: 16px; }
 /* 统一卡片：深色 */
 .kpi-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
@@ -164,15 +165,9 @@ table { color: #e8ecf1; }
 
 st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_html=True)
 
-# 云端数据时效声明（持久化架构透明化）
-if IS_CLOUD:
-    st.markdown(
-        '<div class="alert-banner info" style="font-size:12px">'
-        '☁️ 云端只读展示。数据来自 GitHub 仓库推送'
-        f'{f"（推送时间约 {CLOUD_DATA_ASOF}）" if CLOUD_DATA_ASOF else ""}；'
-        '云端无持久存储，页面内任何写入操作均已禁用。'
-        '每日 17:12 本地跑批后自动推送更新。</div>',
-        unsafe_allow_html=True)
+# 云端数据时效（一行小字，不占地方）
+if IS_CLOUD and CLOUD_DATA_ASOF:
+    st.caption(f"☁️ 只读 · 数据截至 {CLOUD_DATA_ASOF}")
 
 # ============ 行情状态四态判定 + 数字格式化助手 ============
 from datetime import datetime, timedelta
@@ -365,23 +360,11 @@ with top4:
 tab = st.sidebar.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"])
 st.sidebar.markdown("---")
 
-# 侧边栏：控制
-st.sidebar.header("控制")
-st.sidebar.write("状态：%s　模式：%s" % ("运行中" if status == "running" else "已暂停",
-                                        "自动" if mode == "auto" else "手动"))
-if IS_CLOUD:
-    # 云端只读：控制按钮全部禁用，明示不可持久化
-    st.sidebar.markdown('<div class="alert-banner warn" style="font-size:12px">'
-                        '☁️ 云端只读模式：控制操作（暂停/切换模式/刷新数据）'
-                        '在云端无法持久化，已禁用。请使用本地版本操作。</div>',
-                        unsafe_allow_html=True)
-    st.sidebar.button("暂停" if status == "running" else "开始", disabled=True,
-                      help="云端只读，不可用")
-    st.sidebar.button("切手动" if mode == "auto" else "切自动", disabled=True,
-                      help="云端只读，不可用")
-    st.sidebar.button("🔄 刷新数据（拉取+重算）", disabled=True,
-                      help="云端只读，不可用")
-else:
+# 侧边栏：控制（云端只读时整个隐藏，不占地方）
+if not IS_CLOUD:
+    st.sidebar.header("控制")
+    st.sidebar.write("状态：%s　模式：%s" % ("运行中" if status == "running" else "已暂停",
+                                            "自动" if mode == "auto" else "手动"))
     c1, c2 = st.sidebar.columns(2)
     if c1.button("暂停" if status == "running" else "开始"):
         from engine.pipeline import run, write_report
@@ -426,7 +409,7 @@ def sym_name(code):
 render_ticker()
 # 标的代码→中文名（展示用，查不到时回退显示代码）
 
-acct = st.sidebar.selectbox("账户", accts, format_func=lambda x: f"{x}（{ACCT_CN.get(x, x)}）")
+acct = st.sidebar.selectbox("账户", accts, format_func=lambda x: ACCT_CN.get(x, x))
 
 # ================================================================
 # 🏠 工作台：系统状态 + 今日信号 + 账户总览
@@ -650,6 +633,29 @@ if tab == "🏠 工作台":
 # ================================================================
 elif tab == "🔍 选股":
     st.header("🔍 选股")
+    # ---- 全市场搜索：任意A股/港股代码，新浪实时K线 ----
+    with st.expander("🔎 全市场搜索（任意代码）", expanded=False):
+        s_code = st.text_input("输入代码，如 600519 / 002446 / 00700", key="mkt_search")
+        if s_code:
+            code = s_code.strip()
+            # 判断市场前缀
+            if code.startswith("HK") or (len(code) == 5 and code.isdigit()):
+                sina_sym = f"hk{code[-5:]}"
+                st.caption("港股：新浪静态K线不支持，跳转查看")
+                st.markdown(f"[新浪港股行情](https://stock.finance.sina.com.cn/hkstock/quotes/{code[-5:]}.html) | "
+                            f"[东方财富](https://quote.eastmoney.com/hk/{code[-5:]}.html)")
+            elif len(code) == 6 and code.isdigit():
+                prefix = "sh" if code[0] in "68" else "sz"
+                sina_sym = f"{prefix}{code}"
+                # 新浪K线图：日K/周K/分时切换
+                ktype = st.radio("周期", ["日K", "周K", "分时"], horizontal=True, key="sina_ktype")
+                kmap = {"日K": "daily", "周K": "weekly", "分时": "min"}
+                import time
+                img_url = f"https://image2.sinajs.cn/newchart/{kmap[ktype]}/n/{sina_sym}.gif?t={int(time.time())}"
+                st.image(img_url, use_container_width=True)
+                st.caption(f"数据来源：新浪财经 · {code}")
+            else:
+                st.warning("请输入6位A股代码或港股代码")
     st.caption("市场面 + 技术形态 | 数据来自本地 market_data，每日收盘更新")
     from engine.indicators import rsi, macd, bollinger, ma_align, adx as calc_adx, market_regime
     from engine.signals import moving_average
@@ -909,7 +915,7 @@ elif tab == "💰 账户":
     st.subheader("近期成交")
     fl = q("SELECT date,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 20", (acct,))
     if fl:
-        st.table([{"日期": d, "标的": s, "方向": sd, "数量": qty, "成交价": px, "费用": fee, "盈亏": pnl}
+        st.table([{"日期": d, "标的": sym_name(s), "方向": sd, "数量": qty, "成交价": px, "费用": fee, "盈亏": pnl}
                   for d, s, sd, qty, px, fee, pnl in fl])
     else:
         st.write("暂无成交")

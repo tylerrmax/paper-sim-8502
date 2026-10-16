@@ -70,7 +70,7 @@ pipe = open("engine/pipeline.py").read()
 check("pipeline 风控未移除", "single_trade_risk_pct" in pipe)
 
 # 10. 云端只读按钮禁用
-check("云端禁用控制按钮", 'disabled=True' in src and '云端只读' in src)
+check("云端隐藏控制区", 'if not IS_CLOUD:' in src and '侧边栏：控制' in src)
 check("云端数据时效声明", 'CLOUD_DATA_ASOF' in src)
 
 # 11. schema 完整性

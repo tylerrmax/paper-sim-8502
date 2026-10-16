@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.log
+db/*.lock
+.DS_Store
+# 大文件/备份/测试库不进仓库
+db/*.bak.*
+db/test.db
+data/
+*.db.bak.*

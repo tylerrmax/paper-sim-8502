@@ -124,30 +124,47 @@ st.markdown("""
 
 st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_html=True)
 
-# ============ 滚动行情条（全页面顶部） ============
+# ============ 滚动行情条（实时，绕过快照） ============
 def render_ticker():
-    """滚动行情条：所有标的最新价 + 涨跌幅"""
-    rows = q("""SELECT m.symbol, m.close,
-                  (SELECT close FROM market_data WHERE symbol=m.symbol AND date < m.date
-                   ORDER BY date DESC LIMIT 1) as prev
-                FROM market_data m
-                INNER JOIN (SELECT symbol, MAX(date) as md FROM market_data GROUP BY symbol) t
-                ON m.symbol = t.symbol AND m.date = t.md""")
-    if not rows:
-        return
-    items = []
-    for sym, close, prev in rows:
-        if close and prev:
-            chg = (close - prev) / prev * 100
+    """滚动行情条：实时报价，打开即最新，不等快照"""
+    try:
+        from engine.realtime import fetch_all
+        syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data")]
+        live = fetch_all(syms)
+    except Exception:
+        live = {}
+    # 兜底：实时取不到时用 DB 最新价
+    if not live:
+        rows = q("""SELECT m.symbol, m.close,
+                      (SELECT close FROM market_data WHERE symbol=m.symbol AND date < m.date
+                       ORDER BY date DESC LIMIT 1) as prev
+                    FROM market_data m
+                    INNER JOIN (SELECT symbol, MAX(date) as md FROM market_data GROUP BY symbol) t
+                    ON m.symbol = t.symbol AND m.date = t.md""")
+        items = []
+        for sym, close, prev in rows:
+            if close and prev:
+                chg = (close - prev) / prev * 100
+                color = "#2ebd85" if chg >= 0 else "#f6465d"
+                arrow = "▲" if chg >= 0 else "▼"
+                items.append(
+                    f'<span style="margin-right:24px; white-space:nowrap;">'
+                    f'<b>{sym}</b> <span style="font-family:ui-monospace">{close:.2f}</span> '
+                    f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span>'
+                    f'<span style="color:#555;font-size:11px"> 快照</span></span>')
+    else:
+        items = []
+        for sym, d in live.items():
+            chg = d["change_pct"]
             color = "#2ebd85" if chg >= 0 else "#f6465d"
             arrow = "▲" if chg >= 0 else "▼"
             items.append(
                 f'<span style="margin-right:24px; white-space:nowrap;">'
-                f'<b>{sym}</b> <span style="font-family:ui-monospace">{close:.2f}</span> '
-                f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span></span>')
-        elif close:
-            items.append(f'<span style="margin-right:24px; white-space:nowrap;">'
-                         f'<b>{sym}</b> {close:.2f}</span>')
+                f'<b>{sym}</b> <span style="font-family:ui-monospace">{d["price"]}</span> '
+                f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span>'
+                f'<span style="color:#2ebd85;font-size:11px"> ●实时</span></span>')
+    if not items:
+        return
     ticker_html = "".join(items)
     st.markdown(f"""
     <div style="overflow:hidden; background:#0d1117; border:1px solid #1e2532;
@@ -408,17 +425,32 @@ elif tab == "📈 行情与策略":
                     unsafe_allow_html=True)
     st.caption(f"规则版本：{ver} · {CFG.get('meta', {}).get('note', '')}")
 
-    # 行情表（最新价）
-    st.subheader("最新行情")
-    quotes = q("""SELECT m.symbol, m.date, m.close FROM market_data m
-                  INNER JOIN (SELECT symbol, MAX(date) as md FROM market_data GROUP BY symbol) t
-                  ON m.symbol = t.symbol AND m.date = t.md
-                  ORDER BY m.symbol""")
-    if quotes:
-        st.table([{"代码": s, "日期": d, "收盘": f"{c:.2f}" if c else "—"}
-                  for s, d, c in quotes])
+    # 行情表（实时）
+    st.subheader("实时行情")
+    try:
+        from engine.realtime import fetch_all
+        syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data ORDER BY symbol")]
+        live = fetch_all(syms)
+    except Exception:
+        live = {}
+    if live:
+        st.table([{"代码": s, "现价": d["price"],
+                   "涨跌幅": f"{d['change_pct']:+.2f}%",
+                   "更新": d["time"][:16]}
+                  for s, d in sorted(live.items())])
+        st.caption("● 实时：腾讯/新浪盘中报价 + Binance，打开即最新")
     else:
-        st.write("暂无行情数据")
+        # 兜底快照
+        quotes = q("""SELECT m.symbol, m.date, m.close FROM market_data m
+                      INNER JOIN (SELECT symbol, MAX(date) as md FROM market_data GROUP BY symbol) t
+                      ON m.symbol = t.symbol AND m.date = t.md
+                      ORDER BY m.symbol""")
+        if quotes:
+            st.table([{"代码": s, "日期": d, "收盘": f"{c:.2f}" if c else "—"}
+                      for s, d, c in quotes])
+            st.caption("快照（实时接口暂不可达）")
+        else:
+            st.write("暂无行情数据")
 
     # 回执录入
     st.subheader("🧾 券商回执录入")

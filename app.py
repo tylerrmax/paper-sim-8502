@@ -434,6 +434,19 @@ acct = st.sidebar.selectbox("账户", accts, format_func=lambda x: f"{x}（{ACCT
 if tab == "🏠 工作台":
     st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
 
+    # ---- 闭环流程指引 ----
+    with st.expander("🔄 操作闭环：搜索→选股→验证→交付→券商兑现→回执", expanded=False):
+        st.markdown("""
+        | 步骤 | 位置 | 动作 |
+        |------|------|------|
+        | 1️⃣ 搜索 | 📈 行情与信号 → 标的搜索 | 输入代码，三行情源看K线 |
+        | 2️⃣ 选股 | 📈 行情与信号 → ⭐关注 | 加入自选，一键切换 |
+        | 3️⃣ 验证 | 🌐 市场全景 | 看RSI/MACD/ADX/布林带技术形态 |
+        | 4️⃣ 交付 | 📝 交易执行 → 待建条件单 | 复制信号价格数量 |
+        | 5️⃣ 券商兑现 | 同花顺App | 手动建条件单 |
+        | 6️⃣ 回执 | 📝 交易执行 → 回执录入 | 成交后登记，闭环完成 |
+        """)
+
     # ---- 1. 风险警报区（最优先）：阻断原因置顶 ----
     alerts = []
     if status != "running":

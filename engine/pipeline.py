@@ -293,9 +293,10 @@ def _run_locked(db_path=DB, cfg=None):
                 except ValueError:
                     continue
                 con.execute(
-                    "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl,signal_date)"
-                    " VALUES(?,?,?,?,?,?,?,?,?)",
-                    (d, aid, s, side, qty, round(px, 6), round(fee, 4), round(pnl, 2), sig_d))
+                    "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl,signal_date,strategy_version)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (d, aid, s, side, qty, round(px, 6), round(fee, 4), round(pnl, 2), sig_d,
+                     cfg.get("meta", {}).get("version", "unknown")))
             pending = still_pending
 
             # ===== Phase 2：从今日收盘生成新信号，加入 pending =====

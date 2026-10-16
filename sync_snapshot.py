@@ -222,8 +222,10 @@ def build_execution(con, pending_signals):
 
 def build_graduation(con):
     """毕业进度：只统计验证期（10-08起）的已完成 round-trip（SELL）。
-    2026-10-16 起：graduation_exclusions 表中的成交从样本中剔除（历史保留，仅不计入毕业指标）。"""
+    2026-10-16 起：graduation_exclusions 表中的成交从样本中剔除（历史保留，仅不计入毕业指标）。
+    2026-10-17 起：按 strategy_version 隔离，策略变更后的新样本不与旧版本混合。"""
     accts, total_rt = {}, 0
+    cur_ver = CFG.get("meta", {}).get("version", "unknown")
     for a in CFG["accounts"]:
         aid = a["id"]
         vs = VAL_START.get(aid, "2026-10-08")
@@ -233,8 +235,9 @@ def build_graduation(con):
                  ON e.date=f.date AND e.account=f.account
                 AND e.symbol=f.symbol AND e.side=f.side
                WHERE f.account=? AND f.side='SELL' AND f.date>=?
-                 AND e.date IS NULL""",
-            (aid, vs)).fetchall() if r[0] is not None]
+                 AND e.date IS NULL
+                 AND (f.strategy_version IS NULL OR f.strategy_version=?)""",
+            (aid, vs, cur_ver)).fetchall() if r[0] is not None]
         n_excluded = con.execute(
             """SELECT COUNT(*) FROM fills f
                JOIN graduation_exclusions e

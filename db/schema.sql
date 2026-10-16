@@ -102,3 +102,38 @@ CREATE TABLE IF NOT EXISTS real_fills (
     note TEXT,                     -- 备注
     created TEXT                   -- 录入时间
 );
+
+-- 券商回执（人工条件单在券商成交后录入，回执独立对账）：
+-- 与 fills（模拟成交）独立，不直接关联，用于人工核对执行一致性。
+CREATE TABLE IF NOT EXISTS broker_receipts (
+    date TEXT NOT NULL,            -- 券商成交日期 YYYY-MM-DD
+    account TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,            -- BUY / SELL
+    price REAL NOT NULL,           -- 券商实际成交价
+    qty REAL NOT NULL,             -- 券商实际数量
+    created_at TEXT,               -- 录入时间
+    PRIMARY KEY (date, account, symbol, side)
+);
+
+-- 毕业样本剔除（策略错配等原因不计入毕业统计，但历史保留）：
+-- 如 2026-10-15 sim_hk HK9660 SELL（错策略成交）已标记剔除。
+CREATE TABLE IF NOT EXISTS graduation_exclusions (
+    date TEXT NOT NULL,
+    account TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    reason TEXT,                   -- 剔除原因
+    excluded_at TEXT,              -- 标记时间
+    PRIMARY KEY (date, account, symbol, side)
+);
+
+-- 暂停期信号黑名单：暂停期间生成的信号记入此表，恢复自动模式后永不补成交。
+-- 跨轮持久，不随 signals 全量重算删除。
+CREATE TABLE IF NOT EXISTS pause_skipped_signals (
+    date TEXT NOT NULL,
+    account TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,            -- BUY / SELL
+    PRIMARY KEY (date, account, symbol, side)
+);

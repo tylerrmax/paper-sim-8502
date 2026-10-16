@@ -203,16 +203,36 @@ def _run_locked(db_path=DB, cfg=None):
         # 策略选择：分账户（2026-10-16 用户选A），优先读 signals.per_account[aid]，回退到全局 strategy
         _sig_cfg = cfg.get("signals", {})
         strategy = _sig_cfg.get("per_account", {}).get(aid) or _sig_cfg.get("strategy", "ma20")
+        from engine.signals import atr as calc_atr
+        from engine.indicators import adx as calc_adx, market_regime
+        atr_by_sym = {}  # symbol -> {date: atr_value}
+        adx_by_sym = {}  # symbol -> {date: adx_value}（市场状态识别）
+        atr_mult = cfg.get("risk", {}).get("atr_stop_mult", 2.0)
+        # ADX 震荡市保护开关（config signals.adx_filter）
+        adx_filter = _sig_cfg.get("adx_filter", True)
         for s, blist in bars.items():
             dates = [r[0] for r in blist]
             closes = [r[4] for r in blist]
             closes_by_sym[s] = dict(zip(dates, closes))
+            # ATR 预计算（所有策略强制止损用）
+            highs = [r[2] for r in blist]
+            lows = [r[3] for r in blist]
+            atr_vals = calc_atr(highs, lows, closes, 14)
+            atr_by_sym[s] = {d: v for d, v in zip(dates, atr_vals) if v is not None}
+            # ADX 预计算（市场状态识别：ADX<20 震荡市暂停趋势策略）
+            adx_vals = calc_adx(highs, lows, closes, 14)
+            adx_by_sym[s] = {d: v for d, v in zip(dates, adx_vals) if v is not None}
             if strategy == "buyback":
-                highs = [r[2] for r in blist]
                 gen = gen_buyback_signals(dates, closes, highs)
             else:
                 gen = gen_signals(dates, closes, ma_long)
             for d, side, px in gen:
+                # ADX 震荡市保护：ADX<20 时暂停趋势策略(MA)新信号，buyback不受影响
+                # 2026-10-17 中期第一项：市场状态识别
+                if adx_filter and strategy != "buyback" and side == "BUY":
+                    adx_v = adx_by_sym.get(s, {}).get(d)
+                    if adx_v is not None and market_regime(adx_v) == "range":
+                        continue  # 震荡市跳过趋势策略买入信号
                 sig_by_date.setdefault(d, []).append((s, side, px))
         prev_close = {}
         opens_by_sym = {}
@@ -229,8 +249,38 @@ def _run_locked(db_path=DB, cfg=None):
         prev_nav = float(acct["principal"])
         last_px = {}  # 标的 -> 上个已知收盘价；缺 bar 的日期沿用（不归零、不编造）
         pending = []  # T+1 待执行：[(sig_date, symbol, side, sig_px)]
+        atr_stops = {}  # symbol -> stop_price（ATR 止损价，持仓期间有效）
         for d in dates:
             seen = set()
+            # ===== ATR 止损检查：持仓标的若跌破 ATR 止损，强制平仓 =====
+            # 在 Phase 1 之前检查，确保止损优先于普通信号执行
+            for s in list(sim.positions.keys()):
+                if s not in atr_stops or sim.position_qty(s, d) <= 0:
+                    continue
+                # 用当日最低价判断是否触发止损（最保守）
+                low = None
+                for blist in bars.get(s, []):
+                    if blist[0] == d:
+                        low = blist[3]
+                        break
+                if low is not None and low < atr_stops[s]:
+                    # 触发 ATR 止损：按当日开盘价（T+1 已过，直接执行）或收盘价成交
+                    # 为简化，按收盘价+滑点成交（止损单为市价单）
+                    close_px = closes_by_sym[s][d]
+                    px = close_px * (1 - slippage)
+                    fee_rate, min_fee = _fee_for(aid, "SELL", cfg)
+                    try:
+                        qty = sim.position_qty(s, d)
+                        if qty > 0:
+                            fee, pnl = sim.sell(s, qty, px, d, fee_rate)
+                            con.execute(
+                                "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl,signal_date,strategy_version)"
+                                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                (d, aid, s, "SELL", qty, round(px, 6), round(fee, 4),
+                                 round(pnl, 2), d, cfg.get("meta", {}).get("version", "unknown")))
+                            del atr_stops[s]
+                    except ValueError:
+                        pass
             # ===== Phase 1：T+1 开盘执行 pending 信号 =====
             # 信号日 D 的信号，在 D+1 开盘价成交（贴近人工实盘：收盘看信号，次日开盘下单）
             still_pending = []
@@ -285,6 +335,10 @@ def _run_locked(db_path=DB, cfg=None):
                             continue
                         fee = sim.buy(s, qty, px, d, fee_rate, min_fee)
                         pnl = 0.0
+                        # 设置 ATR 止损：entry - atr_mult * ATR(信号日)
+                        atr_v = atr_by_sym.get(s, {}).get(sig_d)
+                        if atr_v:
+                            atr_stops[s] = px - atr_mult * atr_v
                     else:
                         qty = sim.position_qty(s, d)
                         if qty <= 0:

@@ -718,6 +718,8 @@ elif tab == "📈 行情与信号":
             if sym and sym not in st.session_state.watchlist:
                 st.session_state.watchlist.append(sym)
                 st.success(f"已关注 {sym}")
+    # ---- 行情源切换（TradingView/新浪/东方财富）----
+    src = st.radio("行情源", ["TradingView", "新浪财经", "东方财富"], horizontal=True, key="quote_src")
     # TradingView 代码映射
     def _tv_code(sym):
         s = sym.strip().upper()
@@ -731,26 +733,62 @@ elif tab == "📈 行情与信号":
     # 当前显示的标的
     cur_sym = tv_sym.strip().upper() if tv_sym else (st.session_state.watchlist[0] if st.session_state.watchlist else "002446")
     if cur_sym:
-        tv_code = _tv_code(cur_sym)
-        st.caption(f"正在查看: {sym_name(cur_sym)} ({tv_code})")
         import streamlit.components.v1 as components
-        components.html(f"""
-        <div class="tradingview-widget-container" style="height:480px;width:100%">
-          <div id="tradingview_chart" style="height:480px;width:100%"></div>
-          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-          {{
-            "symbol": "{tv_code}",
-            "interval": "D",
-            "theme": "dark",
-            "style": "1",
-            "locale": "zh_CN",
-            "allow_symbol_change": true,
-            "calendar": false,
-            "support_host": "https://www.tradingview.com"
-          }}
-          </script>
-        </div>
-        """, height=500)
+        sym_u = cur_sym.strip().upper()
+        if src == "TradingView":
+            tv_code = _tv_code(sym_u)
+            st.caption(f"正在查看: {sym_name(sym_u)} ({tv_code})")
+            components.html(f"""
+            <div class="tradingview-widget-container" style="height:480px;width:100%">
+              <div id="tradingview_chart" style="height:480px;width:100%"></div>
+              <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+              {{
+                "symbol": "{tv_code}",
+                "interval": "D",
+                "theme": "dark",
+                "style": "1",
+                "locale": "zh_CN",
+                "allow_symbol_change": true,
+                "calendar": false,
+                "support_host": "https://www.tradingview.com"
+              }}
+              </script>
+            </div>
+            """, height=500)
+        elif src == "新浪财经":
+            # 新浪分时/K线组件
+            if sym_u.startswith("HK"):
+                sina_code = f"hk{sym_u[2:]}"
+            elif sym_u.endswith("USDT"):
+                st.info("加密请用 TradingView 查看")
+                sina_code = None
+            elif sym_u.startswith("6"):
+                sina_code = f"sh{sym_u}"
+            else:
+                sina_code = f"sz{sym_u}"
+            if sina_code:
+                st.caption(f"正在查看: {sym_name(sym_u)}（新浪财经）")
+                components.html(f"""
+                <iframe src="https://quotes.sina.cn/hq/quotes/index.html?code={sina_code}"
+                        style="width:100%;height:500px;border:none;"></iframe>
+                """, height=520)
+        else:  # 东方财富
+            if sym_u.endswith("USDT"):
+                st.info("加密请用 TradingView 查看")
+            else:
+                # 东方财富行情页直链
+                if sym_u.startswith("HK"):
+                    em_code = f"{sym_u[2:]}.HK"
+                elif sym_u.startswith("6"):
+                    em_code = f"{sym_u}.SH"
+                else:
+                    em_code = f"{sym_u}.SZ"
+                st.caption(f"正在查看: {sym_name(sym_u)}（东方财富）")
+                st.markdown(f"[👉 在东方财富查看 {sym_name(sym_u)} 完整行情](https://quote.eastmoney.com/{em_code.lower().replace('.sh','1').replace('.sz','2').replace('.hk','3')}.html)")
+                components.html(f"""
+                <iframe src="https://quote.eastmoney.com/chart/h5/index.html?code={em_code}"
+                        style="width:100%;height:500px;border:none;"></iframe>
+                """, height=520)
     # 关注列表
     if st.session_state.watchlist:
         st.write("**我的关注：**")

@@ -204,8 +204,12 @@ def _run_locked(db_path=DB, cfg=None):
         _sig_cfg = cfg.get("signals", {})
         strategy = _sig_cfg.get("per_account", {}).get(aid) or _sig_cfg.get("strategy", "ma20")
         from engine.signals import atr as calc_atr
+        from engine.indicators import adx as calc_adx, market_regime
         atr_by_sym = {}  # symbol -> {date: atr_value}
+        adx_by_sym = {}  # symbol -> {date: adx_value}（市场状态识别）
         atr_mult = cfg.get("risk", {}).get("atr_stop_mult", 2.0)
+        # ADX 震荡市保护开关（config signals.adx_filter）
+        adx_filter = _sig_cfg.get("adx_filter", True)
         for s, blist in bars.items():
             dates = [r[0] for r in blist]
             closes = [r[4] for r in blist]
@@ -215,11 +219,20 @@ def _run_locked(db_path=DB, cfg=None):
             lows = [r[3] for r in blist]
             atr_vals = calc_atr(highs, lows, closes, 14)
             atr_by_sym[s] = {d: v for d, v in zip(dates, atr_vals) if v is not None}
+            # ADX 预计算（市场状态识别：ADX<20 震荡市暂停趋势策略）
+            adx_vals = calc_adx(highs, lows, closes, 14)
+            adx_by_sym[s] = {d: v for d, v in zip(dates, adx_vals) if v is not None}
             if strategy == "buyback":
                 gen = gen_buyback_signals(dates, closes, highs)
             else:
                 gen = gen_signals(dates, closes, ma_long)
             for d, side, px in gen:
+                # ADX 震荡市保护：ADX<20 时暂停趋势策略(MA)新信号，buyback不受影响
+                # 2026-10-17 中期第一项：市场状态识别
+                if adx_filter and strategy != "buyback" and side == "BUY":
+                    adx_v = adx_by_sym.get(s, {}).get(d)
+                    if adx_v is not None and market_regime(adx_v) == "range":
+                        continue  # 震荡市跳过趋势策略买入信号
                 sig_by_date.setdefault(d, []).append((s, side, px))
         prev_close = {}
         opens_by_sym = {}

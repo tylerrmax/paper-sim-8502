@@ -660,7 +660,7 @@ elif tab == "📝 交易执行":
     # 待建条件单提醒（数据提醒，用户看完自行去券商手动下单）
     st.subheader("待建条件单")
     sigs = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
-                LEFT JOIN fills f ON s.date=f.date AND s.account=f.account
+                LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
                   AND s.symbol=f.symbol AND s.side=f.side
                 WHERE s.account=? AND f.id IS NULL
                   AND s.date >= date('now','-7 days')

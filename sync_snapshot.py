@@ -317,18 +317,18 @@ def main():
         "SELECT s.account AS account, COUNT(*) AS c FROM signals s"
         " LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account"
         " AND ap.symbol=s.symbol AND ap.side=s.side"
-        " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
+        " LEFT JOIN fills f ON f.signal_date=s.date AND f.account=s.account"
         " AND f.symbol=s.symbol AND f.side=s.side"
-        " WHERE s.date>=? AND ap.date IS NULL AND f.date IS NULL GROUP BY s.account", (CUTOFF,))}
+        " WHERE s.date>=? AND ap.date IS NULL AND f.signal_date IS NULL GROUP BY s.account", (CUTOFF,))}
     # 待审批信号明细（供网页版行内批准/跳过；artifact 忽略本字段）
     pending_signals = [dict(r) for r in con.execute(
         "SELECT s.account AS account, s.date AS date, s.symbol AS symbol,"
         " s.side AS side, s.price AS price FROM signals s"
         " LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account"
         " AND ap.symbol=s.symbol AND ap.side=s.side"
-        " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
+        " LEFT JOIN fills f ON f.signal_date=s.date AND f.account=s.account"
         " AND f.symbol=s.symbol AND f.side=s.side"
-        " WHERE s.date>=? AND ap.date IS NULL AND f.date IS NULL"
+        " WHERE s.date>=? AND ap.date IS NULL AND f.signal_date IS NULL"
         " ORDER BY s.date DESC, s.account", (CUTOFF,))]
     for a in CFG["accounts"]:
         aid = a["id"]

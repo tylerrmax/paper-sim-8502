@@ -25,6 +25,7 @@ CFG_PATH = os.path.join(BASE, "config", "strategy.yaml")
 # 云端模式检测：Streamlit Cloud 文件系统是临时的，写操作不持久
 # 通过环境变量 STREAMLIT_CLOUD 判断
 IS_CLOUD = os.environ.get("STREAMLIT_CLOUD") == "1" or "streamlit" in os.environ.get("HOSTNAME", "")
+CLOUD_DATA_ASOF = ""  # 云端数据推送时间（从 db/sim.db 的 mtime 推断）
 if IS_CLOUD:
     # 云端用只读模式：复制 DB 到临时位置避免锁定问题
     import tempfile, shutil
@@ -32,6 +33,12 @@ if IS_CLOUD:
     try:
         shutil.copy2(DB, _tmp)
         DB = _tmp
+        # 记录仓库内 db/sim.db 的推送时间（GitHub commit 时间近似）
+        _src_db = os.path.join(BASE, "db", "sim.db")
+        if os.path.exists(_src_db):
+            import datetime as _dt
+            _mtime = os.path.getmtime(_src_db)
+            CLOUD_DATA_ASOF = _dt.datetime.fromtimestamp(_mtime).strftime("%Y-%m-%d %H:%M")
     except Exception:
         pass
 
@@ -156,6 +163,16 @@ table { color: #e8ecf1; }
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_html=True)
+
+# 云端数据时效声明（持久化架构透明化）
+if IS_CLOUD:
+    st.markdown(
+        '<div class="alert-banner info" style="font-size:12px">'
+        '☁️ 云端只读展示。数据来自 GitHub 仓库推送'
+        f'{f"（推送时间约 {CLOUD_DATA_ASOF}）" if CLOUD_DATA_ASOF else ""}；'
+        '云端无持久存储，页面内任何写入操作均已禁用。'
+        '每日 17:12 本地跑批后自动推送更新。</div>',
+        unsafe_allow_html=True)
 
 # ============ 行情状态四态判定 + 数字格式化助手 ============
 from datetime import datetime, timedelta
@@ -353,30 +370,43 @@ st.sidebar.markdown("---")
 st.sidebar.header("控制")
 st.sidebar.write("状态：%s　模式：%s" % ("运行中" if status == "running" else "已暂停",
                                         "自动" if mode == "auto" else "手动"))
-c1, c2 = st.sidebar.columns(2)
-if c1.button("暂停" if status == "running" else "开始"):
-    from engine.pipeline import run, write_report
-    set_control(status="paused" if status == "running" else "running")
-    cfg2 = load_cfg()
-    asof = run(DB, cfg2)
-    write_report(DB, cfg2, asof)
-    st.rerun()
-if c2.button("切手动" if mode == "auto" else "切自动"):
-    from engine.pipeline import run, write_report
-    set_control(mode="manual" if mode == "auto" else "auto")
-    cfg2 = load_cfg()
-    asof = run(DB, cfg2)
-    write_report(DB, cfg2, asof)
-    st.rerun()
-if st.sidebar.button("🔄 刷新数据（拉取+重算）"):
-    with st.spinner("拉取行情并重算…"):
-        r = subprocess.run([sys.executable, os.path.join(BASE, "run_daily.py")],
-                           capture_output=True, text=True, timeout=300)
-    if r.returncode == 0:
-        st.sidebar.success("刷新完成")
-    else:
-        st.sidebar.error(r.stderr[-500:] if r.stderr else "失败")
-    st.rerun()
+if IS_CLOUD:
+    # 云端只读：控制按钮全部禁用，明示不可持久化
+    st.sidebar.markdown('<div class="alert-banner warn" style="font-size:12px">'
+                        '☁️ 云端只读模式：控制操作（暂停/切换模式/刷新数据）'
+                        '在云端无法持久化，已禁用。请使用本地版本操作。</div>',
+                        unsafe_allow_html=True)
+    st.sidebar.button("暂停" if status == "running" else "开始", disabled=True,
+                      help="云端只读，不可用")
+    st.sidebar.button("切手动" if mode == "auto" else "切自动", disabled=True,
+                      help="云端只读，不可用")
+    st.sidebar.button("🔄 刷新数据（拉取+重算）", disabled=True,
+                      help="云端只读，不可用")
+else:
+    c1, c2 = st.sidebar.columns(2)
+    if c1.button("暂停" if status == "running" else "开始"):
+        from engine.pipeline import run, write_report
+        set_control(status="paused" if status == "running" else "running")
+        cfg2 = load_cfg()
+        asof = run(DB, cfg2)
+        write_report(DB, cfg2, asof)
+        st.rerun()
+    if c2.button("切手动" if mode == "auto" else "切自动"):
+        from engine.pipeline import run, write_report
+        set_control(mode="manual" if mode == "auto" else "auto")
+        cfg2 = load_cfg()
+        asof = run(DB, cfg2)
+        write_report(DB, cfg2, asof)
+        st.rerun()
+    if st.sidebar.button("🔄 刷新数据（拉取+重算）"):
+        with st.spinner("拉取行情并重算…"):
+            r = subprocess.run([sys.executable, os.path.join(BASE, "run_daily.py")],
+                               capture_output=True, text=True, timeout=300)
+        if r.returncode == 0:
+            st.sidebar.success("刷新完成")
+        else:
+            st.sidebar.error(r.stderr[-500:] if r.stderr else "失败")
+        st.rerun()
 
 accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY account")]
          or ["sim_a", "sim_hk", "sim_crypto"])

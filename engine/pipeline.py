@@ -49,7 +49,7 @@ def _replay_fill(sim, s, side, qty, price, fee, d):
     调用方保证按日期顺序调用，以维持 T+1 等时间相关逻辑正确。"""
     if side == "BUY":
         sim.cash -= qty * price + fee
-        sim.positions.setdefault(s, []).append(Lot(qty, price, d))
+        sim.positions.setdefault(s, []).append(Lot(qty, price, 0.0, d))
     else:
         pos_lots = sim.positions.get(s, [])
         left = qty
@@ -65,6 +65,54 @@ def _replay_fill(sim, s, side, qty, price, fee, d):
             left -= take
         sim.cash += qty * price - fee
         sim.positions[s] = [l for l in pos_lots if l.qty > 1e-9]
+
+
+def position_sizer(sim, aid, symbol, px, cfg, strategy, buy_frac, lots):
+    """仓位计算函数（Position Sizer）：强制风控拦截。
+
+    返回 (qty, block_reason)：
+    - qty > 0：允许下单数量（已按 lot 取整）
+    - qty == 0：被风控拦截，block_reason 说明原因
+    拦截规则（来自 config/strategy.yaml 的 risk 段）：
+    1. 总仓位上限：股票 70% / 加密 100%，超限直接拦截
+    2. 单笔风险上限 2%：仅 buyback（固定止损 -5%）可精确计算，
+       按 (entry - stop) * qty <= nav * 2% 反推最大数量
+    """
+    import math
+    risk_cfg = cfg.get("risk", {})
+    lot = float(lots.get(symbol, 1))
+
+    nav_now = sim.cash + sum(
+        l.qty * l.cost for lots_ in sim.positions.values() for l in lots_)
+    if nav_now <= 0:
+        return 0, "净值为零"
+
+    # 拦截1：总仓位上限
+    max_pos_pct = (risk_cfg.get("max_stock_position_pct", 70) / 100
+                   if aid in ("sim_a", "sim_hk")
+                   else risk_cfg.get("max_crypto_position_pct", 100) / 100)
+    pos_val = sum(l.qty * l.cost
+                  for lots_ in sim.positions.values() for l in lots_)
+    est_cost = sim.cash * buy_frac
+    if (pos_val + est_cost) / nav_now > max_pos_pct:
+        return 0, f"仓位超限：{(pos_val + est_cost) / nav_now * 100:.1f}% > {max_pos_pct * 100:.0f}%"
+
+    # 基础数量
+    qty = math.floor(sim.cash * buy_frac / px / lot) * lot
+    if qty <= 0:
+        return 0, "现金不足"
+
+    # 拦截2：单笔风险上限（buyback 固定止损 -5%）
+    if strategy == "buyback":
+        risk_pct = risk_cfg.get("single_trade_risk_pct", 2) / 100
+        risk_per_share = px * 0.05
+        max_qty_risk = math.floor(nav_now * risk_pct / risk_per_share / lot) * lot
+        if max_qty_risk <= 0:
+            return 0, f"单笔风险超限：2% 风险对应数量为 0"
+        if qty > max_qty_risk:
+            qty = max_qty_risk
+
+    return qty, ""
 
 
 def run(db_path=DB, cfg=None):
@@ -167,91 +215,76 @@ def _run_locked(db_path=DB, cfg=None):
             for d, side, px in gen:
                 sig_by_date.setdefault(d, []).append((s, side, px))
         prev_close = {}
+        opens_by_sym = {}
+        has_next_bar = {}  # (symbol, date) -> bool，是否有 T+1 的 bar
         for s, blist in bars.items():
+            opens_by_sym[s] = {}
             for i, r in enumerate(blist):
                 prev_close[(s, r[0])] = blist[i - 1][4] if i > 0 else None
+                opens_by_sym[s][r[0]] = r[1]  # open
+                has_next_bar[(s, r[0])] = (i + 1 < len(blist))
 
         dates = sorted(set(d for bl in bars.values() for d, *_ in bl))
         asof = dates[-1] if asof is None or dates[-1] > asof else asof
         prev_nav = float(acct["principal"])
         last_px = {}  # 标的 -> 上个已知收盘价；缺 bar 的日期沿用（不归零、不编造）
+        pending = []  # T+1 待执行：[(sig_date, symbol, side, sig_px)]
         for d in dates:
             seen = set()
-            for s, side, sig_px in sorted(sig_by_date.get(d, [])):
-                # 验证期闸（仅 sim_a）：回填的历史 K 线仅做 MA20 指标预热，
-                # VAL_START 之前的信号禁止入库，避免污染验证窗口、
-                # 避免 manual 模式下积压历史待审批。港股/加密的历史信号为
-                # 自然积累的合法记录，不在此限。
-                if aid == "sim_a" and d < VAL_START.get(aid, "2026-10-08"):
+            # ===== Phase 1：T+1 开盘执行 pending 信号 =====
+            # 信号日 D 的信号，在 D+1 开盘价成交（贴近人工实盘：收盘看信号，次日开盘下单）
+            still_pending = []
+            for (sig_d, s, side, sig_px) in pending:
+                # 该标的今日无 bar（如停牌），继续等待
+                if d not in opens_by_sym.get(s, {}):
+                    still_pending.append((sig_d, s, side, sig_px))
                     continue
-                con.execute(
-                    "INSERT INTO signals(date,account,symbol,side,price) VALUES(?,?,?,?,?)",
-                    (d, aid, s, side, sig_px))
-                close = closes_by_sym[s][d]
-                px = close * (1 + slippage) if side == "BUY" else close * (1 - slippage)
-                # A股涨跌停保护
+                open_px = opens_by_sym[s][d]
+                px = open_px * (1 + slippage) if side == "BUY" else open_px * (1 - slippage)
+                # A股涨跌停保护（按执行日开盘价判断）
                 if aid == "sim_a":
                     pc = prev_close.get((s, d))
                     lim = cfg["rules"]["limit_pct"].get(boards.get(s, "main"), 0.10)
-                    hit = check_limit(close, pc, lim) if pc else None
+                    hit = check_limit(open_px, pc, lim) if pc else None
                     if (side == "BUY" and hit == "up") or (side == "SELL" and hit == "down"):
                         continue
                 fee_rate, min_fee = _fee_for(aid, side, cfg)
-                key = (d, aid, s, side)
-                seen.add(key)
-                if key in existing_fills:
-                    # 历史成交：按存储值原样重放进 sim 状态（零漂移），不重新过门禁
-                    qty, price, fee = existing_fills[key]
+                # existing_fills 键为执行日期；兼容旧数据（信号日=执行日）
+                key_new = (d, aid, s, side)
+                key_old = (sig_d, aid, s, side)
+                seen.add(key_new)
+                if key_new in existing_fills:
+                    qty, price, fee = existing_fills[key_new]
                     _replay_fill(sim, s, side, qty, price, fee, d)
                     continue
-                # 新信号门禁：明确跳过的信号永不成交（任何模式）；
-                # 暂停期黑名单信号永不补成交；暂停只记信号不成交；手动模式需批准才成交
+                if key_old in existing_fills and key_old != key_new:
+                    # 旧口径成交（T 日收盘价）：原样重放
+                    qty, price, fee = existing_fills[key_old]
+                    _replay_fill(sim, s, side, qty, price, fee, sig_d)
+                    continue
+                # 门禁（信号日维度）
                 ap = con.execute(
                     "SELECT decision FROM approvals WHERE date=? AND account=?"
-                    " AND symbol=? AND side=?", (d, aid, s, side)).fetchone()
+                    " AND symbol=? AND side=?", (sig_d, aid, s, side)).fetchone()
                 ap = ap[0] if ap else None
                 if ap == "skipped":
                     continue
-                if key in pause_blacklist:
+                if key_old in pause_blacklist:
                     continue  # 暂停期积压信号：恢复后不补成交
                 if status == "paused":
-                    # 暂停期信号记入黑名单：恢复后永不自动成交
                     con.execute(
                         "INSERT OR IGNORE INTO pause_skipped_signals(date,account,symbol,side)"
-                        " VALUES(?,?,?,?)", (d, aid, s, side))
-                    pause_blacklist.add(key)
+                        " VALUES(?,?,?,?)", (sig_d, aid, s, side))
+                    pause_blacklist.add(key_old)
                     continue
                 if mode == "manual" and ap != "approved":
+                    # 手动模式未批准：保留 pending，等待批准后执行
+                    still_pending.append((sig_d, s, side, sig_px))
                     continue
                 try:
                     if side == "BUY":
-                        lot = float(lots.get(s, 1))
-                        # 风控1：单笔风险上限 2%（仅 buyback 有固定止损可算）
-                        # 风控2：总仓位上限（股票70%/加密100%）
-                        risk_cfg = cfg.get("risk", {})
-                        nav_now = sim.cash + sum(
-                            l.qty * l.cost for lots_ in sim.positions.values()
-                            for l in lots_)
-                        max_pos_pct = (risk_cfg.get("max_stock_position_pct", 70) / 100
-                                       if aid in ("sim_a", "sim_hk")
-                                       else risk_cfg.get("max_crypto_position_pct", 100) / 100)
-                        pos_val = sum(l.qty * l.cost
-                                      for lots_ in sim.positions.values()
-                                      for l in lots_)
-                        # 已用仓位 + 本笔（按 buy_frac 估算）不得超上限
-                        est_cost = sim.cash * buy_frac
-                        if (pos_val + est_cost) / nav_now > max_pos_pct if nav_now > 0 else False:
-                            continue  # 超仓位上限，跳过
-                        qty = math.floor(sim.cash * buy_frac / px / lot) * lot
-                        # buyback 按 2% 风险反推最大数量
-                        if strategy == "buyback" and nav_now > 0:
-                            risk_pct = risk_cfg.get("single_trade_risk_pct", 2) / 100
-                            risk_per_share = px * 0.05  # 止损 -5%
-                            max_qty_risk = math.floor(
-                                nav_now * risk_pct / risk_per_share / lot) * lot
-                            if max_qty_risk <= 0:
-                                continue
-                            qty = min(qty, max_qty_risk)
+                        qty, block_reason = position_sizer(
+                            sim, aid, s, px, cfg, strategy, buy_frac, lots)
                         if qty <= 0:
                             continue
                         fee = sim.buy(s, qty, px, d, fee_rate, min_fee)
@@ -262,11 +295,25 @@ def _run_locked(db_path=DB, cfg=None):
                             continue
                         fee, pnl = sim.sell(s, qty, px, d, fee_rate)
                 except ValueError:
-                    continue  # 现金/可卖不足：信号保留，无成交
+                    continue
                 con.execute(
                     "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl)"
                     " VALUES(?,?,?,?,?,?,?,?)",
                     (d, aid, s, side, qty, round(px, 6), round(fee, 4), round(pnl, 2)))
+            pending = still_pending
+
+            # ===== Phase 2：从今日收盘生成新信号，加入 pending =====
+            for s, side, sig_px in sorted(sig_by_date.get(d, [])):
+                # 验证期闸（仅 sim_a）
+                if aid == "sim_a" and d < VAL_START.get(aid, "2026-10-08"):
+                    continue
+                con.execute(
+                    "INSERT INTO signals(date,account,symbol,side,price) VALUES(?,?,?,?,?)",
+                    (d, aid, s, side, sig_px))
+                # 有 T+1 bar 才加入待执行；否则信号保留，待数据到达后执行
+                if has_next_bar.get((s, d)):
+                    pending.append((d, s, side, sig_px))
+                # 无 T+1 bar（如最新日期）：信号已入库，pending 待下次跑批
             # 历史成交补重放：bar 缺失导致信号未重新生成时（如行情漏入库），
             # 该日期的历史成交仍必须重放，否则持仓会被静默丢弃。
             for (fd, faid, fs, fside), (qty, price, fee) in existing_fills.items():

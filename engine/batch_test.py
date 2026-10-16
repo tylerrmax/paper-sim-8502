@@ -77,16 +77,22 @@ def get_bars(symbol, market):
 
 
 def run_one(bars, lot, fee_buy, fee_sell, principal, ma_long):
-    """单标的完整回放，返回 fills 列表和每日净值序列。"""
+    """单标的完整回放，返回 fills 列表和每日净值序列。
+    v1.0（2026-10-17）：T+1 开盘执行，消除信号日收盘成交的未来函数。"""
     dates = [b[0] for b in bars]
     closes = [b[4] for b in bars]
     sigs = {d: (side, px) for d, side, px in gen_signals(dates, closes, ma_long)}
+    # T+1：信号日 D 的信号，在 D+1 开盘价成交
+    opens = {b[0]: b[1] for b in bars}
     sim = SimAccount(id="t", ccy="X", cash=float(principal), t1=False)
     fills, navs = [], []
+    pending = None  # (sig_date, side)
     for d, o, h, l, c, v in bars:
-        if d in sigs:
-            side, sig_px = sigs[d]
-            px = c * (1 + SLIPPAGE) if side == "BUY" else c * (1 - SLIPPAGE)
+        # 先执行上一日的 pending 信号（T+1 开盘）
+        if pending:
+            sig_d, side = pending
+            pending = None
+            px = o * (1 + SLIPPAGE) if side == "BUY" else o * (1 - SLIPPAGE)
             try:
                 if side == "BUY":
                     qty = math.floor(sim.cash * BUY_FRAC / px / lot) * lot
@@ -100,6 +106,10 @@ def run_one(bars, lot, fee_buy, fee_sell, principal, ma_long):
                         fills.append((d, side, qty, px, fee, pnl))
             except ValueError:
                 pass
+        # 再登记今日信号（明日执行）
+        if d in sigs:
+            side, sig_px = sigs[d]
+            pending = (d, side)
         navs.append((d, sim.cash + sim.market_value("S", c)))
     return fills, navs
 

@@ -68,10 +68,14 @@ risk:
 fees:
   a_buy: 0.00025
   a_sell: 0.00125
-  hk_buy: 0.001
-  hk_sell: 0.002
-  crypto: 0.001
+  a_min_fee: 5
+  hk_buy: 0.00108
+  hk_min_fee: 50
+  hk_sell: 0.00208
+  crypto: 0.0005
+  crypto_funding_rate: 0.0001
   slippage: 0.002
+  slippage_high_vol: 0.004
 rules:
   a_t1: true
   hk_t0: true
@@ -86,3 +90,7 @@ data_sources:
   a_hk: 腾讯 web.ifzq.gtimg.cn/fqkline（A股qfq/港股bfq，与母板同源）
   crypto: Kraken 公开 OHLC（BTC/USD）；币安 API 在本机出口被地域限制，价差声明
   fx: 新浪 HKDCNY
+stress_test:
+  enabled: false
+  cost_multiplier: 2.0
+  note: 长期项：2倍成本+滑点压力测试下期望值仍需>0

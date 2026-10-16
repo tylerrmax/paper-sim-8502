@@ -56,12 +56,26 @@ def fetch_cn_hk(symbols):
                 # 港股格式：100~名称~代码~现价~昨收~...~日期~时间
                 price = float(parts[3]) if parts[3] else 0
                 prev = float(parts[4]) if parts[4] else 0
-                t = f"{parts[30]} {parts[31]}" if len(parts) > 31 else ""
+                # 港股时间字段位置不同，取原始日期时间拼接
+                t = ""
+                for i, p in enumerate(parts):
+                    if len(p) == 8 and p.isdigit() and p.startswith("202"):
+                        # 找到 YYYYMMDD，后面跟时间
+                        if i + 1 < len(parts) and ":" in parts[i + 1]:
+                            t = f"{p[:4]}-{p[4:6]}-{p[6:8]} {parts[i+1]}"
+                        break
             else:
-                # A股格式：1~名称~代码~现价~昨收~今开~...~日期~时间
+                # A股格式：1~名称~代码~现价~昨收~今开~...~YYYYMMDDHHMMSS
                 price = float(parts[3]) if parts[3] else 0
                 prev = float(parts[4]) if parts[4] else 0
-                t = f"{parts[30]} {parts[31]}" if len(parts) > 31 else ""
+                # parts[30] = YYYYMMDDHHMMSS，如 20261016161500
+                raw = parts[30] if len(parts) > 30 else ""
+                if len(raw) >= 14 and raw.isdigit():
+                    t = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]} {raw[8:10]}:{raw[10:12]}:{raw[12:14]}"
+                elif len(raw) == 8 and raw.isdigit():
+                    t = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+                else:
+                    t = raw
             chg = (price - prev) / prev * 100 if prev else 0
             if price > 0:
                 out[sym] = {"price": price, "change_pct": round(chg, 2),

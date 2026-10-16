@@ -210,7 +210,32 @@ def _run_locked(db_path=DB, cfg=None):
                 try:
                     if side == "BUY":
                         lot = float(lots.get(s, 1))
+                        # 风控1：单笔风险上限 2%（仅 buyback 有固定止损可算）
+                        # 风控2：总仓位上限（股票70%/加密100%）
+                        risk_cfg = cfg.get("risk", {})
+                        nav_now = sim.cash + sum(
+                            l.qty * l.cost for lots_ in sim.positions.values()
+                            for l in lots_)
+                        max_pos_pct = (risk_cfg.get("max_stock_position_pct", 70) / 100
+                                       if aid in ("sim_a", "sim_hk")
+                                       else risk_cfg.get("max_crypto_position_pct", 100) / 100)
+                        pos_val = sum(l.qty * l.cost
+                                      for lots_ in sim.positions.values()
+                                      for l in lots_)
+                        # 已用仓位 + 本笔（按 buy_frac 估算）不得超上限
+                        est_cost = sim.cash * buy_frac
+                        if (pos_val + est_cost) / nav_now > max_pos_pct if nav_now > 0 else False:
+                            continue  # 超仓位上限，跳过
                         qty = math.floor(sim.cash * buy_frac / px / lot) * lot
+                        # buyback 按 2% 风险反推最大数量
+                        if strategy == "buyback" and nav_now > 0:
+                            risk_pct = risk_cfg.get("single_trade_risk_pct", 2) / 100
+                            risk_per_share = px * 0.05  # 止损 -5%
+                            max_qty_risk = math.floor(
+                                nav_now * risk_pct / risk_per_share / lot) * lot
+                            if max_qty_risk <= 0:
+                                continue
+                            qty = min(qty, max_qty_risk)
                         if qty <= 0:
                             continue
                         fee = sim.buy(s, qty, px, d, fee_rate, min_fee)

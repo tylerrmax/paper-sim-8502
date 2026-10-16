@@ -497,7 +497,9 @@ elif tab == "📝 人工条件单":
     st.markdown('<div class="section-head">📝 人工条件单</div>', unsafe_allow_html=True)
     st.markdown('<div class="alert-banner info">'
                 'Web不连接券商、不发送订单。看完下面的信号后，前往券商 App 手动建立条件单，'
-                '成交后再回到这里录入回执。'
+                '成交后再回到这里录入回执。<br>'
+                '⚠️ 执行口径声明：模拟成交按信号日收盘价+滑点；人工实盘为下一交易日执行，'
+                '两者时点不一致，回测结果不直接等于实盘可兑现结果。'
                 '</div>', unsafe_allow_html=True)
 
     # 待建条件单提醒（数据提醒，用户看完自行去券商手动下单）

@@ -464,6 +464,26 @@ if tab == "🏠 工作台":
         val = ts if ts else "无数据"
         return (f'<div class="status-card"><div class="sc-label">{label} {badge}</div>'
                 f'<div class="sc-value nodata" style="font-size:18px">{val}</div></div>')
+    def _fund_flow_panel(aid):
+        """资金流动面板：近5日买入/卖出/手续费/净流入，持仓市值变化。"""
+        ccy = {"sim_a": "CNY", "sim_hk": "HKD", "sim_crypto": "USDT"}.get(aid, "")
+        rows = q("SELECT date, SUM(CASE WHEN side='BUY' THEN qty*price ELSE 0 END) as buy_amt,"
+                 " SUM(CASE WHEN side='SELL' THEN qty*price ELSE 0 END) as sell_amt,"
+                 " SUM(fee) as fees FROM fills WHERE account=? GROUP BY date"
+                 " ORDER BY date DESC LIMIT 5", (aid,))
+        if not rows:
+            st.write("暂无成交记录")
+            return
+        for d, buy_amt, sell_amt, fees in rows:
+            net = (sell_amt or 0) - (buy_amt or 0) - (fees or 0)
+            arrow = "🟢" if net >= 0 else "🔴"
+            st.write(f"{arrow} `{d}` 买入 {buy_amt:,.0f} / 卖出 {sell_amt:,.0f} / 手续费 {fees:,.1f} / 净 {net:+,.0f} {ccy}")
+        pos = q("SELECT symbol, qty, avg_cost FROM positions WHERE account=? AND qty>0", (aid,))
+        if pos:
+            st.write("**当前持仓：**")
+            for sym, qty, cost in pos:
+                st.write(f"  {sym_name(sym)} {qty:.0f}股 @ 成本 {cost:.2f}")
+
     sc1, sc2, sc3, sc4 = st.columns(4)
     with sc1:
         sc_val = "已暂停" if status != "running" else "运行中"
@@ -473,10 +493,16 @@ if tab == "🏠 工作台":
                     unsafe_allow_html=True)
     with sc2:
         st.markdown(_fresh_card("A股行情", latest_a), unsafe_allow_html=True)
+        with st.expander("💰 A股资金流", expanded=False):
+            _fund_flow_panel("sim_a")
     with sc3:
         st.markdown(_fresh_card("港股行情", latest_hk), unsafe_allow_html=True)
+        with st.expander("💰 港股资金流", expanded=False):
+            _fund_flow_panel("sim_hk")
     with sc4:
         st.markdown(_fresh_card("加密行情", latest_c), unsafe_allow_html=True)
+        with st.expander("💰 加密资金流", expanded=False):
+            _fund_flow_panel("sim_crypto")
 
     # ---- 3. 三账户概览（并排） ----
     st.subheader("三账户概览")

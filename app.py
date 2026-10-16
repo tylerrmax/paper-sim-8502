@@ -334,7 +334,6 @@ def render_ticker():
     </style>
     """, unsafe_allow_html=True)
 
-render_ticker()
 
 # ============ 顶栏：系统状态 + 策略 ============
 status, mode = get_control()
@@ -411,7 +410,6 @@ else:
 accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY account")]
          or ["sim_a", "sim_hk", "sim_crypto"])
 ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-# 标的代码→中文名（展示用，查不到时回退显示代码）
 SYMBOL_CN = {
     "002446": "盛路通信",
     "688305": "科德数控",
@@ -425,6 +423,9 @@ SYMBOL_CN = {
 def sym_name(code):
     """标的显示名：代码+中文名，如 '002446 盛路通信'"""
     return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
+render_ticker()
+# 标的代码→中文名（展示用，查不到时回退显示代码）
+
 acct = st.sidebar.selectbox("账户", accts, format_func=lambda x: f"{x}（{ACCT_CN.get(x, x)}）")
 
 # ================================================================

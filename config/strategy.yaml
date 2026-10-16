@@ -1,0 +1,100 @@
+# 策略规则配置（DRAFT 2026-10-02）
+# 引擎只读此文件，不硬编码任何规则。
+# 10月规则定稿后只改这里，不改代码，零返工。
+
+meta:
+  version: draft-2026-10-02
+  note: 草案。R-02~R-05 待批准；信号为MVP简化版，母板完整信号二期接入。
+
+# 独立虚拟盘：与实盘隔离，只验证策略。分币种记账，总览时按汇率折算展示。
+accounts:
+  - id: sim_a
+    ccy: CNY
+    principal: 100000
+    note: A股虚拟盘，10-08 复市后接入
+  - id: sim_hk
+    ccy: HKD
+    principal: 100000
+    note: 港股虚拟盘，先行
+  - id: sim_crypto
+    ccy: USDT
+    principal: 20000
+    note: 加密虚拟盘，先行
+
+universe:
+  sim_a: ["002446", "688305", "300827", "600150", "002639", "002472", "002812"]
+  sim_hk: ["HK9660", "HK0354"]
+  sim_crypto: ["BTCUSDT"]
+
+# 仅展示标的：行情进 market_data（终端 tape/K线可见），不进 universe，
+# pipeline 不为其生成信号、不产生持仓/成交。2026-10-12 用户要求加入验证终端。
+display_only: ["300827", "002639", "600150"]  # 上能电气、雪人集团、中国船舶
+
+# 每手/最小交易单位（声明值；港股按交易所每手股数）
+lots:
+  "002446": 100
+  "688305": 100
+  "300827": 100
+  "600150": 100
+  "002639": 100
+  "002472": 100
+  "002812": 100
+  HK9660: 100
+  HK0354: 2000
+  BTCUSDT: 0.00001
+
+# A股板块（涨跌停幅度用）
+boards:
+  "002446": main    # 主板 10%
+  "688305": star    # 科创 20%
+
+sizing:
+  buy_frac: 0.5    # 每次 BUY 用账户现金的 50%（DRAFT 声明值）
+
+signals:
+  # 策略选择（分账户）：ma20（DRAFT）或 buyback（2026-10-13 验证通过）
+  # buyback：回落10%买入，+15%止盈/-5%止损（268笔回测，期望值+22）
+  # 2026-10-16 用户选A：sim_a=buyback，sim_hk/sim_crypto=ma20（10-12原批准）
+  # 全局 strategy 保留作默认，新代码优先读 per_account
+  strategy: buyback
+  per_account:
+    sim_a: buyback
+    sim_hk: ma20
+    sim_crypto: ma20
+  # MVP 简化信号（DRAFT）：收盘站上20日均线 → BUY；跌破20日线 → SELL（DRAFT）：收盘站上20日均线 → BUY；跌破20日线 → SELL
+  # 母板完整信号（板块共振/分批计划触发）二期接入
+  ma_windows: [5, 10, 20]
+  entry: "close > ma20"
+  exit: "close < ma20"
+
+risk:  # 对应 V1.0 R-02/R-03 草案，待批准后定稿
+  single_trade_risk_pct: 2
+  max_stock_position_pct: 70
+  max_crypto_position_pct: 100
+
+fees:  # 声明值，MVP 假设
+  a_buy: 0.00025     # 万2.5，保底5元（引擎处理）
+  a_sell: 0.00125    # 佣金万2.5 + 印花税千分之一
+  hk_buy: 0.001
+  hk_sell: 0.002
+  crypto: 0.001
+  slippage: 0.002    # 滑点假设
+
+rules:
+  a_t1: true         # A股 T+1
+  hk_t0: true        # 港股 T+0
+  crypto_t0: true
+  limit_pct:         # 涨跌停（A股）
+    main: 0.10       # 主板 10%
+    star: 0.20       # 科创/创业 20%
+
+# 汇率（总览折算展示用，声明口径）
+fx:
+  hkdcny_src: "新浪 hq.sinajs.cn/list=HKDCNY，每日拉取"
+  usdcny_rule: "HKDCNY × 7.8（联系汇率估算，声明值，非实时 USDCNH）"
+
+# 数据来源声明（军规第 1 条）
+data_sources:
+  a_hk: "腾讯 web.ifzq.gtimg.cn/fqkline（A股qfq/港股bfq，与母板同源）"
+  crypto: "Kraken 公开 OHLC（BTC/USD）；币安 API 在本机出口被地域限制，价差声明"
+  fx: "新浪 HKDCNY"

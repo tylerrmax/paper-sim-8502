@@ -89,80 +89,219 @@ def set_control(status=None, mode=None):
 # ============ 页面配置 ============
 st.set_page_config(page_title="独立交易终端", layout="wide", page_icon="📊")
 
-# 深色交易终端风格（对标专业终端）
+# 深色交易终端视觉规范（统一，禁止白色卡片混搭）
 st.markdown("""
 <style>
-.main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; }
+/* 全局：深色终端底 */
+.main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #e8ecf1; }
 .sub-title { font-size: 13px; color: #8a8f9c; margin-bottom: 16px; }
+/* 统一卡片：深色 */
 .kpi-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
-            padding: 14px 16px; margin-bottom: 10px; }
+            padding: 14px 16px; margin-bottom: 10px; color: #e8ecf1; }
 .kpi-label { font-size: 12px; color: #8a8f9c; margin-bottom: 4px; }
-.kpi-value { font-size: 22px; font-weight: 700; font-family: ui-monospace, monospace; }
+.kpi-value { font-size: 22px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, monospace; color: #e8ecf1; }
 .kpi-value.up { color: #2ebd85; } .kpi-value.down { color: #f6465d; }
 .kpi-value.big { font-size: 28px; }
+/* 数字统一：等宽字体 */
+.num { font-family: ui-monospace, SFMono-Regular, monospace; font-variant-numeric: tabular-nums; }
+.pos { color: #2ebd85; } .neg { color: #f6465d; } .flat { color: #8a8f9c; }
+/* 策略徽标 */
 .strategy-badge { display: inline-block; padding: 3px 12px; border-radius: 12px;
                   font-size: 12px; font-weight: 600; }
 .strategy-badge.buyback { background: rgba(46,189,133,.15); color: #2ebd85; }
 .strategy-badge.ma20 { background: rgba(240,185,11,.15); color: #f0b90b; }
+/* 分区标题 */
 .section-head { font-size: 18px; font-weight: 700; margin: 20px 0 12px 0;
-                padding-bottom: 8px; border-bottom: 2px solid #1e2532; }
+                padding-bottom: 8px; border-bottom: 2px solid #1e2532; color: #e8ecf1; }
+/* 横幅：四态 */
 .alert-banner { border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; font-size: 14px; }
-.alert-banner.warn { background: rgba(240,185,11,.12); border: 1px solid rgba(240,185,11,.3);
-                     color: #f0b90b; }
-.alert-banner.info { background: rgba(24,144,255,.1); border: 1px solid rgba(24,144,255,.3);
-                     color: #1890ff; }
-.alert-banner.success { background: rgba(46,189,133,.1); border: 1px solid rgba(46,189,133,.3);
-                        color: #2ebd85; }
-.status-card { background: #ffffff; border-radius: 10px; padding: 16px;
-               margin-bottom: 12px; color: #333; }
-.status-card .sc-label { font-size: 13px; color: #999; margin-bottom: 8px; }
-.status-card .sc-value { font-size: 26px; font-weight: 700; }
-.status-card .sc-value.paused { color: #999; }
-.status-card .sc-value.nodata { color: #ccc; }
+.alert-banner.warn { background: rgba(240,185,11,.12); border: 1px solid rgba(240,185,11,.3); color: #f0b90b; }
+.alert-banner.info { background: rgba(24,144,255,.1); border: 1px solid rgba(24,144,255,.3); color: #1890ff; }
+.alert-banner.success { background: rgba(46,189,133,.1); border: 1px solid rgba(46,189,133,.3); color: #2ebd85; }
+.alert-banner.danger { background: rgba(246,70,93,.1); border: 1px solid rgba(246,70,93,.35); color: #f6465d; }
+/* 状态卡片：深色统一（替代原白色 .status-card） */
+.status-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
+               padding: 16px; margin-bottom: 12px; color: #e8ecf1; }
+.status-card .sc-label { font-size: 13px; color: #8a8f9c; margin-bottom: 8px; }
+.status-card .sc-value { font-size: 26px; font-weight: 700; font-family: ui-monospace, monospace; color: #e8ecf1; }
+.status-card .sc-value.paused { color: #8a8f9c; }
+.status-card .sc-value.nodata { color: #5a6270; }
+/* 行情状态徽标：实时 / 最近收盘 / 已过期 / 未知 */
+.qs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+.qs-live { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
+.qs-close { background: rgba(24,144,255,.14); color: #1890ff; border: 1px solid rgba(24,144,255,.35); }
+.qs-stale { background: rgba(240,185,11,.14); color: #f0b90b; border: 1px solid rgba(240,185,11,.35); }
+.qs-unknown { background: rgba(138,143,156,.14); color: #8a8f9c; border: 1px solid rgba(138,143,156,.35); }
+/* 验证状态徽标：达标 / 未达标 / 样本不足 / 数据异常 */
+.vs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+.vs-pass { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
+.vs-fail { background: rgba(246,70,93,.14); color: #f6465d; border: 1px solid rgba(246,70,93,.4); }
+.vs-insufficient { background: rgba(240,185,11,.14); color: #f0b90b; border: 1px solid rgba(240,185,11,.35); }
+.vs-anomaly { background: rgba(177,59,179,.16); color: #c77ddb; border: 1px solid rgba(177,59,179,.4); }
+/* 按钮状态 */
+.btn-state { display: inline-block; padding: 4px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; }
+.btn-submitted { background: rgba(24,144,255,.15); color: #1890ff; }
+.btn-running { background: rgba(240,185,11,.15); color: #f0b90b; }
+.btn-done { background: rgba(46,189,133,.15); color: #2ebd85; }
+.btn-failed { background: rgba(246,70,93,.15); color: #f6465d; }
+/* 表格：深色 */
+table { color: #e8ecf1; }
+/* 响应式：手机端卡片全宽 */
+@media (max-width: 768px) {
+  .main-title { font-size: 22px; }
+  .kpi-value.big { font-size: 22px; }
+  .status-card .sc-value { font-size: 20px; }
+}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_html=True)
 
-# ============ 滚动行情条（实时，绕过快照） ============
+# ============ 行情状态四态判定 + 数字格式化助手 ============
+from datetime import datetime, timedelta
+
+def quote_state(symbol, live_time_str, db_date_str):
+    """行情四态：live(实时)/close(最近收盘)/stale(已过期)/unknown(未知)
+    live: 实时接口返回且时间戳在15分钟内（交易时段）
+    close: 非交易时段但有当日/上一交易日收盘数据
+    stale: 数据超过2个自然日
+    unknown: 无任何数据"""
+    now = datetime.now()
+    # 实时：有 live 时间戳且新鲜
+    if live_time_str:
+        try:
+            lt = datetime.strptime(live_time_str.strip(), "%Y-%m-%d %H:%M:%S")
+            if now - lt < timedelta(minutes=30):
+                return "live", live_time_str.strip()
+        except (ValueError, TypeError):
+            pass
+    # DB 快照日期判定
+    if db_date_str:
+        try:
+            dd = datetime.strptime(db_date_str, "%Y-%m-%d").date()
+            days_old = (now.date() - dd).days
+            if days_old <= 1:
+                return "close", db_date_str
+            else:
+                return "stale", db_date_str
+        except (ValueError, TypeError):
+            pass
+    return "unknown", ""
+
+QS_BADGE = {
+    "live": '<span class="qs qs-live">●实时</span>',
+    "close": '<span class="qs qs-close">最近收盘</span>',
+    "stale": '<span class="qs qs-stale">已过期</span>',
+    "unknown": '<span class="qs qs-unknown">未知</span>',
+}
+QS_CN = {"live": "实时", "close": "最近收盘", "stale": "已过期", "unknown": "未知"}
+
+def fmt_money(v, ccy=""):
+    """统一货币格式：千分位，2位小数"""
+    try:
+        s = f"{float(v):,.2f}"
+    except (ValueError, TypeError):
+        s = "--"
+    return f"{s} {ccy}".strip() if ccy else s
+
+def fmt_pct(v):
+    """统一涨跌幅格式：+x.xx% / -x.xx%，着色"""
+    try:
+        f = float(v)
+        cls = "pos" if f > 0 else ("neg" if f < 0 else "flat")
+        arrow = "▲" if f > 0 else ("▼" if f < 0 else "")
+        return f'<span class="num {cls}">{arrow}{abs(f):.2f}%</span>'
+    except (ValueError, TypeError):
+        return '<span class="num flat">--</span>'
+
+def fmt_num(v, dec=2):
+    """统一数字格式"""
+    try:
+        return f'<span class="num">{float(v):,.{dec}f}</span>'
+    except (ValueError, TypeError):
+        return '<span class="num flat">--</span>'
+
+def _ap_state(key, decision, d, acct, s, sd):
+    """审批按钮四态：已提交→执行中→已生效/失败，写入后校验"""
+    sk = f"apstate_{key}"
+    st.session_state[sk] = "已提交"
+    st.session_state[sk] = "执行中"
+    try:
+        con = sqlite3.connect(DB)
+        con.execute(
+            "INSERT INTO approvals(date,account,symbol,side,decision,updated)"
+            " VALUES(?,?,?,?,?,?)",
+            (d, acct, s, sd, decision,
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        con.commit()
+        chk = con.execute(
+            "SELECT COUNT(*) FROM approvals WHERE date=? AND account=? AND symbol=? AND side=? AND decision=?",
+            (d, acct, s, sd, decision)).fetchone()[0]
+        con.close()
+        st.session_state[sk] = "已生效" if chk > 0 else "失败"
+    except Exception:
+        st.session_state[sk] = "失败"
+
+def vs_badge(state):
+    """验证四态徽标：pass/fail/insufficient/anomaly"""
+    m = {"pass": '<span class="vs vs-pass">达标</span>',
+         "fail": '<span class="vs vs-fail">未达标</span>',
+         "insufficient": '<span class="vs vs-insufficient">样本不足</span>',
+         "anomaly": '<span class="vs vs-anomaly">数据异常</span>'}
+    return m.get(state, '<span class="vs vs-unknown">未知</span>')
+
+def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=None):
+    """判定验证状态：先看样本是否足够，再看是否达标"""
+    if value is None:
+        return "anomaly"
+    if sample_n is not None and sample_min is not None and sample_n < sample_min:
+        return "insufficient"
+    ok = (value >= target) if higher_is_better else (value <= target)
+    return "pass" if ok else "fail"
+
+# ============ 滚动行情条（四态：实时/最近收盘/已过期/未知） ============
 def render_ticker():
-    """滚动行情条：实时报价，打开即最新，不等快照"""
+    """滚动行情条：优先实时，四态徽标，展示实际更新时间，绝不把快照伪装成实时"""
     try:
         from engine.realtime import fetch_all
         syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data")]
         live = fetch_all(syms)
     except Exception:
         live = {}
-    # 兜底：实时取不到时用 DB 最新价
-    if not live:
-        rows = q("""SELECT m.symbol, m.close,
-                      (SELECT close FROM market_data WHERE symbol=m.symbol AND date < m.date
-                       ORDER BY date DESC LIMIT 1) as prev
-                    FROM market_data m
-                    INNER JOIN (SELECT symbol, MAX(date) as md FROM market_data GROUP BY symbol) t
-                    ON m.symbol = t.symbol AND m.date = t.md""")
-        items = []
-        for sym, close, prev in rows:
-            if close and prev:
-                chg = (close - prev) / prev * 100
-                color = "#2ebd85" if chg >= 0 else "#f6465d"
-                arrow = "▲" if chg >= 0 else "▼"
-                items.append(
-                    f'<span style="margin-right:24px; white-space:nowrap;">'
-                    f'<b>{sym}</b> <span style="font-family:ui-monospace">{close:.2f}</span> '
-                    f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span>'
-                    f'<span style="color:#555;font-size:11px"> 快照</span></span>')
-    else:
-        items = []
-        for sym, d in live.items():
-            chg = d["change_pct"]
-            color = "#2ebd85" if chg >= 0 else "#f6465d"
-            arrow = "▲" if chg >= 0 else "▼"
-            items.append(
-                f'<span style="margin-right:24px; white-space:nowrap;">'
-                f'<b>{sym}</b> <span style="font-family:ui-monospace">{d["price"]}</span> '
-                f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span>'
-                f'<span style="color:#2ebd85;font-size:11px"> ●实时</span></span>')
+        syms = []
+    # DB 最新日期（用于四态判定）
+    db_dates = {r[0]: r[1] for r in
+                q("SELECT symbol, MAX(date) FROM market_data GROUP BY symbol")}
+    items = []
+    all_syms = sorted(set(list(live.keys()) + list(db_dates.keys())))
+    for sym in all_syms:
+        d = live.get(sym, {})
+        price = d.get("price")
+        chg = d.get("change_pct", 0)
+        live_t = d.get("time", "")
+        db_d = db_dates.get(sym, "")
+        # 有实时价才算 live 候选，否则按 DB 日期判定
+        state, ts = quote_state(sym, live_t if price else "", db_d)
+        badge = QS_BADGE[state]
+        if price:
+            price_s = f"{price}"
+        else:
+            # 无实时价时用 DB 收盘价
+            row = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,))
+            price = row[0][0] if row and row[0][0] else 0
+            price_s = f"{price:.2f}"
+            if row:
+                prev = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1 OFFSET 1", (sym,))
+                if prev and prev[0][0]:
+                    chg = (price - prev[0][0]) / prev[0][0] * 100
+        color = "#2ebd85" if chg >= 0 else "#f6465d"
+        arrow = "▲" if chg >= 0 else "▼"
+        ts_show = ts if ts else "--"
+        items.append(
+            f'<span style="margin-right:24px; white-space:nowrap;">'
+            f'<b>{sym}</b> <span class="num">{price_s}</span> '
+            f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span> '
+            f'{badge}<span style="color:#5a6270;font-size:10px"> {ts_show}</span></span>')
     if not items:
         return
     ticker_html = "".join(items)
@@ -207,7 +346,7 @@ with top4:
                 unsafe_allow_html=True)
 
 # ============ 导航（对标人工交易终端工作流） ============
-tab = st.sidebar.radio("板块", ["🏠 工作台", "📈 行情与策略", "📝 人工条件单", "💰 成交与本账", "🛡 风控与审计", "⚙ 运维"])
+tab = st.sidebar.radio("板块", ["🏠 工作台", "📈 行情与信号", "📝 交易执行", "💰 持仓与账本", "🛡 验证与风控", "⚙ 系统与审计"])
 st.sidebar.markdown("---")
 
 # 侧边栏：控制
@@ -250,31 +389,37 @@ acct = st.sidebar.selectbox("账户", accts, format_func=lambda x: f"{x}（{ACCT
 if tab == "🏠 工作台":
     st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
 
-    # 系统状态横幅（暂停时警告）
+    # ---- 1. 风险警报区（最优先）：阻断原因置顶 ----
+    alerts = []
     if status != "running":
-        st.markdown('<div class="alert-banner warn">'
-                    '⏸ 系统暂停：新建系统默认暂停。已挂在券商的条件单需在券商端自行检查/撤销。'
-                    '</div>', unsafe_allow_html=True)
+        alerts.append(("warn", "⏸ 系统已暂停：新信号不会成交。已挂在券商的条件单请在券商端自行检查/撤销。"))
+    # 破止损持仓检查（buyback）
+    try:
+        _bs = q("""SELECT p.symbol, p.qty, p.avg_cost, m.close FROM positions p
+                   JOIN (SELECT symbol, MAX(date) md FROM market_data GROUP BY symbol) t
+                   ON p.symbol=t.symbol
+                   JOIN market_data m ON m.symbol=t.symbol AND m.date=t.md
+                   WHERE p.account=? AND p.qty>0""", (acct,))
+        for _s, _q, _avg, _last in _bs:
+            if _avg and _last and _last < _avg * 0.95 and strategy_of(acct) == "buyback":
+                alerts.append(("danger", f"🔴 破止损仍持仓：{_s} 现价{_last:.2f} < 成本{_avg:.2f}×0.95"))
+    except Exception:
+        pass
+    for _lvl, _msg in alerts:
+        st.markdown(f'<div class="alert-banner {_lvl}">{_msg}</div>', unsafe_allow_html=True)
 
-    # 行情新鲜度检查
-    latest_a = q("SELECT MAX(date) FROM market_data WHERE symbol IN ('002446','688305')")
+    # ---- 2. 系统状态 + 行情新鲜度（四态） ----
+    latest_a = q("SELECT MAX(date) FROM market_data WHERE symbol NOT LIKE 'HK%' AND symbol NOT LIKE '%USDT'")
     latest_hk = q("SELECT MAX(date) FROM market_data WHERE symbol LIKE 'HK%'")
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    stale = []
-    if latest_a and latest_a[0][0]:
-        # 简单判断：最新日期是否早于今天（考虑周末）
-        if latest_a[0][0] < today_str:
-            stale.append(f"A股({latest_a[0][0]})")
-    if latest_hk and latest_hk[0][0]:
-        if latest_hk[0][0] < today_str:
-            stale.append(f"港股({latest_hk[0][0]})")
-    if stale:
-        st.markdown(f'<div class="alert-banner warn">'
-                    f'⚠ 行情新鲜度检查未通过：{", ".join(stale)}。数据不是最新，信号可能滞后。'
-                    f'</div>', unsafe_allow_html=True)
-
-    # 状态卡片行（白卡片，对标截图）
-    sc1, sc2, sc3 = st.columns(3)
+    latest_c = q("SELECT MAX(date) FROM market_data WHERE symbol LIKE '%USDT'")
+    def _fresh_card(label, rows):
+        d = rows[0][0] if rows and rows[0][0] else ""
+        st_, ts = quote_state("", "", d)
+        badge = QS_BADGE[st_]
+        val = ts if ts else "无数据"
+        return (f'<div class="status-card"><div class="sc-label">{label} {badge}</div>'
+                f'<div class="sc-value nodata" style="font-size:18px">{val}</div></div>')
+    sc1, sc2, sc3, sc4 = st.columns(4)
     with sc1:
         sc_val = "已暂停" if status != "running" else "运行中"
         sc_cls = "paused" if status != "running" else ""
@@ -282,18 +427,38 @@ if tab == "🏠 工作台":
                     f'<div class="sc-value {sc_cls}">{sc_val}</div></div>',
                     unsafe_allow_html=True)
     with sc2:
-        a_info = latest_a[0][0] if latest_a and latest_a[0][0] else "未知·无数据"
-        st.markdown(f'<div class="status-card"><div class="sc-label">A股行情</div>'
-                    f'<div class="sc-value nodata" style="font-size:20px">{a_info}</div></div>',
-                    unsafe_allow_html=True)
+        st.markdown(_fresh_card("A股行情", latest_a), unsafe_allow_html=True)
     with sc3:
-        hk_info = latest_hk[0][0] if latest_hk and latest_hk[0][0] else "未知·无数据"
-        st.markdown(f'<div class="status-card"><div class="sc-label">港股行情</div>'
-                    f'<div class="sc-value nodata" style="font-size:20px">{hk_info}</div></div>',
-                    unsafe_allow_html=True)
+        st.markdown(_fresh_card("港股行情", latest_hk), unsafe_allow_html=True)
+    with sc4:
+        st.markdown(_fresh_card("加密行情", latest_c), unsafe_allow_html=True)
 
-    # 今日信号
-    st.subheader("今日信号")
+    # ---- 3. 三账户概览（并排） ----
+    st.subheader("三账户概览")
+    cols = st.columns(3)
+    for i, aid in enumerate(["sim_a", "sim_hk", "sim_crypto"]):
+        r = q("SELECT date,nav,pnl_day,ret_total FROM daily_report"
+              " WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
+        ccy = {"sim_a": "CNY", "sim_hk": "HKD", "sim_crypto": "USDT"}.get(aid, "")
+        sname = strategy_of(aid)
+        with cols[i]:
+            if r:
+                d, nav, pnl_day, ret = r[0]
+                pnl_cls = "up" if (pnl_day or 0) >= 0 else "down"
+                st.markdown(
+                    f'<div class="kpi-card"><div class="kpi-label">{aid}（{ACCT_CN.get(aid, aid)}·{ccy}）</div>'
+                    f'<div class="kpi-value">{fmt_money(nav)}</div>'
+                    f'<div class="kpi-value {pnl_cls}" style="font-size:14px">当日 {pnl_day:+,.2f} · 累计 {ret*100:+.2f}%</div>'
+                    f'<div style="margin-top:6px"><span class="strategy-badge {sname}">'
+                    f'{STRATEGY_CN.get(sname, sname)}</span></div>'
+                    f'<div class="kpi-label" style="margin-top:4px">截至 {d}</div></div>',
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="kpi-card"><div class="kpi-label">{aid}</div>'
+                            f'<div class="kpi-value nodata">无数据</div></div>', unsafe_allow_html=True)
+
+    # ---- 4. 待处理信号（今日信号 + 待审批） ----
+    st.subheader("待处理信号")
     today = datetime.now().strftime("%Y-%m-%d")
     sig_today = q("""SELECT symbol, side, price FROM signals
                      WHERE account=? AND date=? ORDER BY symbol""", (acct, today))
@@ -303,8 +468,36 @@ if tab == "🏠 工作台":
             st.write(f"{color} **{s}** {side} @ {px}")
     else:
         st.write("今日暂无信号")
+    # 待审批（仅手动模式）
+    if mode == "manual" and not IS_CLOUD:
+        from datetime import date as _date
+        pending = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
+                       LEFT JOIN approvals a ON a.date=s.date AND a.account=s.account
+                         AND a.symbol=s.symbol AND a.side=s.side
+                       WHERE s.account=? AND a.decision IS NULL
+                       ORDER BY s.date DESC LIMIT 5""", (acct,))
+        if pending:
+            st.write("⏳ 待审批：")
+            for d, s, sd, px in pending:
+                c1, c2, c3 = st.columns([3, 1, 1])
+                with c1:
+                    st.write(f"{d} **{s}** {sd} @ {px}")
+                with c2:
+                    if st.button("✅ 批准", key=f"ap_{d}_{s}_{sd}"):
+                        _ap_state(f"{d}_{s}_{sd}", "approved", d, acct, s, sd)
+                with c3:
+                    if st.button("⏭ 跳过", key=f"sk_{d}_{s}_{sd}"):
+                        _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
+            # 审批按钮状态回显
+            for k, v in list(st.session_state.items()):
+                if k.startswith("apstate_") and v in ("已提交", "执行中", "已生效", "失败"):
+                    badge_cls = {"已提交": "btn-submitted", "执行中": "btn-running",
+                                 "已生效": "btn-done", "失败": "btn-failed"}[v]
+                    st.markdown(f'<span class="btn-state {badge_cls}">审批{v}</span>',
+                                unsafe_allow_html=True)
+                    break
 
-    # 账户总览
+    # ---- 5. 当前账户总览 ----
     st.subheader("账户总览")
     row = q("SELECT date,nav,cash,position_value,pnl_day,ret_total FROM daily_report"
             " WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (acct,))
@@ -349,47 +542,6 @@ if tab == "🏠 工作台":
                 st.markdown(f'<div class="kpi-card"><div class="kpi-label">{aid}</div>'
                             f'<div class="kpi-value">—</div></div>', unsafe_allow_html=True)
 
-    # 待审批面板（手动模式）
-    if mode == "manual" and not IS_CLOUD:
-        st.subheader("⏳ 待审批信号")
-        pend = q("""SELECT s.date, s.account, s.symbol, s.side, s.price FROM signals s
-                    LEFT JOIN approvals a ON s.date=a.date AND s.account=a.account
-                      AND s.symbol=a.symbol AND s.side=a.side
-                    LEFT JOIN fills f ON s.date=f.date AND s.account=f.account
-                      AND s.symbol=f.symbol AND s.side=f.side
-                    WHERE a.date IS NULL AND f.id IS NULL
-                      AND s.date >= date('now','-7 days')
-                    ORDER BY s.date DESC LIMIT 20""")
-        if pend:
-            for d, a, s, sd, px in pend:
-                c1, c2, c3 = st.columns([3, 1, 1])
-                with c1:
-                    st.write(f"**{s}** {a} {sd} @ {px}（{d}）")
-                with c2:
-                    if st.button("✅ 批准", key=f"ap_{d}_{a}_{s}_{sd}"):
-                        con = sqlite3.connect(DB)
-                        con.execute(
-                            "INSERT INTO approvals(date,account,symbol,side,decision,updated)"
-                            " VALUES(?,?,?,?,?,?)",
-                            (d, a, s, sd, "approved",
-                             datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                        con.commit()
-                        con.close()
-                        st.rerun()
-                with c3:
-                    if st.button("⏭ 跳过", key=f"sk_{d}_{a}_{s}_{sd}"):
-                        con = sqlite3.connect(DB)
-                        con.execute(
-                            "INSERT INTO approvals(date,account,symbol,side,decision,updated)"
-                            " VALUES(?,?,?,?,?,?)",
-                            (d, a, s, sd, "skipped",
-                             datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                        con.commit()
-                        con.close()
-                        st.rerun()
-        else:
-            st.write("暂无待审批信号")
-
     # 事件流（最近动态）
     st.subheader("📡 事件流")
     events = []
@@ -410,10 +562,10 @@ if tab == "🏠 工作台":
         st.write("暂无事件")
 
 # ================================================================
-# 📈 行情与策略：实时行情 + 策略规则 + 触发线
+# 📈 行情与信号：实时行情 + 策略规则 + 触发线
 # ================================================================
-elif tab == "📈 行情与策略":
-    st.markdown('<div class="section-head">📈 行情与策略</div>', unsafe_allow_html=True)
+elif tab == "📈 行情与信号":
+    st.markdown('<div class="section-head">📈 行情与信号</div>', unsafe_allow_html=True)
 
     # 策略规则展示
     st.subheader("策略规则")
@@ -425,76 +577,49 @@ elif tab == "📈 行情与策略":
                     unsafe_allow_html=True)
     st.caption(f"规则版本：{ver} · {CFG.get('meta', {}).get('note', '')}")
 
-    # 行情表（实时）
-    st.subheader("实时行情")
+    # 行情表（四态：实时/最近收盘/已过期/未知）
+    st.subheader("行情")
     try:
         from engine.realtime import fetch_all
         syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data ORDER BY symbol")]
         live = fetch_all(syms)
     except Exception:
         live = {}
-    if live:
-        st.table([{"代码": s, "现价": d["price"],
-                   "涨跌幅": f"{d['change_pct']:+.2f}%",
-                   "更新": d["time"][:16]}
-                  for s, d in sorted(live.items())])
-        st.caption("● 实时：腾讯/新浪盘中报价 + Binance，打开即最新")
-    else:
-        # 兜底快照
-        quotes = q("""SELECT m.symbol, m.date, m.close FROM market_data m
-                      INNER JOIN (SELECT symbol, MAX(date) as md FROM market_data GROUP BY symbol) t
-                      ON m.symbol = t.symbol AND m.date = t.md
-                      ORDER BY m.symbol""")
-        if quotes:
-            st.table([{"代码": s, "日期": d, "收盘": f"{c:.2f}" if c else "—"}
-                      for s, d, c in quotes])
-            st.caption("快照（实时接口暂不可达）")
+    db_dates = {r[0]: r[1] for r in
+                q("SELECT symbol, MAX(date) FROM market_data GROUP BY symbol")}
+    rows = []
+    for s in sorted(set(list(live.keys()) + list(db_dates.keys()))):
+        d = live.get(s, {})
+        price = d.get("price")
+        live_t = d.get("time", "") if price else ""
+        state, ts = quote_state(s, live_t, db_dates.get(s, ""))
+        if price:
+            price_s, chg = f"{price}", d.get("change_pct", 0)
         else:
-            st.write("暂无行情数据")
-
-    # 回执录入
-    st.subheader("🧾 券商回执录入")
-    if IS_CLOUD:
-        st.info("☁️ 云端版为只读展示，回执录入请使用本地版本。")
+            r0 = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1", (s,))
+            price = r0[0][0] if r0 and r0[0][0] else 0
+            price_s = f"{price:.2f}"
+            r1 = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1 OFFSET 1", (s,))
+            chg = (price - r1[0][0]) / r1[0][0] * 100 if r1 and r1[0][0] else 0
+        rows.append({
+            "代码": s,
+            "现价": price_s,
+            "涨跌幅": f"{chg:+.2f}%",
+            "状态": QS_CN[state],
+            "更新时间": ts if ts else "--",
+        })
+    if rows:
+        st.table(rows)
+        st.caption("状态说明：实时=接口30分钟内报价 · 最近收盘=非交易时段收盘价 · "
+                   "已过期=数据超2天 · 未知=无数据。快照永不标为实时。")
     else:
-        st.caption("在券商成交后，在此录入实际成交，回执独立对账")
-    if not IS_CLOUD:
-        with st.form("receipt_form"):
-            r_sym = st.text_input("代码（如 002446）")
-            r_side = st.selectbox("方向", ["买入", "卖出"])
-            r_price = st.number_input("成交价", min_value=0.0, format="%.4f")
-            r_qty = st.number_input("数量（股）", min_value=0, step=100)
-            r_date = st.date_input("成交日期", value=datetime.now().date())
-            if st.form_submit_button("录入回执"):
-                if r_sym and r_price > 0 and r_qty > 0:
-                    con = sqlite3.connect(DB)
-                    con.execute("""INSERT OR REPLACE INTO broker_receipts
-                                   (date, account, symbol, side, price, qty, created_at)
-                                   VALUES(?,?,?,?,?,?,?)""",
-                                (r_date.strftime("%Y-%m-%d"), acct, r_sym,
-                                 "BUY" if r_side == "买入" else "SELL",
-                                 r_price, r_qty,
-                                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                    con.commit()
-                    con.close()
-                    st.success(f"已录入：{r_sym} {r_side} {r_qty}股 @ {r_price}")
-                else:
-                    st.error("请填写完整的代码、价格和数量")
-
-    # 持仓
-    st.subheader("持仓")
-    pos = q("SELECT symbol,qty,avg_cost,last_price,market_value FROM positions WHERE account=? AND qty>0", (acct,))
-    if pos:
-        st.table([{"标的": s, "数量": qty, "均价": f"{avg:.2f}", "现价": f"{last:.2f}", "市值": f"{mv:,.2f}"}
-                  for s, qty, avg, last, mv in pos])
-    else:
-        st.write("空仓")
+        st.write("暂无行情数据")
 
 # ================================================================
-# 📝 人工条件单：待建条件单提醒 + 券商回执录入
+# 📝 交易执行：待建条件单提醒 + 券商回执录入
 # ================================================================
-elif tab == "📝 人工条件单":
-    st.markdown('<div class="section-head">📝 人工条件单</div>', unsafe_allow_html=True)
+elif tab == "📝 交易执行":
+    st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)
     st.markdown('<div class="alert-banner info">'
                 'Web不连接券商、不发送订单。看完下面的信号后，前往券商 App 手动建立条件单，'
                 '成交后再回到这里录入回执。<br>'
@@ -517,31 +642,63 @@ elif tab == "📝 人工条件单":
     else:
         st.write("近7天无待执行信号")
 
-    # 券商回执录入
+    # 券商回执录入（四态按钮反馈：已提交→执行中→已生效/失败）
     st.subheader("🧾 券商回执录入")
     st.caption("在券商成交后，在此录入实际成交，回执独立对账")
-    if not IS_CLOUD:
-        with st.form("receipt_form2"):
-            r_sym = st.text_input("代码（如 002446）", key="r2_sym")
-            r_side = st.selectbox("方向", ["买入", "卖出"], key="r2_side")
-            r_price = st.number_input("成交价", min_value=0.0, format="%.4f", key="r2_price")
-            r_qty = st.number_input("数量（股）", min_value=0, step=100, key="r2_qty")
-            r_date = st.date_input("成交日期", value=datetime.now().date(), key="r2_date")
-            if st.form_submit_button("录入回执"):
-                if r_sym and r_price > 0 and r_qty > 0:
-                    con = sqlite3.connect(DB)
-                    con.execute("""INSERT OR REPLACE INTO broker_receipts
-                                   (date, account, symbol, side, price, qty, created_at)
-                                   VALUES(?,?,?,?,?,?,?)""",
-                                (r_date.strftime("%Y-%m-%d"), acct, r_sym,
-                                 "BUY" if r_side == "买入" else "SELL",
-                                 r_price, r_qty,
-                                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                    con.commit()
-                    con.close()
-                    st.success(f"已录入：{r_sym} {r_side} {r_qty}股 @ {r_price}")
+    if IS_CLOUD:
+        st.info("☁️ 云端版为只读展示，回执录入请使用本地版本。")
+    else:
+        # 按钮状态机：session_state 持久化上次操作结果
+        if "receipt_state" not in st.session_state:
+            st.session_state.receipt_state = None  # None/已提交/执行中/已生效/失败
+        rs = st.session_state.receipt_state
+        if rs:
+            badge_cls = {"已提交": "btn-submitted", "执行中": "btn-running",
+                         "已生效": "btn-done", "失败": "btn-failed"}.get(rs, "btn-submitted")
+            st.markdown(f'<span class="btn-state {badge_cls}">上次操作：{rs}</span>',
+                        unsafe_allow_html=True)
+        with st.form("receipt_form_exec"):
+            r_sym = st.text_input("代码（如 002446）", key="rx_sym")
+            r_side = st.selectbox("方向", ["买入", "卖出"], key="rx_side")
+            r_price = st.number_input("成交价", min_value=0.0, format="%.4f", key="rx_price")
+            r_qty = st.number_input("数量（股）", min_value=0, step=100, key="rx_qty")
+            r_date = st.date_input("成交日期", value=datetime.now().date(), key="rx_date")
+            submitted = st.form_submit_button("录入回执")
+            if submitted:
+                st.session_state.receipt_state = "已提交"
+                if not (r_sym and r_price > 0 and r_qty > 0):
+                    st.session_state.receipt_state = "失败"
+                    st.markdown('<span class="btn-state btn-failed">失败：请填写完整的代码、价格和数量</span>',
+                                unsafe_allow_html=True)
                 else:
-                    st.error("请填写完整的代码、价格和数量")
+                    st.session_state.receipt_state = "执行中"
+                    try:
+                        con = sqlite3.connect(DB)
+                        con.execute("""INSERT OR REPLACE INTO broker_receipts
+                                       (date, account, symbol, side, price, qty, created_at)
+                                       VALUES(?,?,?,?,?,?,?)""",
+                                    (r_date.strftime("%Y-%m-%d"), acct, r_sym,
+                                     "BUY" if r_side == "买入" else "SELL",
+                                     r_price, r_qty,
+                                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                        con.commit()
+                        # 校验写入确实生效
+                        chk = con.execute(
+                            "SELECT COUNT(*) FROM broker_receipts WHERE date=? AND account=? AND symbol=? AND price=? AND qty=?",
+                            (r_date.strftime("%Y-%m-%d"), acct, r_sym, r_price, r_qty)).fetchone()[0]
+                        con.close()
+                        if chk > 0:
+                            st.session_state.receipt_state = "已生效"
+                            st.markdown(f'<span class="btn-state btn-done">已生效：{r_sym} {r_side} {r_qty}股 @ {r_price}</span>',
+                                        unsafe_allow_html=True)
+                        else:
+                            st.session_state.receipt_state = "失败"
+                            st.markdown('<span class="btn-state btn-failed">失败：写入后校验未找到记录</span>',
+                                        unsafe_allow_html=True)
+                    except Exception as e:
+                        st.session_state.receipt_state = "失败"
+                        st.markdown(f'<span class="btn-state btn-failed">失败：{str(e)[:200]}</span>',
+                                    unsafe_allow_html=True)
 
     # 已录入回执
     st.subheader("已录入回执")
@@ -555,10 +712,10 @@ elif tab == "📝 人工条件单":
         st.write("暂无回执记录")
 
 # ================================================================
-# 💰 成交与本账：持仓 + 成交 + 净值
+# 💰 持仓与账本：持仓 + 成交 + 净值
 # ================================================================
-elif tab == "💰 成交与本账":
-    st.markdown('<div class="section-head">💰 成交与本账</div>', unsafe_allow_html=True)
+elif tab == "💰 持仓与账本":
+    st.markdown('<div class="section-head">💰 持仓与账本</div>', unsafe_allow_html=True)
 
     # 持仓
     st.subheader("当前持仓")
@@ -632,12 +789,15 @@ elif tab == "💰 成交与本账":
         st.write("暂无成交")
 
 # ================================================================
-# 🛡 风控与审计：KPI 验证 + 风控指标 + 审计
+# 🛡 验证与风控：KPI 验证 + 风控指标 + 审计
 # ================================================================
-elif tab == "🛡 风控与审计":
-    st.markdown('<div class="section-head">🛡 风控与审计</div>', unsafe_allow_html=True)
+# ================================================================
+# 🛡 验证与风控：验证 KPI + 风控指标 + 审计
+# ================================================================
+elif tab == "🛡 验证与风控":
+    st.markdown('<div class="section-head">🛡 验证与风控</div>', unsafe_allow_html=True)
 
-    # ---- 验证 KPI 卡片 ----
+    # ---- 验证 KPI 卡片（四态徽标，阻断原因优先） ----
     st.subheader("验证 KPI")
     st.caption("毕业标准：期望值>0 · 盈亏比≥3 · 最大回撤≤10% · 样本20-30笔 · 执行分≥90 · 零数据事故 · 股票与加密分开算")
 
@@ -651,42 +811,71 @@ elif tab == "🛡 风控与审计":
         d = g["accounts"].get(acct, {})
         tg = g["targets"]
 
+        rt = d.get("round_trips") or 0
+        # 阻断原因优先展示
+        blockers = []
+        if rt < tg["sample_min"]:
+            blockers.append(f"样本不足：当前 {rt} 笔，需要 {tg['sample_min']}-{tg['sample_max']} 笔")
+        if blockers:
+            for b in blockers:
+                st.markdown(f'<div class="alert-banner warn">⛔ 阻断：{b}</div>',
+                            unsafe_allow_html=True)
+
         k1, k2, k3 = st.columns(3)
         with k1:
-            rt = d.get("round_trips") or 0
-            ok = tg["sample_min"] <= rt <= tg["sample_max"]
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">样本（round-trip）{"✅" if ok else ""}</div>'
-                        f'<div class="kpi-value">{"🟢" if ok else ""} {rt} 笔</div>'
+            stt = _vs_state(rt, tg["sample_min"], True) if rt >= tg["sample_min"] else "insufficient"
+            if rt > tg["sample_max"]:
+                stt = "fail"
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">样本（round-trip） {vs_badge(stt)}</div>'
+                        f'<div class="kpi-value">{rt} 笔</div>'
                         f'<div class="kpi-label">目标 {tg["sample_min"]}-{tg["sample_max"]} 笔</div></div>',
                         unsafe_allow_html=True)
         with k2:
             wlr = d.get("win_loss_ratio")
-            ok = wlr is not None and wlr >= tg["win_loss_ratio"]
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">盈亏比（平均盈利/平均亏损）{"✅" if ok else ""}</div>'
-                        f'<div class="kpi-value {"up" if ok else ""}">{wlr if wlr is not None else "—"}</div>'
-                        f'<div class="kpi-label">硬线 ≥ {tg["win_loss_ratio"]}</div></div>',
+            stt = _vs_state(wlr, tg["win_loss_ratio"], True, rt, tg["sample_min"])
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">盈亏比（平均盈利/平均亏损） {vs_badge(stt)}</div>'
+                        f'<div class="kpi-value">{wlr:.2f}' if wlr is not None else
+                        f'<div class="kpi-card"><div class="kpi-label">盈亏比 {vs_badge(stt)}</div>'
+                        f'<div class="kpi-value">—',
                         unsafe_allow_html=True)
+            if wlr is not None:
+                st.markdown(f'</div><div class="kpi-label">硬线 ≥ {tg["win_loss_ratio"]}</div></div>',
+                            unsafe_allow_html=True)
         with k3:
             pf = d.get("profit_factor")
             st.markdown(f'<div class="kpi-card"><div class="kpi-label">盈利因子 PF（参考）</div>'
-                        f'<div class="kpi-value">{pf if pf is not None else "—"}</div></div>',
+                        f'<div class="kpi-value">{pf:.2f}' if pf is not None else
+                        f'<div class="kpi-card"><div class="kpi-label">盈利因子 PF（参考）</div>'
+                        f'<div class="kpi-value">—',
                         unsafe_allow_html=True)
+            st.markdown('</div></div>', unsafe_allow_html=True)
 
         k4, k5, k6 = st.columns(3)
         with k4:
             mdd = d.get("max_drawdown")
-            ok = mdd is not None and mdd <= tg["max_drawdown"]
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">最大回撤{"✅" if ok else ""}</div>'
-                        f'<div class="kpi-value {"up" if ok else "down"}">{mdd*100:.2f}%</div>'
-                        f'<div class="kpi-label">硬线 ≤ {tg["max_drawdown"]*100:.0f}%</div></div>',
+            stt = _vs_state(mdd, tg["max_drawdown"], False, rt, tg["sample_min"])
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">最大回撤 {vs_badge(stt)}</div>'
+                        f'<div class="kpi-value">{mdd*100:.2f}%' if mdd is not None else
+                        f'<div class="kpi-card"><div class="kpi-label">最大回撤 {vs_badge(stt)}</div>'
+                        f'<div class="kpi-value">—',
                         unsafe_allow_html=True)
+            if mdd is not None:
+                st.markdown(f'</div><div class="kpi-label">硬线 ≤ {tg["max_drawdown"]*100:.0f}%</div></div>',
+                            unsafe_allow_html=True)
         with k5:
             exp = d.get("expectancy")
-            ok = exp is not None and exp > 0
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">期望值{"✅" if ok else ""}</div>'
-                        f'<div class="kpi-value {"up" if ok else "down"}">{exp if exp is not None else "—"}</div>'
-                        f'<div class="kpi-label">硬线 > 0</div></div>',
+            stt = _vs_state(exp, 0, True, rt, tg["sample_min"])
+            # 期望值硬线是 >0，用 >=0 近似，=0 算未达标
+            if exp is not None and exp <= 0:
+                stt = "fail" if not (rt < tg["sample_min"]) else "insufficient"
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">期望值 {vs_badge(stt)}</div>'
+                        f'<div class="kpi-value">{exp:.2f}' if exp is not None else
+                        f'<div class="kpi-card"><div class="kpi-label">期望值 {vs_badge(stt)}</div>'
+                        f'<div class="kpi-value">—',
                         unsafe_allow_html=True)
+            if exp is not None:
+                st.markdown('</div><div class="kpi-label">硬线 > 0</div></div>',
+                            unsafe_allow_html=True)
         with k6:
             vr = d.get("val_return")
             st.markdown(f'<div class="kpi-card"><div class="kpi-label">验证期收益</div>'
@@ -811,10 +1000,10 @@ elif tab == "🛡 风控与审计":
         st.error(f"仪表盘读取失败：{e}")
 
 # ================================================================
-# ⚙ 运维：数据源 / 规则版本 / 指令日志
+# ⚙ 系统与审计：数据源 / 规则版本 / 指令日志
 # ================================================================
-elif tab == "⚙ 运维":
-    st.markdown('<div class="section-head">⚙ 运维</div>', unsafe_allow_html=True)
+elif tab == "⚙ 系统与审计":
+    st.markdown('<div class="section-head">⚙ 系统与审计</div>', unsafe_allow_html=True)
 
     st.subheader("数据源")
     ds = CFG.get("data_sources", {})

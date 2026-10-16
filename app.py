@@ -592,14 +592,14 @@ if tab == "🏠 工作台":
     events = []
     for d, a, s, sd, qty, px in q(
             "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 5"):
-        events.append((d, f"💰 {a} {s} {sd} {qty}股 @ {px}"))
+        events.append((d, f"💰 {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
     for d, a, s, sd in q(
             "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 5"):
-        events.append((d, f"📶 {a} {s} {sd} 信号"))
+        events.append((d, f"📶 {ACCT_CN.get(a,a)} {sym_name(s)} {sd}信号"))
     for d, a, s, sd, dc in q(
             "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 5"):
         icon = "✅" if dc == "approved" else "⏭"
-        events.append((d, f"{icon} {a} {s} {sd} {dc}"))
+        events.append((d, f"{icon} {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {dc}"))
     events.sort(reverse=True)
     for d, txt in events[:10]:
         st.write(f"`{d}` {txt}")
@@ -997,7 +997,7 @@ elif tab == "🛡 验证与风控":
         con.close()
         tg = g["targets"]
         # 表头
-        hdr = ["指标"] + [f"{aid}（{ACCT_CN.get(aid, aid)}）" for aid in ["sim_a", "sim_hk", "sim_crypto"]]
+        hdr = ["指标"] + [f"\1{ACCT_CN.get(aid, aid)}\2" for aid in ["sim_a", "sim_hk", "sim_crypto"]]
         rows = []
         # 样本数
         r = ["样本数"]
@@ -1062,7 +1062,7 @@ elif tab == "⚙ 系统与审计":
     for a in CFG["accounts"]:
         aid = a["id"]
         s = strategy_of(aid)
-        st.write(f"  - {aid}（{ACCT_CN.get(aid, aid)}）: **{STRATEGY_CN.get(s, s)}** — {strategy_desc(s)}")
+        st.write(f"\1{ACCT_CN.get(aid, aid)}\2")
 
     st.subheader("指令日志")
     logs = q("SELECT date, account, symbol, side, decision, updated FROM approvals ORDER BY updated DESC LIMIT 20")

@@ -69,5 +69,27 @@ check("sim.py sell 扣费", "pnl -= fee" in eng)
 pipe = open("engine/pipeline.py").read()
 check("pipeline 风控未移除", "single_trade_risk_pct" in pipe)
 
+# 10. 云端只读按钮禁用
+check("云端禁用控制按钮", 'disabled=True' in src and '云端只读' in src)
+check("云端数据时效声明", 'CLOUD_DATA_ASOF' in src)
+
+# 11. schema 完整性
+_schema = open("db/schema.sql").read()
+for _t in ["broker_receipts", "graduation_exclusions", "pause_skipped_signals"]:
+    check(f"schema 含表：{_t}", f"CREATE TABLE IF NOT EXISTS {_t}" in _schema)
+
+# 12. 推送清单完整性
+_sync = open("sync_8502_github.py").read()
+for _f in ["data/quotes.py", "db/schema.sql", "db/sim.db"]:
+    check(f"推送清单含：{_f}", _f in _sync)
+
+# 13. 初始化脚本
+import subprocess as _sp
+_r = _sp.run([".venv/bin/python3", "init_db.py", "--db", "/tmp/_t_init.db"],
+             capture_output=True, text=True)
+check("init_db 可运行", _r.returncode == 0)
+import os as _os
+_os.path.exists("/tmp/_t_init.db") and _os.remove("/tmp/_t_init.db")
+
 print(f"\n通过 {len(passed)}/{len(passed)+len(failed)}")
 sys.exit(1 if failed else 0)

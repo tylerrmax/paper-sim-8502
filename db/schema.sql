@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS fills (
     qty     REAL NOT NULL,
     price   REAL NOT NULL,         -- 实际成交价（含滑点）
     fee     REAL NOT NULL,
-    pnl     REAL DEFAULT 0         -- SELL 时的实现盈亏
+    pnl     REAL DEFAULT 0,        -- SELL 时的实现盈亏
+    signal_date TEXT,              -- 信号日期（T+1 撮合：date=执行日）
+    strategy_version TEXT          -- 策略版本（毕业样本按版本隔离）
 );
 
 CREATE TABLE IF NOT EXISTS positions (

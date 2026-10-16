@@ -10,8 +10,9 @@ from dataclasses import dataclass, field
 @dataclass
 class Lot:
     qty: float
-    cost: float
-    buy_date: str  # YYYY-MM-DD，T+1 检查用
+    cost: float       # 每股买入价（不含费）
+    buy_fee: float = 0.0  # 该批买入时付的总手续费（按比例分摊）
+    buy_date: str = ""    # YYYY-MM-DD，T+1 检查用
 
 
 @dataclass
@@ -28,7 +29,7 @@ class SimAccount:
         if self.cash < amount + fee - 1e-9:
             raise ValueError("现金不足: need %.2f have %.2f" % (amount + fee, self.cash))
         self.cash -= amount + fee
-        self.positions.setdefault(symbol, []).append(Lot(qty, price, day))
+        self.positions.setdefault(symbol, []).append(Lot(qty, price, fee, day))
         return fee
 
     def sell(self, symbol, qty, price, day, fee_rate):
@@ -42,11 +43,16 @@ class SimAccount:
             if left <= 1e-9:
                 break
             take = min(lot.qty, left)
-            pnl += take * (price - lot.cost)
+            # 净盈亏 = (卖出价 - 买入价) * 数量 - 按比例分摊的买入费
+            buy_fee_share = lot.buy_fee * (take / lot.qty) if lot.qty > 0 else 0
+            pnl += take * (price - lot.cost) - buy_fee_share
             lot.qty -= take
+            lot.buy_fee -= buy_fee_share
             left -= take
         amount = qty * price
         fee = amount * fee_rate
+        # 卖出费从 pnl 中扣除，pnl 为净盈亏
+        pnl -= fee
         self.cash += amount - fee
         self.positions[symbol] = [l for l in lots if l.qty > 1e-9]
         return fee, pnl

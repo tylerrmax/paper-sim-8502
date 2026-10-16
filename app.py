@@ -703,12 +703,73 @@ elif tab == "🌐 市场全景":
 elif tab == "📈 行情与信号":
     st.markdown('<div class="section-head">📈 行情与信号</div>', unsafe_allow_html=True)
 
+    # ---- TradingView 搜索+关注（券商式操作）----
+    st.subheader("🔍 标的搜索")
+    if "watchlist" not in st.session_state:
+        st.session_state.watchlist = []
+    col_s, col_b = st.columns([3, 1])
+    with col_s:
+        tv_sym = st.text_input("输入代码（如 002446 / HK9660 / BTCUSDT）", key="tv_search",
+                               placeholder="支持A股/港股/加密代码")
+    with col_b:
+        st.write("")
+        if st.button("⭐ 关注", key="tv_follow") and tv_sym:
+            sym = tv_sym.strip().upper()
+            if sym and sym not in st.session_state.watchlist:
+                st.session_state.watchlist.append(sym)
+                st.success(f"已关注 {sym}")
+    # TradingView 代码映射
+    def _tv_code(sym):
+        s = sym.strip().upper()
+        if s.endswith("USDT"):
+            return f"BINANCE:{s}"
+        if s.startswith("HK"):
+            return f"HKEX:{s[2:]}"
+        if s.startswith("6"):
+            return f"SSE:{s}"
+        return f"SZSE:{s}"
+    # 当前显示的标的
+    cur_sym = tv_sym.strip().upper() if tv_sym else (st.session_state.watchlist[0] if st.session_state.watchlist else "002446")
+    if cur_sym:
+        tv_code = _tv_code(cur_sym)
+        st.caption(f"正在查看: {sym_name(cur_sym)} ({tv_code})")
+        import streamlit.components.v1 as components
+        components.html(f"""
+        <div class="tradingview-widget-container" style="height:480px;width:100%">
+          <div id="tradingview_chart" style="height:480px;width:100%"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+          {{
+            "symbol": "{tv_code}",
+            "interval": "D",
+            "theme": "dark",
+            "style": "1",
+            "locale": "zh_CN",
+            "allow_symbol_change": true,
+            "calendar": false,
+            "support_host": "https://www.tradingview.com"
+          }}
+          </script>
+        </div>
+        """, height=500)
+    # 关注列表
+    if st.session_state.watchlist:
+        st.write("**我的关注：**")
+        wcols = st.columns(min(len(st.session_state.watchlist), 5))
+        for i, w in enumerate(st.session_state.watchlist):
+            with wcols[i % 5]:
+                if st.button(f"{sym_name(w)}", key=f"wl_{w}"):
+                    st.session_state.tv_search = w
+                    st.rerun()
+                if st.button(f"❌", key=f"wl_del_{w}"):
+                    st.session_state.watchlist.remove(w)
+                    st.rerun()
+
     # 策略规则展示
     st.subheader("策略规则")
     for a in CFG["accounts"]:
         aid = a["id"]
         s = strategy_of(aid)
-        st.markdown(f'**{aid}（{ACCT_CN.get(aid, aid)}）** '
+        st.markdown(f'**{ACCT_CN.get(aid, aid)}** '
                     f'<span class="strategy-badge {s}">{STRATEGY_CN.get(s, s)}</span> — {strategy_desc(s)}',
                     unsafe_allow_html=True)
     st.caption(f"规则版本：{ver} · {CFG.get('meta', {}).get('note', '')}")

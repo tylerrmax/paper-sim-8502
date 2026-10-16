@@ -738,7 +738,7 @@ elif tab == "📈 行情与信号":
             r1 = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1 OFFSET 1", (s,))
             chg = (price - r1[0][0]) / r1[0][0] * 100 if r1 and r1[0][0] else 0
         rows.append({
-            "代码": s,
+            "代码": sym_name(s),
             "现价": price_s,
             "涨跌幅": f"{chg:+.2f}%",
             "状态": QS_CN[state],
@@ -772,7 +772,7 @@ elif tab == "📝 交易执行":
                   AND s.date >= date('now','-7 days')
                 ORDER BY s.date DESC, s.symbol LIMIT 10""", (acct,))
     if sigs:
-        st.table([{"信号日": d, "代码": s, "方向": "买入" if sd == "BUY" else "卖出",
+        st.table([{"信号日": d, "代码": sym_name(s), "方向": "买入" if sd == "BUY" else "卖出",
                    "触发价": px}
                   for d, s, sd, px in sigs])
     else:
@@ -841,7 +841,7 @@ elif tab == "📝 交易执行":
     receipts = q("""SELECT date, symbol, side, price, qty FROM broker_receipts
                     WHERE account=? ORDER BY date DESC LIMIT 20""", (acct,))
     if receipts:
-        st.table([{"日期": d, "代码": s, "方向": "买入" if sd == "BUY" else "卖出",
+        st.table([{"日期": d, "代码": sym_name(s), "方向": "买入" if sd == "BUY" else "卖出",
                    "成交价": px, "数量": qty}
                   for d, s, sd, px, qty in receipts])
     else:
@@ -904,14 +904,14 @@ elif tab == "💰 持仓与账本":
                                       "color": "#f6465d"})
                 upl = (last - avg) * qty if last and avg else 0
                 upl_pct = (last - avg) / avg * 100 if last and avg else 0
-                st.write(f"**{s}** 成本 {avg:.2f} · 现价 {last:.2f} · "
+                st.write(f"**{sym_name(s)}** 成本 {avg:.2f} · 现价 {last:.2f} · "
                          f"浮盈亏 {upl:+,.0f} ({upl_pct:+.1f}%)")
                 st.components.v1.html(
                     kline_html(f"{acct}_{s}", bars, price_lines=pls,
                                markers=marks, height=420),
                     height=430)
             else:
-                st.write(f"**{s}**：数据不足（{len(bars)}根）")
+                st.write(f"**{sym_name(s)}**：数据不足（{len(bars)}根）")
     else:
         st.write("空仓")
 

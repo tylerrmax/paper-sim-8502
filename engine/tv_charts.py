@@ -4,8 +4,16 @@
 TradingView 级别图表：基于 Lightweight Charts（TradingView 开源库）
 生成可嵌入 Streamlit 的 HTML，含 K线 + MA20 + 成交量 + 关键位线 + 信号标记
 参考：用户截图的机构版布局 + TradingView 交互
+图表库 JS 已内嵌到本仓库（engine/lightweight-charts.standalone.js，
+v4.2.0，Apache-2.0），不再依赖 unpkg CDN，国内打开也能秒加载。
 """
 import json
+import os
+
+_LWC_PATH = os.path.join(os.path.dirname(__file__),
+                         "lightweight-charts.standalone.js")
+with open(_LWC_PATH, encoding="utf-8") as _f:
+    _LWC_JS = _f.read()  # 内嵌：免 CDN，国内直连可用
 
 
 def kline_html(symbol, bars, ma_period=20, price_lines=None, markers=None,
@@ -50,7 +58,7 @@ def kline_html(symbol, bars, ma_period=20, price_lines=None, markers=None,
     j_mk = json.dumps(markers)
 
     return f"""<div id="tv_{symbol}" style="height:{height}px;"></div>
-<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>{_LWC_JS}</script>
 <script>
 (function() {{
   var el = document.getElementById('tv_{symbol}');

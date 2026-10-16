@@ -362,7 +362,7 @@ with top4:
                 unsafe_allow_html=True)
 
 # ============ 导航（对标人工交易终端工作流） ============
-tab = st.sidebar.radio("板块", ["🏠 工作台", "🌐 市场全景", "📈 行情与信号", "📝 交易执行", "💰 持仓与账本", "🛡 验证与风控", "⚙ 系统与审计"])
+tab = st.sidebar.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"])
 st.sidebar.markdown("---")
 
 # 侧边栏：控制
@@ -648,8 +648,8 @@ if tab == "🏠 工作台":
 # ================================================================
 # 📈 行情与信号：实时行情 + 策略规则 + 触发线
 # ================================================================
-elif tab == "🌐 市场全景":
-    st.header("🌐 市场全景")
+elif tab == "🔍 选股":
+    st.header("🔍 选股")
     st.caption("市场面 + 技术形态 | 数据来自本地 market_data，每日收盘更新")
     from engine.indicators import rsi, macd, bollinger, ma_align, adx as calc_adx, market_regime
     from engine.signals import moving_average
@@ -713,160 +713,7 @@ elif tab == "🌐 市场全景":
                      f"| 下轨: {lower[-1]:.2f}" if lower[-1] else "")
             st.write(f"市场状态: **{regime}** | 20日均线: {'站上' if last_c and ma20 and last_c > ma20 else '跌破'}")
 
-elif tab == "📈 行情与信号":
-    st.markdown('<div class="section-head">📈 行情与信号</div>', unsafe_allow_html=True)
-
-    # ---- TradingView 搜索+关注（券商式操作）----
-    st.subheader("🔍 标的搜索")
-    if "watchlist" not in st.session_state:
-        st.session_state.watchlist = []
-    col_s, col_b = st.columns([3, 1])
-    with col_s:
-        tv_sym = st.text_input("输入代码（如 002446 / HK9660 / BTCUSDT）", key="tv_search",
-                               placeholder="支持A股/港股/加密代码")
-    with col_b:
-        st.write("")
-        if st.button("⭐ 关注", key="tv_follow") and tv_sym:
-            sym = tv_sym.strip().upper()
-            if sym and sym not in st.session_state.watchlist:
-                st.session_state.watchlist.append(sym)
-                st.success(f"已关注 {sym}")
-    # ---- 行情源切换（TradingView/新浪/东方财富）----
-    src = st.radio("行情源", ["TradingView", "新浪财经", "东方财富"], horizontal=True, key="quote_src")
-    # TradingView 代码映射
-    def _tv_code(sym):
-        s = sym.strip().upper()
-        if s.endswith("USDT"):
-            return f"BINANCE:{s}"
-        if s.startswith("HK"):
-            return f"HKEX:{s[2:]}"
-        if s.startswith("6"):
-            return f"SSE:{s}"
-        return f"SZSE:{s}"
-    # 当前显示的标的
-    cur_sym = tv_sym.strip().upper() if tv_sym else (st.session_state.watchlist[0] if st.session_state.watchlist else "002446")
-    if cur_sym:
-        import streamlit.components.v1 as components
-        sym_u = cur_sym.strip().upper()
-        if src == "TradingView":
-            tv_code = _tv_code(sym_u)
-            st.caption(f"正在查看: {sym_name(sym_u)} ({tv_code})")
-            components.html(f"""
-            <div class="tradingview-widget-container" style="height:480px;width:100%">
-              <div id="tradingview_chart" style="height:480px;width:100%"></div>
-              <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-              {{
-                "symbol": "{tv_code}",
-                "interval": "D",
-                "theme": "dark",
-                "style": "1",
-                "locale": "zh_CN",
-                "allow_symbol_change": true,
-                "calendar": false,
-                "support_host": "https://www.tradingview.com"
-              }}
-              </script>
-            </div>
-            """, height=500)
-        elif src == "新浪财经":
-            # 新浪分时/K线组件
-            if sym_u.startswith("HK"):
-                sina_code = f"hk{sym_u[2:]}"
-            elif sym_u.endswith("USDT"):
-                st.info("加密请用 TradingView 查看")
-                sina_code = None
-            elif sym_u.startswith("6"):
-                sina_code = f"sh{sym_u}"
-            else:
-                sina_code = f"sz{sym_u}"
-            if sina_code:
-                st.caption(f"正在查看: {sym_name(sym_u)}（新浪财经）")
-                components.html(f"""
-                <iframe src="https://quotes.sina.cn/hq/quotes/index.html?code={sina_code}"
-                        style="width:100%;height:500px;border:none;"></iframe>
-                """, height=520)
-        else:  # 东方财富
-            if sym_u.endswith("USDT"):
-                st.info("加密请用 TradingView 查看")
-            else:
-                # 东方财富行情页直链
-                if sym_u.startswith("HK"):
-                    em_code = f"{sym_u[2:]}.HK"
-                elif sym_u.startswith("6"):
-                    em_code = f"{sym_u}.SH"
-                else:
-                    em_code = f"{sym_u}.SZ"
-                st.caption(f"正在查看: {sym_name(sym_u)}（东方财富）")
-                st.markdown(f"[👉 在东方财富查看 {sym_name(sym_u)} 完整行情](https://quote.eastmoney.com/{em_code.lower().replace('.sh','1').replace('.sz','2').replace('.hk','3')}.html)")
-                components.html(f"""
-                <iframe src="https://quote.eastmoney.com/chart/h5/index.html?code={em_code}"
-                        style="width:100%;height:500px;border:none;"></iframe>
-                """, height=520)
-    # 关注列表
-    if st.session_state.watchlist:
-        st.write("**我的关注：**")
-        wcols = st.columns(min(len(st.session_state.watchlist), 5))
-        for i, w in enumerate(st.session_state.watchlist):
-            with wcols[i % 5]:
-                if st.button(f"{sym_name(w)}", key=f"wl_{w}"):
-                    st.session_state.tv_search = w
-                    st.rerun()
-                if st.button(f"❌", key=f"wl_del_{w}"):
-                    st.session_state.watchlist.remove(w)
-                    st.rerun()
-
-    # 策略规则展示
-    st.subheader("策略规则")
-    for a in CFG["accounts"]:
-        aid = a["id"]
-        s = strategy_of(aid)
-        st.markdown(f'**{ACCT_CN.get(aid, aid)}** '
-                    f'<span class="strategy-badge {s}">{STRATEGY_CN.get(s, s)}</span> — {strategy_desc(s)}',
-                    unsafe_allow_html=True)
-    st.caption(f"规则版本：{ver} · {CFG.get('meta', {}).get('note', '')}")
-
-    # 行情表（四态：实时/最近收盘/已过期/未知）
-    st.subheader("行情")
-    try:
-        from engine.realtime import fetch_all
-        syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data ORDER BY symbol")]
-        live = fetch_all(syms)
-    except Exception:
-        live = {}
-    db_dates = {r[0]: r[1] for r in
-                q("SELECT symbol, MAX(date) FROM market_data GROUP BY symbol")}
-    rows = []
-    for s in sorted(set(list(live.keys()) + list(db_dates.keys()))):
-        d = live.get(s, {})
-        price = d.get("price")
-        live_t = d.get("time", "") if price else ""
-        state, ts = quote_state(s, live_t, db_dates.get(s, ""))
-        if price:
-            price_s, chg = f"{price}", d.get("change_pct", 0)
-        else:
-            r0 = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1", (s,))
-            price = r0[0][0] if r0 and r0[0][0] else 0
-            price_s = f"{price:.2f}"
-            r1 = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1 OFFSET 1", (s,))
-            chg = (price - r1[0][0]) / r1[0][0] * 100 if r1 and r1[0][0] else 0
-        rows.append({
-            "代码": sym_name(s),
-            "现价": price_s,
-            "涨跌幅": f"{chg:+.2f}%",
-            "状态": QS_CN[state],
-            "更新时间": ts if ts else "--",
-        })
-    if rows:
-        st.table(rows)
-        st.caption("状态说明：实时=接口30分钟内报价 · 最近收盘=非交易时段收盘价 · "
-                   "已过期=数据超2天 · 未知=无数据。快照永不标为实时。")
-    else:
-        st.write("暂无行情数据")
-
-# ================================================================
-# 📝 交易执行：待建条件单提醒 + 券商回执录入
-# ================================================================
-elif tab == "📝 交易执行":
+elif tab == "📝 交易":
     st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)
     st.markdown('<div class="alert-banner info">'
                 'Web不连接券商、不发送订单。看完下面的信号后，前往券商 App 手动建立条件单，'
@@ -884,9 +731,25 @@ elif tab == "📝 交易执行":
                   AND s.date >= date('now','-7 days')
                 ORDER BY s.date DESC, s.symbol LIMIT 10""", (acct,))
     if sigs:
-        st.table([{"信号日": d, "代码": sym_name(s), "方向": "买入" if sd == "BUY" else "卖出",
-                   "触发价": px}
-                  for d, s, sd, px in sigs])
+        for d, s, sd, px in sigs:
+            direction = "买入" if sd == "BUY" else "卖出"
+            color = "#ff6b6b" if sd == "BUY" else "#51cf66"
+            nm = sym_name(s)
+            st.markdown(
+                '<div style="border:1px solid #333;border-radius:8px;'
+                'padding:12px;margin:8px 0;background:#1a1a2e;">'
+                f'<b>{nm}</b> <span style="color:{color}">{direction}</span><br>'
+                f'<span style="color:#888;font-size:0.9em;">信号日 {d} | 触发价 {px:.2f}</span></div>',
+                unsafe_allow_html=True)
+            c1, c2, c3 = st.columns([2, 1, 1])
+            with c1:
+                st.code(f"{s} {direction} 限价{px:.2f}", language=None)
+            with c2:
+                if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}"):
+                    st.success("已标记")
+            with c3:
+                if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}"):
+                    st.info("已跳过")
     else:
         st.write("近7天无待执行信号")
 
@@ -962,8 +825,23 @@ elif tab == "📝 交易执行":
 # ================================================================
 # 💰 持仓与账本：持仓 + 成交 + 净值
 # ================================================================
-elif tab == "💰 持仓与账本":
+elif tab == "💰 账户":
     st.markdown('<div class="section-head">💰 持仓与账本</div>', unsafe_allow_html=True)
+
+    # 账户切换（标签式）
+    acct_choice = st.radio("账户", ["A股", "港股", "加密货币"], horizontal=True, key="acct_tab")
+    acct_map = {"A股": "sim_a", "港股": "sim_hk", "加密货币": "sim_crypto"}
+    acct = acct_map[acct_choice]
+
+    # 导出对账单
+    if st.button("📥 导出对账单CSV", key="export_stmt"):
+        import csv, io
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["日期", "账户", "标的", "方向", "数量", "价格", "费用", "盈亏"])
+        for r in q("SELECT date,account,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 500", (acct,)):
+            w.writerow(r)
+        st.download_button("下载CSV", out.getvalue(), f"对账单_{acct}.csv", "text/csv", key="dl_stmt")
 
     # 持仓
     st.subheader("当前持仓")
@@ -1042,7 +920,7 @@ elif tab == "💰 持仓与账本":
 # ================================================================
 # 🛡 验证与风控：验证 KPI + 风控指标 + 审计
 # ================================================================
-elif tab == "🛡 验证与风控":
+elif tab == "🛡 验证":
     st.markdown('<div class="section-head">🛡 验证与风控</div>', unsafe_allow_html=True)
 
     # ---- 验证 KPI 卡片（四态徽标，阻断原因优先） ----
@@ -1250,36 +1128,3 @@ elif tab == "🛡 验证与风控":
 # ================================================================
 # ⚙ 系统与审计：数据源 / 规则版本 / 指令日志
 # ================================================================
-elif tab == "⚙ 系统与审计":
-    st.markdown('<div class="section-head">⚙ 系统与审计</div>', unsafe_allow_html=True)
-
-    st.subheader("数据源")
-    ds = CFG.get("data_sources", {})
-    for k, v in ds.items():
-        st.write(f"- **{k}**: {v}")
-
-    st.subheader("规则版本")
-    st.write(f"- 版本：{ver}")
-    st.write(f"- 说明：{CFG.get('meta', {}).get('note', '')}")
-    st.write("- 分账户策略：")
-    for a in CFG["accounts"]:
-        aid = a["id"]
-        s = strategy_of(aid)
-        st.write(f"\1{ACCT_CN.get(aid, aid)}\2")
-
-    st.subheader("指令日志")
-    logs = q("SELECT date, account, symbol, side, decision, updated FROM approvals ORDER BY updated DESC LIMIT 20")
-    if logs:
-        st.table([{"日期": d, "账户": a, "标的": s, "方向": sd, "决策": dc, "时间": t}
-                  for d, a, s, sd, dc, t in logs])
-    else:
-        st.write("暂无指令记录")
-
-    # 数据事故自查
-    st.subheader("数据完整性")
-    fills_n = q("SELECT COUNT(*) FROM fills")[0][0]
-    sig_n = q("SELECT COUNT(*) FROM signals")[0][0]
-    st.write(f"- fills 全量 {fills_n} 笔 · signals 全量 {sig_n} 笔")
-    st.caption("审计口径：毕业样本 = fills(SELL, 验证期) − graduation_exclusions")
-
-st.caption("独立交易终端 · 8502 · 人工执行 · 规则版本 %s" % ver)

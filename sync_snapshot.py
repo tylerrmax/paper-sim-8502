@@ -222,8 +222,10 @@ def build_execution(con, pending_signals):
 
 def build_graduation(con):
     """毕业进度：只统计验证期（10-08起）的已完成 round-trip（SELL）。
-    2026-10-16 起：graduation_exclusions 表中的成交从样本中剔除（历史保留，仅不计入毕业指标）。"""
+    2026-10-16 起：graduation_exclusions 表中的成交从样本中剔除（历史保留，仅不计入毕业指标）。
+    2026-10-17 起：按 strategy_version 隔离，策略变更后的新样本不与旧版本混合。"""
     accts, total_rt = {}, 0
+    cur_ver = CFG.get("meta", {}).get("version", "unknown")
     for a in CFG["accounts"]:
         aid = a["id"]
         vs = VAL_START.get(aid, "2026-10-08")
@@ -233,8 +235,9 @@ def build_graduation(con):
                  ON e.date=f.date AND e.account=f.account
                 AND e.symbol=f.symbol AND e.side=f.side
                WHERE f.account=? AND f.side='SELL' AND f.date>=?
-                 AND e.date IS NULL""",
-            (aid, vs)).fetchall() if r[0] is not None]
+                 AND e.date IS NULL
+                 AND (f.strategy_version IS NULL OR f.strategy_version=?)""",
+            (aid, vs, cur_ver)).fetchall() if r[0] is not None]
         n_excluded = con.execute(
             """SELECT COUNT(*) FROM fills f
                JOIN graduation_exclusions e
@@ -317,18 +320,18 @@ def main():
         "SELECT s.account AS account, COUNT(*) AS c FROM signals s"
         " LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account"
         " AND ap.symbol=s.symbol AND ap.side=s.side"
-        " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
+        " LEFT JOIN fills f ON f.signal_date=s.date AND f.account=s.account"
         " AND f.symbol=s.symbol AND f.side=s.side"
-        " WHERE s.date>=? AND ap.date IS NULL AND f.date IS NULL GROUP BY s.account", (CUTOFF,))}
+        " WHERE s.date>=? AND ap.date IS NULL AND f.signal_date IS NULL GROUP BY s.account", (CUTOFF,))}
     # 待审批信号明细（供网页版行内批准/跳过；artifact 忽略本字段）
     pending_signals = [dict(r) for r in con.execute(
         "SELECT s.account AS account, s.date AS date, s.symbol AS symbol,"
         " s.side AS side, s.price AS price FROM signals s"
         " LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account"
         " AND ap.symbol=s.symbol AND ap.side=s.side"
-        " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
+        " LEFT JOIN fills f ON f.signal_date=s.date AND f.account=s.account"
         " AND f.symbol=s.symbol AND f.side=s.side"
-        " WHERE s.date>=? AND ap.date IS NULL AND f.date IS NULL"
+        " WHERE s.date>=? AND ap.date IS NULL AND f.signal_date IS NULL"
         " ORDER BY s.date DESC, s.account", (CUTOFF,))]
     for a in CFG["accounts"]:
         aid = a["id"]

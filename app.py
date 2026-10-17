@@ -357,7 +357,9 @@ def render_ticker():
     def _table(syms_list, title):
         if not syms_list:
             return ""
-        rows = "".join(_row(s) for s in syms_list)
+        # 按信号-操作优先级排序：有待建单的排前面
+        syms_sorted = sorted(syms_list, key=lambda s: (0 if s in pending else 1, s))
+        rows = "".join(_row(s) for s in syms_sorted)
         return (f'<div style="margin-bottom:16px;"><b>{title}</b>'
                 f'<table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:4px;">'
                 f'<tr style="color:#888;font-size:12px;border-bottom:1px solid #1e2532;">'

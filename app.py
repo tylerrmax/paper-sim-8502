@@ -465,24 +465,22 @@ if tab == "🏠 工作台":
         return (f'<div class="status-card"><div class="sc-label">{label} {badge}</div>'
                 f'<div class="sc-value nodata" style="font-size:18px">{val}</div></div>')
     def _fund_flow_panel(aid):
-        """资金流动面板：近5日买入/卖出/手续费/净流入，持仓市值变化。"""
+        """主力资金：近5日净流入/流出"""
         ccy = {"sim_a": "CNY", "sim_hk": "HKD", "sim_crypto": "USDT"}.get(aid, "")
         rows = q("SELECT date, SUM(CASE WHEN side='BUY' THEN qty*price ELSE 0 END) as buy_amt,"
                  " SUM(CASE WHEN side='SELL' THEN qty*price ELSE 0 END) as sell_amt,"
                  " SUM(fee) as fees FROM fills WHERE account=? GROUP BY date"
                  " ORDER BY date DESC LIMIT 5", (aid,))
         if not rows:
-            st.write("暂无成交记录")
+            st.write("暂无")
             return
         for d, buy_amt, sell_amt, fees in rows:
             net = (sell_amt or 0) - (buy_amt or 0) - (fees or 0)
-            arrow = "🟢" if net >= 0 else "🔴"
-            st.write(f"{arrow} `{d}` 买入 {buy_amt:,.0f} / 卖出 {sell_amt:,.0f} / 手续费 {fees:,.1f} / 净 {net:+,.0f} {ccy}")
-        pos = q("SELECT symbol, qty, avg_cost FROM positions WHERE account=? AND qty>0", (aid,))
-        if pos:
-            st.write("**当前持仓：**")
-            for sym, qty, cost in pos:
-                st.write(f"  {sym_name(sym)} {qty:.0f}股 @ 成本 {cost:.2f}")
+            color = "#2ebd85" if net >= 0 else "#f6465d"
+            arrow = "▲" if net >= 0 else "▼"
+            st.markdown(f'<div style="padding:4px 0;"><span style="color:#888;">{d}</span> '
+                        f'<span style="color:{color};">{arrow} {net:+,.0f} {ccy}</span></div>',
+                        unsafe_allow_html=True)
 
     sc1, sc2, sc3, sc4 = st.columns(4)
     with sc1:

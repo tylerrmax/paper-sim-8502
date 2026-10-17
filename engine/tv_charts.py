@@ -16,11 +16,12 @@ with open(_LWC_PATH, encoding="utf-8") as _f:
     _LWC_JS = _f.read()  # 内嵌：免 CDN，国内直连可用
 
 
-def kline_html(symbol, bars, ma_period=20, price_lines=None, markers=None,
+def kline_html(symbol, bars, ma_periods=(5, 10, 20, 30, 60), price_lines=None, markers=None,
                height=420):
-    """生成单标的 K线 HTML。
+    """生成单标的 K线 HTML（专业版：多均线+成交量+关键位线+信号标记）。
 
     bars: [(date, open, high, low, close, volume), ...] 正序
+    ma_periods: 均线周期元组，默认 (5,10,20,30,60)
     price_lines: [{"price": float, "title": str, "color": str}, ...]
                  如成本线、止损线、止盈线
     markers: [{"time": "YYYY-MM-DD", "position": "belowBar"/"aboveBar",
@@ -37,15 +38,19 @@ def kline_html(symbol, bars, ma_period=20, price_lines=None, markers=None,
          "color": "rgba(46,189,133,0.5)" if c >= o else "rgba(246,70,93,0.5)"}
         for d, o, h, l, c, v in bars
     ]
-    # MA
+    # 多均线
     closes = [c for _, _, _, _, c, _ in bars]
-    ma_data = []
-    for i in range(len(closes)):
-        if i >= ma_period - 1:
-            ma_data.append({
-                "time": bars[i][0],
-                "value": round(sum(closes[i - ma_period + 1:i + 1]) / ma_period, 4),
-            })
+    ma_colors = {5: "#f0b90b", 10: "#1890ff", 20: "#e91e63", 30: "#00bcd4", 60: "#ff9800"}
+    ma_series = {}
+    for period in ma_periods:
+        data = []
+        for i in range(len(closes)):
+            if i >= period - 1:
+                data.append({
+                    "time": bars[i][0],
+                    "value": round(sum(closes[i - period + 1:i + 1]) / period, 4),
+                })
+        ma_series[period] = data
 
     price_lines = price_lines or []
     markers = markers or []
@@ -53,9 +58,19 @@ def kline_html(symbol, bars, ma_period=20, price_lines=None, markers=None,
     # 转义供 JS 用
     j_candles = json.dumps(candles)
     j_vols = json.dumps(vols)
-    j_ma = json.dumps(ma_data)
     j_pl = json.dumps(price_lines)
     j_mk = json.dumps(markers)
+    # 多均线 JS
+    ma_js_parts = []
+    for period in ma_periods:
+        j_ma = json.dumps(ma_series[period])
+        color = ma_colors.get(period, "#888888")
+        ma_js_parts.append(
+            f"var ma{period} = chart.addLineSeries({{ color: '{color}', lineWidth: 1, "
+            f"title: 'MA{period}', priceLineVisible: false, lastValueVisible: false }});\n"
+            f"  ma{period}.setData({j_ma});"
+        )
+    ma_js = "\n".join(ma_js_parts)
 
     return f"""<div id="tv_{symbol}" style="height:{height}px;"></div>
 <script>{_LWC_JS}</script>
@@ -73,15 +88,12 @@ def kline_html(symbol, bars, ma_period=20, price_lines=None, markers=None,
     timeScale: {{ borderColor: '#1e2532', timeVisible: false }},
   }});
   var candles = chart.addCandlestickSeries({{
-    upColor: '#2ebd85', downColor: '#f6465d',
-    wickUpColor: '#2ebd85', wickDownColor: '#f6465d',
+    upColor: '#f6465d', downColor: '#2ebd85',
+    wickUpColor: '#f6465d', wickDownColor: '#2ebd85',
     borderVisible: false,
   }});
   candles.setData({j_candles});
-  // MA20
-  var ma = chart.addLineSeries({{ color: '#f0b90b', lineWidth: 2,
-                                  title: 'MA{ma_period}' }});
-  ma.setData({j_ma});
+{ma_js}
   // 成交量（底部叠加）
   var vol = chart.addHistogramSeries({{
     priceScaleId: 'vol', priceFormat: {{ type: 'volume' }},

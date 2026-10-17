@@ -765,8 +765,30 @@ elif tab == "📝 交易":
                   AND s.symbol=f.symbol AND s.side=f.side
                 WHERE s.account=? AND f.id IS NULL
                   AND s.date >= date('now','-7 days')
-                ORDER BY s.date DESC, s.symbol LIMIT 10""", (acct,))
+                ORDER BY s.date DESC, s.symbol LIMIT 20""", (acct,))
     if sigs:
+        # 一键勾选：全选 + 批量复制
+        if "order_select_all" not in st.session_state:
+            st.session_state.order_select_all = False
+        col_all, col_copy = st.columns([1, 3])
+        with col_all:
+            select_all = st.checkbox("全选", value=st.session_state.order_select_all,
+                                     key="select_all_orders")
+            st.session_state.order_select_all = select_all
+        selected = []
+        for d, s, sd, px in sigs:
+            direction = "买入" if sd == "BUY" else "卖出"
+            key = f"order_{d}_{s}_{sd}"
+            checked = st.checkbox(f"{sym_name(s)} {direction} @{px:.2f} ({d})",
+                                  value=select_all, key=key)
+            if checked:
+                selected.append(f"{s} {direction} 限价{px:.2f}")
+        with col_copy:
+            if selected and st.button(f"📋 复制选中 ({len(selected)})", key="copy_selected"):
+                st.code("\n".join(selected), language=None)
+                st.success(f"已复制 {len(selected)} 条")
+        st.divider()
+        # 逐条操作（原有）
         for d, s, sd, px in sigs:
             direction = "买入" if sd == "BUY" else "卖出"
             color = "#ff6b6b" if sd == "BUY" else "#51cf66"

@@ -63,7 +63,9 @@ def _replay_fill(sim, s, side, qty, price, fee, d):
             take = min(lot.qty, left)
             lot.qty -= take
             left -= take
-        sim.cash += qty * price - fee
+        # 只按实际卖出的数量记现金（qty-left），防止幻影现金
+        sold = qty - left
+        sim.cash += sold * price - fee
         sim.positions[s] = [l for l in pos_lots if l.qty > 1e-9]
 
 

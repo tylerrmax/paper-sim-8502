@@ -18,6 +18,34 @@ import streamlit as st
 import yaml
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+
+# ---- 敏感数据：从私有仓库拉取（公网部署时） ----
+def _fetch_private_data():
+    """从私有仓库 paper-sim-8502-data 拉取 db/sim.db 和 config/strategy.yaml。
+    本地运行时文件已存在则跳过；公网时通过 Streamlit Secrets 的 GITHUB_PAT 拉取。"""
+    db_path = os.path.join(BASE, "db", "sim.db")
+    cfg_path = os.path.join(BASE, "config", "strategy.yaml")
+    if os.path.exists(db_path) and os.path.exists(cfg_path):
+        return  # 本地已有
+    try:
+        pat = st.secrets.get("GITHUB_PAT", "")
+        if not pat:
+            return
+        import urllib.request
+        import base64
+        for remote, local in [("db/sim.db", db_path), ("config/strategy.yaml", cfg_path)]:
+            url = f"https://api.github.com/repos/tylerrmax/paper-sim-8502-data/contents/{remote}"
+            req = urllib.request.Request(url, headers={
+                "Authorization": f"token {pat}",
+                "Accept": "application/vnd.github.v3.raw"
+            })
+            os.makedirs(os.path.dirname(local), exist_ok=True)
+            with urllib.request.urlopen(req, timeout=30) as r, open(local, "wb") as f:
+                f.write(r.read())
+    except Exception:
+        pass  # 拉取失败时保持现状，由后续逻辑报错
+
+_fetch_private_data()
 sys.path.insert(0, BASE)
 DB = os.path.join(BASE, "db", "sim.db")
 CFG_PATH = os.path.join(BASE, "config", "strategy.yaml")

@@ -459,6 +459,49 @@ acct = st.sidebar.selectbox("账户", accts, format_func=lambda x: ACCT_CN.get(x
 if tab == "🏠 工作台":
     st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
 
+    # ---- 核心数据（验证终端优势沿用）：总资产/当日盈亏/持仓市值/可用资金 ----
+    st.markdown("**核心数据**")
+    core = {}
+    for aid in ["sim_a", "sim_hk", "sim_crypto"]:
+        r = q("SELECT nav, pnl_day, cash, position_value FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
+        if r:
+            core[aid] = {"nav": r[0][0], "pnl": r[0][1] or 0, "cash": r[0][2] or 0, "pos": r[0][3] or 0}
+    # 货币：A股CNY 港股HKD 加密USDT
+    def _fmt(v): return f"{v:,.2f}"
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
+            <div style="color:#888;font-size:13px;">账户总资产</div>
+            <div class="num" style="font-size:22px;margin:8px 0;">¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
+            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
+            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
+            </div>''', unsafe_allow_html=True)
+    with c2:
+        pnl_a = core.get("sim_a", {}).get("pnl", 0)
+        pnl_hk = core.get("sim_hk", {}).get("pnl", 0)
+        pnl_c = core.get("sim_crypto", {}).get("pnl", 0)
+        pc = "#f6465d" if pnl_a >= 0 else "#2ebd85"
+        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
+            <div style="color:#888;font-size:13px;">当日盈亏</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:{pc};">¥{_fmt(pnl_a)}</div>
+            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(pnl_hk)}</div>
+            <div class="num" style="color:#888;font-size:14px;">${_fmt(pnl_c)}</div>
+            </div>''', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
+            <div style="color:#888;font-size:13px;">持仓市值</div>
+            <div class="num" style="font-size:22px;margin:8px 0;">¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
+            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
+            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
+            </div>''', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
+            <div style="color:#888;font-size:13px;">可用资金</div>
+            <div class="num" style="font-size:22px;margin:8px 0;">¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
+            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
+            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
+            </div>''', unsafe_allow_html=True)
+
     # ---- 今日待办（最优先）：一眼知道要做什么 ----
     # 待建条件单
     pending_orders = q("""SELECT COUNT(*) FROM signals s

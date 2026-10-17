@@ -519,32 +519,44 @@ if tab == "🏠 工作台":
     st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
 
     # ---- 核心数据（验证终端优势沿用）：总资产/当日盈亏/持仓市值/可用资金 ----
+    # 交易所标准：红涨绿跌，数字 vibrant
     st.markdown("**核心数据**")
     core = {}
     for aid in ["sim_a", "sim_hk", "sim_crypto"]:
-        r = q("SELECT nav, pnl_day, cash, position_value FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
+        r = q("SELECT nav, pnl_day, cash, position_value, ret_total FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
         if r:
-            core[aid] = {"nav": r[0][0], "pnl": r[0][1] or 0, "cash": r[0][2] or 0, "pos": r[0][3] or 0}
+            core[aid] = {"nav": r[0][0], "pnl": r[0][1] or 0, "cash": r[0][2] or 0, "pos": r[0][3] or 0, "ret": r[0][4] or 0}
     # 货币：A股CNY 港股HKD 加密USDT
     def _fmt(v): return f"{v:,.2f}"
+    # 交易所色：涨红 #ff4d4f，跌绿 #00c853
+    def _rg(v): return "#ff4d4f" if v >= 0 else "#00c853"
     c1, c2, c3, c4 = st.columns(4)
     with c1:
+        ra = core.get("sim_a", {}).get("ret", 0)
+        rh = core.get("sim_hk", {}).get("ret", 0)
+        rc = core.get("sim_crypto", {}).get("ret", 0)
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;">¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#ffffff;">¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
+            <div class="num" style="color:#aaa;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
+            <div class="num" style="color:#aaa;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
+            <div style="font-size:12px;margin-top:4px;">
+                <span style="color:{_rg(ra)};">{ra*100:+.2f}%</span>
+                <span style="color:#666;"> | </span>
+                <span style="color:{_rg(rh)};">{rh*100:+.2f}%</span>
+                <span style="color:#666;"> | </span>
+                <span style="color:{_rg(rc)};">{rc*100:+.2f}%</span>
+            </div>
             </div>''', unsafe_allow_html=True)
     with c2:
         pnl_a = core.get("sim_a", {}).get("pnl", 0)
         pnl_hk = core.get("sim_hk", {}).get("pnl", 0)
         pnl_c = core.get("sim_crypto", {}).get("pnl", 0)
-        pc = "#f6465d" if pnl_a >= 0 else "#2ebd85"
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">当日盈亏</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:{pc};">¥{_fmt(pnl_a)}</div>
-            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(pnl_hk)}</div>
-            <div class="num" style="color:#888;font-size:14px;">${_fmt(pnl_c)}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:{_rg(pnl_a)};">¥{_fmt(pnl_a)}</div>
+            <div class="num" style="color:{_rg(pnl_hk)};font-size:14px;">HK${_fmt(pnl_hk)}</div>
+            <div class="num" style="color:{_rg(pnl_c)};font-size:14px;">${_fmt(pnl_c)}</div>
             </div>''', unsafe_allow_html=True)
     with c3:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">

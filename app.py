@@ -283,13 +283,39 @@ def render_ticker():
         syms = []
     from engine.indicators import rsi, macd, bollinger, adx, market_regime, ma_align
 
-    # 待建单：未成交的信号
+    # 待建单：未成交的信号（新格式：方向 动作类型 @价格 | 止损 @价格）
     pending = {}
-    for d, sym, side, px in q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
+    for d, sym, side, px, act, stop_px in q("""SELECT s.date, s.symbol, s.side, s.price,
+        s.action_type, s.stop_price FROM signals s
         LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
           AND s.symbol=f.symbol AND s.side=f.side
         WHERE f.id IS NULL AND s.date >= date('now','-7 days')"""):
-        pending[sym] = f"{side} @{px:.2f}"
+        # 动作类型：老信号无值时推断
+        if not act:
+            act = "开仓" if side == "BUY" else "信号平仓"
+        if side == "BUY":
+            # BUY 开仓 @价格 | 止损 @价格
+            stop_s = f" | 止损 @{stop_px:.2f}" if stop_px else ""
+            pending[sym] = f"{side} {act} @{px:.2f}{stop_s}"
+        else:
+            # SELL 止盈/止损/信号平仓 @价格 + 持仓上下文
+            pos = q("SELECT qty, avg_cost FROM positions WHERE symbol=? AND qty>0", (sym,))
+            if pos:
+                qty, cost = pos[0]
+                # 浮盈
+                cur = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,))
+                cur_px = cur[0][0] if cur else px
+                pnl_pct = (cur_px - cost) / cost * 100 if cost else 0
+                # 判断止盈/止损：浮盈>0为止盈，<-5%为止损，否则信号平仓
+                if not act or act == "信号平仓":
+                    if pnl_pct > 0:
+                        act = "止盈"
+                    elif pnl_pct < -5:
+                        act = "止损"
+                hold_s = f"<br><span style='font-size:11px;color:#888;'>持仓：是 | 成本 {cost:.2f} | 浮盈 {pnl_pct:+.1f}%</span>"
+            else:
+                hold_s = f"<br><span style='font-size:11px;color:#888;'>无持仓，仅供观察</span>"
+            pending[sym] = f"{side} {act} @{px:.2f}{hold_s}"
 
     def _tech_signals(sym):
         bars = q("SELECT close,high,low FROM market_data WHERE symbol=? ORDER BY date", (sym,))

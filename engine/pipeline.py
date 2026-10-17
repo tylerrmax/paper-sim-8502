@@ -360,9 +360,20 @@ def _run_locked(db_path=DB, cfg=None):
                 # 验证期闸（仅 sim_a）
                 if aid == "sim_a" and d < VAL_START.get(aid, "2026-10-08"):
                     continue
+                # 动作类型 + 止损价 + 策略
+                act = "开仓" if side == "BUY" else "信号平仓"
+                stop_px = None
+                if side == "BUY":
+                    # ATR止损：entry - 2*ATR
+                    atr_v = atr_by_sym.get(s, {}).get(d)
+                    if atr_v:
+                        stop_px = round(sig_px - 2 * atr_v, 2)
+                # 策略中文名
+                strat_cn = {"buyback": "接回策略", "ma20": "MA20趋势"}.get(strategy, strategy)
                 con.execute(
-                    "INSERT INTO signals(date,account,symbol,side,price) VALUES(?,?,?,?,?)",
-                    (d, aid, s, side, sig_px))
+                    "INSERT INTO signals(date,account,symbol,side,price,action_type,status,stop_price,strategy)"
+                    " VALUES(?,?,?,?,?,?,?,?,?)",
+                    (d, aid, s, side, sig_px, act, "待执行", stop_px, strat_cn))
                 # 有 T+1 bar 才加入待执行；否则信号保留，待数据到达后执行
                 if has_next_bar.get((s, d)):
                     pending.append((d, s, side, sig_px))

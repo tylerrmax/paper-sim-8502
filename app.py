@@ -494,10 +494,12 @@ accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY ac
 ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
 SYMBOL_CN = {
     "002446": "盛路通信",
-    "688305": "科德数控",
+    "002472": "双环传动",
+    "002639": "雪人股份",
+    "002812": "恩捷股份",
     "300827": "上能电气",
     "600150": "中国船舶",
-    "002639": "雪人股份",
+    "688305": "科德数控",
     "HK9660": "地平线机器人",
     "HK0354": "中软国际",
     "BTCUSDT": "比特币",
@@ -667,7 +669,11 @@ if tab == "🏠 工作台":
     hist = q("SELECT date,nav FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date", (acct,))
     if hist:
         st.subheader("净值曲线")
-        st.line_chart({d: n for d, n in hist})
+        import pandas as pd
+        df = pd.DataFrame(hist, columns=["date", "nav"])
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date")
+        st.line_chart(df["nav"])
 
     # 三账户并排（对标验证终端）
     # 事件流（最近动态）- 折叠
@@ -814,7 +820,7 @@ elif tab == "🔍 选股":
         dif, dea, hist = macd(closes)
         macd_h = hist[-1]
         upper, mid, lower = bollinger(closes)
-        adx_v = adx(highs, lows, closes)[-1]
+        adx_v = calc_adx(highs, lows, closes)[-1]
         regime = market_regime(adx_v)
         align = ma_align(closes)
         tags = []

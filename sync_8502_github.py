@@ -17,16 +17,15 @@ sys.path.insert(0, os.path.expanduser(
 from gh_api import api  # noqa: E402
 
 REPO = "tylerrmax/paper-sim-8502"
+DATA_REPO = "tylerrmax/paper-sim-8502-data"
 SRC = os.path.expanduser("~/workspace/paper-trading-sim")
 
-# 云端部署需要的全部文件（app.py 只读这些）
+# 公开仓库：代码（不含敏感数据）
 FILES = [
     "app.py",
     "requirements.txt",
     "README.md",
     ".gitignore",
-    "config/strategy.yaml",
-    "db/sim.db",
     "db/schema.sql",
     "data/__init__.py",
     "data/quotes.py",
@@ -51,14 +50,16 @@ def local_blob_sha(path):
     return out.stdout.strip() if out.returncode == 0 else None
 
 
-def remote_sha(path):
+def remote_sha(path, repo=None):
+    repo = repo or REPO
     try:
-        return api("GET", f"/repos/{REPO}/contents/{path}").get("sha")
+        return api("GET", f"/repos/{repo}/contents/{path}").get("sha")
     except Exception:
         return None
 
 
-def push_file(path, dry_run=False):
+def push_file(path, dry_run=False, repo=None):
+    repo = repo or REPO
     full = os.path.join(SRC, path)
     if not os.path.exists(full):
         print(f"跳过（不存在）: {path}")
@@ -72,7 +73,7 @@ def push_file(path, dry_run=False):
     out = subprocess.run(["git", "hash-object", full], capture_output=True,
                          text=True, cwd=SRC)
     lsha = out.stdout.strip() if out.returncode == 0 else None
-    rsha = remote_sha(path)
+    rsha = remote_sha(path, repo)
     if lsha and lsha == rsha:
         return False  # 无变更
     if dry_run:
@@ -84,7 +85,7 @@ def push_file(path, dry_run=False):
             "content": content, "branch": "master"}
     if rsha:
         data["sha"] = rsha
-    r = api("PUT", f"/repos/{REPO}/contents/{path}", data)
+    r = api("PUT", f"/repos/{repo}/contents/{path}", data)
     print(f"已推送: {path} -> {r['commit']['sha'][:7]}")
     # 清理临时过滤文件
     if filtered:
@@ -138,12 +139,20 @@ def main():
     if not dry_run:
         _assert_fresh()  # 推送前断言
     changed = 0
+    # 公开仓库：代码
     for f in FILES:
         try:
             if push_file(f, dry_run):
                 changed += 1
         except Exception as e:
             print(f"失败: {f}: {type(e).__name__}: {e}")
+    # 私有仓库：敏感数据
+    for f in ["config/strategy.yaml", "db/sim.db"]:
+        try:
+            if push_file(f, dry_run, repo=DATA_REPO):
+                changed += 1
+        except Exception as e:
+            print(f"失败(私有): {f}: {type(e).__name__}: {e}")
     print(f"完成：{changed} 个文件有变更" + ("（演练）" if dry_run else ""))
 
 

@@ -537,9 +537,9 @@ if tab == "🏠 工作台":
         rc = core.get("sim_crypto", {}).get("ret", 0)
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#ffffff;">¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#aaa;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#aaa;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#ffffff;"><span style="font-size:12px;color:#888;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
+            <div class="num" style="color:#aaa;font-size:14px;"><span style="font-size:11px;">港股 </span>HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
+            <div class="num" style="color:#aaa;font-size:14px;"><span style="font-size:11px;">加密货币 </span>${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
             <div style="font-size:12px;margin-top:4px;">
                 <span style="color:{_rg(ra)};">{ra*100:+.2f}%</span>
                 <span style="color:#666;"> | </span>
@@ -554,21 +554,21 @@ if tab == "🏠 工作台":
         pnl_c = core.get("sim_crypto", {}).get("pnl", 0)
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">当日盈亏</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:{_rg(pnl_a)};">¥{_fmt(pnl_a)}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:{_rg(pnl_a)};"><span style="font-size:12px;color:#888;">A股 </span>¥{_fmt(pnl_a)}</div>
             <div class="num" style="color:{_rg(pnl_hk)};font-size:14px;">HK${_fmt(pnl_hk)}</div>
             <div class="num" style="color:{_rg(pnl_c)};font-size:14px;">${_fmt(pnl_c)}</div>
             </div>''', unsafe_allow_html=True)
     with c3:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">持仓市值</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;">¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:12px;color:#888;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
             </div>''', unsafe_allow_html=True)
     with c4:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">可用资金</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;">¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:12px;color:#888;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
             </div>''', unsafe_allow_html=True)

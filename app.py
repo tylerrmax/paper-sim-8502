@@ -807,7 +807,7 @@ elif tab == "📝 交易":
     acct = st.radio("账户", accts, format_func=lambda x: ACCT_CN.get(x, x),
                     horizontal=True, key="trade_acct")
 
-    # 待建条件单提醒（数据提醒，用户看完自行去券商手动下单）
+    # 待建条件单
     st.subheader("待建条件单")
     sigs = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
                 LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
@@ -815,50 +815,54 @@ elif tab == "📝 交易":
                 WHERE s.account=? AND f.id IS NULL
                   AND s.date >= date('now','-7 days')
                 ORDER BY s.date DESC, s.symbol LIMIT 20""", (acct,))
-    if sigs:
-        # 一键勾选：全选 + 批量复制
+    if not sigs:
+        st.write("近7天无待执行信号")
+    else:
+        # 顶部操作栏：全选 + 复制
         if "order_select_all" not in st.session_state:
             st.session_state.order_select_all = False
-        col_all, col_copy = st.columns([1, 3])
-        with col_all:
+        top1, top2 = st.columns([1, 4])
+        with top1:
             select_all = st.checkbox("全选", value=st.session_state.order_select_all,
                                      key="select_all_orders")
             st.session_state.order_select_all = select_all
         selected = []
+        # 卡片列表：每行一个订单卡片，checkbox 在卡片内
         for d, s, sd, px in sigs:
             direction = "买入" if sd == "BUY" else "卖出"
+            color = "#f6465d" if sd == "BUY" else "#2ebd85"
+            nm = sym_name(s)
             key = f"order_{d}_{s}_{sd}"
-            checked = st.checkbox(f"{sym_name(s)} {direction} @{px:.2f} ({d})",
+            checked = st.checkbox(f"{nm} · {direction} · {px:.2f} · {d}",
                                   value=select_all, key=key)
             if checked:
-                selected.append(f"{s} {direction} 限价{px:.2f}")
-        with col_copy:
-            if selected and st.button(f"📋 复制选中 ({len(selected)})", key="copy_selected"):
-                st.code("\n".join(selected), language=None)
-                st.success(f"已复制 {len(selected)} 条")
+                selected.append((s, direction, px, nm))
+        with top2:
+            if selected:
+                if st.button(f"📋 复制 {len(selected)} 条", key="copy_selected"):
+                    txt = "\n".join(f"{s} {d} 限价{px:.2f}" for s, d, px, _ in selected)
+                    st.code(txt, language=None)
+            else:
+                st.caption("勾选后批量复制")
         st.divider()
-        # 逐条操作（原有）
+        # 逐条建单/跳过
         for d, s, sd, px in sigs:
             direction = "买入" if sd == "BUY" else "卖出"
-            color = "#ff6b6b" if sd == "BUY" else "#51cf66"
+            color = "#f6465d" if sd == "BUY" else "#2ebd85"
             nm = sym_name(s)
-            st.markdown(
-                '<div style="border:1px solid #333;border-radius:8px;'
-                'padding:12px;margin:8px 0;background:#1a1a2e;">'
-                f'<b>{nm}</b> <span style="color:{color}">{direction}</span><br>'
-                f'<span style="color:#888;font-size:0.9em;">信号日 {d} | 触发价 {px:.2f}</span></div>',
-                unsafe_allow_html=True)
-            c1, c2, c3 = st.columns([2, 1, 1])
+            c1, c2, c3 = st.columns([3, 1, 1])
             with c1:
-                st.code(f"{s} {direction} 限价{px:.2f}", language=None)
+                st.markdown(f'<div style="padding:8px 0;"><b>{nm}</b> '
+                            f'<span style="color:{color};font-weight:bold;">{direction}</span> '
+                            f'<span class="num">{px:.2f}</span> '
+                            f'<span style="color:#666;font-size:12px;">{d}</span></div>',
+                            unsafe_allow_html=True)
             with c2:
                 if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}"):
                     st.success("已标记")
             with c3:
                 if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}"):
                     st.info("已跳过")
-    else:
-        st.write("近7天无待执行信号")
 
     # 券商回执录入（四态按钮反馈：已提交→执行中→已生效/失败）
     st.subheader("🧾 券商回执录入")

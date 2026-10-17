@@ -711,21 +711,10 @@ elif tab == "🔍 选股":
         if last_c and upper[-1] and last_c > upper[-1]: tags.append("🔥破上轨")
         if last_c and lower[-1] and last_c < lower[-1]: tags.append("🧊破下轨")
         with st.expander(f"{sym_name(sym)} @ {last_c:.2f} | {' '.join(tags)}", expanded=False):
-            # K线图优先（新浪实时图，A股）
-            code = sym
-            sina_url = None
-            if len(code) == 6 and code.isdigit():
-                prefix = "sh" if code[0] in "68" else "sz"
-                sina_url = f"https://image2.sinajs.cn/newchart/daily/n/{prefix}{code}.gif?t={_ts}"
-            if sina_url:
-                st.image(sina_url, use_container_width=True)
-            else:
-                # 港股/加密：本地数据文字版
-                cc1, cc2, cc3, cc4 = st.columns(4)
-                cc1.metric("RSI", f"{rsi_v:.0f}" if rsi_v else "-")
-                cc2.metric("ADX", f"{adx_v:.0f}" if adx_v else "-")
-                cc3.metric("MACD", "多" if (macd_h and macd_h > 0) else "空")
-                cc4.metric("均线", "多" if align > 0.5 else ("空" if align < -0.5 else "-"))
+            # 专业K线（Lightweight Charts，多均线+成交量）
+            from engine.tv_charts import kline_html
+            html = kline_html(sym, bars, height=380)
+            st.components.v1.html(html, height=400, scrolling=False)
 
 elif tab == "📝 交易":
     st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)

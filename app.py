@@ -737,18 +737,42 @@ elif tab == "📝 交易":
     if not sigs:
         st.write("近7天无待执行信号")
     else:
-        # 顶部操作栏：全选 + 复制
+        from engine.order_validate import validate_order
+        # 顶部操作栏：全选 + 复制（仅校验通过的订单可勾选）
         if "order_select_all" not in st.session_state:
             st.session_state.order_select_all = False
-        top1, top2 = st.columns([1, 4])
-        with top1:
-            select_all = st.checkbox("全选", value=st.session_state.order_select_all,
-                                     key="select_all_orders")
-            st.session_state.order_select_all = select_all
-        selected = []
-        # 卡片列表：每行一个订单卡片，checkbox 在卡片内
+        # 预校验所有信号
+        validated = []
         for d, s, sd, px in sigs:
-            direction = "买入" if sd == "BUY" else "卖出"
+            # SELL用当前持仓做数量，BUY暂估1手用于校验框架
+            qty_est = None
+            if sd == "SELL":
+                pos = q("SELECT qty FROM positions WHERE account=? AND symbol=?", (acct, s))
+                qty_est = pos[0][0] if pos else 0
+            ok, errs, warns = validate_order(acct, s, sd, qty_est, px, d)
+            validated.append((d, s, sd, px, ok, errs, warns))
+        # 拦截：有校验失败的先提示
+        failed = [v for v in validated if not v[4]]
+        if failed:
+            st.warning(f"⛔ {len(failed)} 条信号校验未通过，已拦截（不生成订单指引）")
+            for d, s, sd, px, ok, errs, warns in failed:
+                st.caption(f"{sym_name(s)} {sd} @{px} ({d}): {'; '.join(errs)}")
+        valid_sigs = [v for v in validated if v[4]]
+        if not valid_sigs:
+            st.info("无可执行订单")
+        else:
+            # 顶部操作栏：全选 + 复制
+            if "order_select_all" not in st.session_state:
+                st.session_state.order_select_all = False
+            top1, top2 = st.columns([1, 4])
+            with top1:
+                select_all = st.checkbox("全选", value=st.session_state.order_select_all,
+                                         key="select_all_orders")
+                st.session_state.order_select_all = select_all
+            selected = []
+            # 卡片列表：每行一个订单卡片，checkbox 在卡片内
+            for d, s, sd, px, ok, errs, warns in valid_sigs:
+                direction = "买入" if sd == "BUY" else "卖出"
             color = "#f6465d" if sd == "BUY" else "#2ebd85"
             nm = sym_name(s)
             key = f"order_{d}_{s}_{sd}"
@@ -765,7 +789,7 @@ elif tab == "📝 交易":
                 st.caption("勾选后批量复制")
         st.divider()
         # 逐条建单/跳过
-        for d, s, sd, px in sigs:
+        for d, s, sd, px, ok, errs, warns in valid_sigs:
             direction = "买入" if sd == "BUY" else "卖出"
             color = "#f6465d" if sd == "BUY" else "#2ebd85"
             nm = sym_name(s)

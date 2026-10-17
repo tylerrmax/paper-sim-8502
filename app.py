@@ -391,8 +391,9 @@ with top3:
                 unsafe_allow_html=True)
 with top4:
     # 各账户策略徽标
+    _ACCT = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
     badges = " ".join(
-        f'<span class="strategy-badge {strategy_of(a["id"])}">{a["id"]}:{STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
+        f'<span class="strategy-badge {strategy_of(a["id"])}">{_ACCT.get(a["id"], a["id"])}：{STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
         for a in CFG["accounts"])
     st.markdown(f'<div class="kpi-card"><div class="kpi-label">分账户策略（2026-10-16 选A）</div>'
                 f'<div style="margin-top:6px">{badges}</div></div>',
@@ -451,7 +452,9 @@ def sym_name(code):
 render_ticker()
 # 标的代码→中文名（展示用，查不到时回退显示代码）
 
-acct = st.sidebar.selectbox("账户", accts, format_func=lambda x: ACCT_CN.get(x, x))
+# 账户选择：工作台为三账户统一视图，不再用全局下拉；
+# 需要按账户筛选的页面（交易/账户）使用页内选择器
+acct = "sim_a"  # 默认，页内可覆盖
 
 # ================================================================
 # 🏠 工作台：系统状态 + 今日信号 + 账户总览
@@ -800,6 +803,9 @@ elif tab == "🔍 选股":
 
 elif tab == "📝 交易":
     st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)
+    # 页内账户选择
+    acct = st.radio("账户", accts, format_func=lambda x: ACCT_CN.get(x, x),
+                    horizontal=True, key="trade_acct")
 
     # 待建条件单提醒（数据提醒，用户看完自行去券商手动下单）
     st.subheader("待建条件单")

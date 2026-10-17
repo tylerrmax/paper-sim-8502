@@ -580,104 +580,21 @@ if tab == "🏠 工作台":
                         f'<span style="color:{color};">{arrow} {net:+,.0f} {ccy}</span></div>',
                         unsafe_allow_html=True)
 
-    sc1, sc2, sc3, sc4 = st.columns(4)
-    with sc1:
-        sc_val = "已暂停" if status != "running" else "运行中"
-        sc_cls = "paused" if status != "running" else ""
-        st.markdown(f'<div class="status-card"><div class="sc-label">交易控制</div>'
-                    f'<div class="sc-value {sc_cls}">{sc_val}</div></div>',
-                    unsafe_allow_html=True)
-    with sc2:
-        st.markdown(_fresh_card("A股行情", latest_a), unsafe_allow_html=True)
+    # 主力资金（三账户并排）
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
         with st.expander("💰 A股资金流", expanded=False):
             _fund_flow_panel("sim_a")
-    with sc3:
-        st.markdown(_fresh_card("港股行情", latest_hk), unsafe_allow_html=True)
+    with fc2:
         with st.expander("💰 港股资金流", expanded=False):
             _fund_flow_panel("sim_hk")
-    with sc4:
-        st.markdown(_fresh_card("加密行情", latest_c), unsafe_allow_html=True)
+    with fc3:
         with st.expander("💰 加密资金流", expanded=False):
             _fund_flow_panel("sim_crypto")
 
     # ---- 3. 三账户概览（并排） ----
-    st.subheader("三账户概览")
-    cols = st.columns(3)
-    for i, aid in enumerate(["sim_a", "sim_hk", "sim_crypto"]):
-        r = q("SELECT date,nav,pnl_day,ret_total FROM daily_report"
-              " WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
-        ccy = {"sim_a": "CNY", "sim_hk": "HKD", "sim_crypto": "USDT"}.get(aid, "")
-        sname = strategy_of(aid)
-        with cols[i]:
-            if r:
-                d, nav, pnl_day, ret = r[0]
-                pnl_cls = "up" if (pnl_day or 0) >= 0 else "down"
-                st.markdown(
-                    f'<div class="kpi-card"><div class="kpi-label">{ACCT_CN.get(aid, aid)}·{ccy}</div>'
-                    f'<div class="kpi-value">{fmt_money(nav)}</div>'
-                    f'<div class="kpi-value {pnl_cls}" style="font-size:14px">当日 {pnl_day:+,.2f} · 累计 {ret*100:+.2f}%</div>'
-                    f'<div style="margin-top:6px"><span class="strategy-badge {sname}">'
-                    f'{STRATEGY_CN.get(sname, sname)}</span></div>'
-                    f'<div class="kpi-label" style="margin-top:4px">截至 {d}</div></div>',
-                    unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="kpi-card"><div class="kpi-label">{aid}</div>'
-                            f'<div class="kpi-value nodata">无数据</div></div>', unsafe_allow_html=True)
-
     # ---- 4. 待处理信号（今日信号 + 待审批） ----
-    st.subheader("待处理信号")
-    today = datetime.now().strftime("%Y-%m-%d")
-    sig_today = q("""SELECT symbol, side, price FROM signals
-                     WHERE account=? AND date=? ORDER BY symbol""", (acct, today))
-    if sig_today:
-        for s, side, px in sig_today:
-            color = "🟢" if side == "BUY" else "🔴"
-            st.write(f"{color} **{sym_name(s)}** {side} @ {px}")
-    else:
-        st.write("今日暂无信号")
-    # 待审批（仅手动模式）
-    if mode == "manual" and not IS_CLOUD:
-        from datetime import date as _date
-        pending = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
-                       LEFT JOIN approvals a ON a.date=s.date AND a.account=s.account
-                         AND a.symbol=s.symbol AND a.side=s.side
-                       WHERE s.account=? AND a.decision IS NULL
-                       ORDER BY s.date DESC LIMIT 5""", (acct,))
-        if pending:
-            st.write("⏳ 待审批：")
-            for d, s, sd, px in pending:
-                c1, c2, c3 = st.columns([3, 1, 1])
-                with c1:
-                    st.write(f"{d} **{s}** {sd} @ {px}")
-                with c2:
-                    if st.button("✅ 批准", key=f"ap_{d}_{s}_{sd}"):
-                        _ap_state(f"{d}_{s}_{sd}", "approved", d, acct, s, sd)
-                with c3:
-                    if st.button("⏭ 跳过", key=f"sk_{d}_{s}_{sd}"):
-                        _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
-            # 审批按钮状态回显
-            for k, v in list(st.session_state.items()):
-                if k.startswith("apstate_") and v in ("已提交", "执行中", "已生效", "失败"):
-                    badge_cls = {"已提交": "btn-submitted", "执行中": "btn-running",
-                                 "已生效": "btn-done", "失败": "btn-failed"}[v]
-                    st.markdown(f'<span class="btn-state {badge_cls}">审批{v}</span>',
-                                unsafe_allow_html=True)
-                    break
-
     # ---- 5. 当前账户总览 ----
-    st.subheader("账户总览")
-    row = q("SELECT date,nav,cash,position_value,pnl_day,ret_total FROM daily_report"
-            " WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (acct,))
-    if row:
-        asof, nav, cash, pv, pnl_day, ret = row[0]
-        ccy = {"sim_a": "CNY", "sim_hk": "HKD", "sim_crypto": "USDT"}.get(acct, "")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric(f"总资产（{ccy}）", f"{nav:,.2f}", f"{ret*100:+.2f}%累计")
-        m2.metric("现金", f"{cash:,.2f}")
-        m3.metric("持仓市值", f"{pv:,.2f}")
-        m4.metric("当日盈亏", f"{pnl_day:+,.2f}")
-        st.caption(f"数据截至 {asof} · 策略：{STRATEGY_CN.get(strategy_of(acct), strategy_of(acct))}（{strategy_desc(strategy_of(acct))}）")
-    else:
         st.info("该账户暂无数据")
 
     # 净值曲线

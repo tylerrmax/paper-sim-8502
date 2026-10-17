@@ -273,7 +273,7 @@ def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=No
 
 # ============ 滚动行情条（四态：实时/最近收盘/已过期/未知） ============
 def render_ticker():
-    """滚动行情条：优先实时，四态徽标，展示实际更新时间，绝不把快照伪装成实时"""
+    """行情并排静态展示：A股 | 港股 | 加密三列，不滚动，一眼看清"""
     try:
         from engine.realtime import fetch_all
         syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data")]
@@ -281,24 +281,30 @@ def render_ticker():
     except Exception:
         live = {}
         syms = []
-    # DB 最新日期（用于四态判定）
     db_dates = {r[0]: r[1] for r in
                 q("SELECT symbol, MAX(date) FROM market_data GROUP BY symbol")}
-    items = []
+    # 分类
+    a_syms, hk_syms, crypto_syms = [], [], []
     all_syms = sorted(set(list(live.keys()) + list(db_dates.keys())))
     for sym in all_syms:
+        if sym == "BTCUSDT":
+            crypto_syms.append(sym)
+        elif sym.startswith("HK"):
+            hk_syms.append(sym)
+        else:
+            a_syms.append(sym)
+
+    def _item(sym):
         d = live.get(sym, {})
         price = d.get("price")
         chg = d.get("change_pct", 0)
         live_t = d.get("time", "")
         db_d = db_dates.get(sym, "")
-        # 有实时价才算 live 候选，否则按 DB 日期判定
         state, ts = quote_state(sym, live_t if price else "", db_d)
         badge = QS_BADGE[state]
         if price:
             price_s = f"{price}"
         else:
-            # 无实时价时用 DB 收盘价
             row = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,))
             price = row[0][0] if row and row[0][0] else 0
             price_s = f"{price:.2f}"
@@ -308,26 +314,24 @@ def render_ticker():
                     chg = (price - prev[0][0]) / prev[0][0] * 100
         color = "#2ebd85" if chg >= 0 else "#f6465d"
         arrow = "▲" if chg >= 0 else "▼"
-        ts_show = ts if ts else "--"
-        items.append(
-            f'<span style="margin-right:24px; white-space:nowrap;">'
-            f'<b>{sym_name(sym)}</b> <span class="num">{price_s}</span> '
-            f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span> '
-            f'{badge}<span style="color:#5a6270;font-size:10px"> {ts_show}</span></span>')
-    if not items:
-        return
-    ticker_html = "".join(items)
-    st.markdown(f"""
-    <div style="overflow:hidden; background:#0d1117; border:1px solid #1e2532;
-                border-radius:8px; padding:8px 0; margin-bottom:16px;">
-      <div style="display:inline-block; white-space:nowrap; animation: ticker 30s linear infinite;">
-        {ticker_html}<span style="margin-right:48px;"></span>{ticker_html}
-      </div>
-    </div>
-    <style>
-    @keyframes ticker {{ 0% {{ transform: translateX(0); }} 100% {{ transform: translateX(-50%); }} }}
-    </style>
-    """, unsafe_allow_html=True)
+        return (f'<div style="padding:6px 0;border-bottom:1px solid #1e2532;">'
+                f'<b>{sym_name(sym)}</b><br>'
+                f'<span class="num" style="font-size:16px;">{price_s}</span> '
+                f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span> {badge}</div>')
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**A股**")
+        for s in a_syms:
+            st.markdown(_item(s), unsafe_allow_html=True)
+    with c2:
+        st.markdown("**港股**")
+        for s in hk_syms:
+            st.markdown(_item(s), unsafe_allow_html=True)
+    with c3:
+        st.markdown("**加密**")
+        for s in crypto_syms:
+            st.markdown(_item(s), unsafe_allow_html=True)
 
 
 # ============ 顶栏：系统状态 + 策略 ============

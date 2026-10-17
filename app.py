@@ -273,7 +273,7 @@ def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=No
 
 # ============ 滚动行情条（四态：实时/最近收盘/已过期/未知） ============
 def render_ticker():
-    """行情表：代码 | 名称 | 涨幅% | 现价，券商标准格式，红涨绿跌"""
+    """作战大屏：代码 | 名称 | 现价 | 涨幅% | 技术信号 | 待建单，完整闭环"""
     try:
         from engine.realtime import fetch_all
         syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data")]
@@ -281,17 +281,39 @@ def render_ticker():
     except Exception:
         live = {}
         syms = []
-    db_dates = {r[0]: r[1] for r in
-                q("SELECT symbol, MAX(date) FROM market_data GROUP BY symbol")}
-    a_syms, hk_syms, crypto_syms = [], [], []
-    all_syms = sorted(set(list(live.keys()) + list(db_dates.keys())))
-    for sym in all_syms:
-        if sym == "BTCUSDT":
-            crypto_syms.append(sym)
-        elif sym.startswith("HK"):
-            hk_syms.append(sym)
-        else:
-            a_syms.append(sym)
+    from engine.indicators import rsi, macd, bollinger, adx, market_regime, ma_align
+
+    # 待建单：未成交的信号
+    pending = {}
+    for d, sym, side, px in q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
+        LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
+          AND s.symbol=f.symbol AND s.side=f.side
+        WHERE f.id IS NULL AND s.date >= date('now','-7 days')"""):
+        pending[sym] = f"{side} @{px:.2f}"
+
+    def _tech_signals(sym):
+        bars = q("SELECT close,high,low FROM market_data WHERE symbol=? ORDER BY date", (sym,))
+        if len(bars) < 30:
+            return "-"
+        closes = [r[0] for r in bars]
+        highs = [r[1] for r in bars]
+        lows = [r[2] for r in bars]
+        tags = []
+        rsi_v = rsi(closes)[-1]
+        if rsi_v and rsi_v > 70: tags.append("超买")
+        elif rsi_v and rsi_v < 30: tags.append("超卖")
+        _, _, hist = macd(closes)
+        tags.append("MACD多" if (hist[-1] and hist[-1] > 0) else "MACD空")
+        adx_v = adx(highs, lows, closes)[-1]
+        regime = market_regime(adx_v)
+        tags.append("趋势" if regime == "trend" else "震荡")
+        align = ma_align(closes)
+        if align > 0.5: tags.append("均线多")
+        elif align < -0.5: tags.append("均线空")
+        upper, _, lower = bollinger(closes)
+        if closes[-1] > upper[-1]: tags.append("破上轨")
+        if closes[-1] < lower[-1]: tags.append("破下轨")
+        return " ".join(tags)
 
     def _row(sym):
         d = live.get(sym, {})
@@ -309,13 +331,28 @@ def render_ticker():
                     chg = (price - prev[0][0]) / prev[0][0] * 100
         color = "#f6465d" if chg >= 0 else "#2ebd85"
         sign = "+" if chg >= 0 else ""
-        # 代码去前缀显示
         code_show = sym[2:] if sym.startswith("HK") else sym
         name_show = SYMBOL_CN.get(sym, "")
-        return (f'<tr><td style="padding:6px 8px;">{code_show}</td>'
-                f'<td style="padding:6px 8px;color:#1890ff;">{name_show}</td>'
-                f'<td style="padding:6px 8px;color:{color};text-align:right;">{sign}{chg:.2f}%</td>'
-                f'<td class="num" style="padding:6px 8px;color:{color};text-align:right;">{price_s}</td></tr>')
+        tech = _tech_signals(sym)
+        order = pending.get(sym, "-")
+        order_style = f'color:#f0b90b;font-weight:bold;' if order != "-" else 'color:#666;'
+        return (f'<tr><td style="padding:8px;">{code_show}</td>'
+                f'<td style="padding:8px;color:#1890ff;">{name_show}</td>'
+                f'<td class="num" style="padding:8px;color:{color};text-align:right;">{price_s}</td>'
+                f'<td style="padding:8px;color:{color};text-align:right;">{sign}{chg:.2f}%</td>'
+                f'<td style="padding:8px;font-size:12px;color:#aaa;">{tech}</td>'
+                f'<td style="padding:8px;{order_style}">{order}</td></tr>')
+
+    # 分类
+    a_syms, hk_syms, crypto_syms = [], [], []
+    all_syms = sorted(set(list(live.keys()) + [r[0] for r in q("SELECT DISTINCT symbol FROM market_data")]))
+    for sym in all_syms:
+        if sym == "BTCUSDT":
+            crypto_syms.append(sym)
+        elif sym.startswith("HK"):
+            hk_syms.append(sym)
+        else:
+            a_syms.append(sym)
 
     def _table(syms_list, title):
         if not syms_list:
@@ -323,10 +360,12 @@ def render_ticker():
         rows = "".join(_row(s) for s in syms_list)
         return (f'<div style="margin-bottom:16px;"><b>{title}</b>'
                 f'<table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:4px;">'
-                f'<tr style="color:#888;font-size:12px;"><td style="padding:4px 8px;">代码</td>'
-                f'<td style="padding:4px 8px;">名称</td>'
-                f'<td style="padding:4px 8px;text-align:right;">涨幅%</td>'
-                f'<td style="padding:4px 8px;text-align:right;">现价</td></tr>'
+                f'<tr style="color:#888;font-size:12px;border-bottom:1px solid #1e2532;">'
+                f'<td style="padding:6px 8px;">代码</td><td style="padding:6px 8px;">名称</td>'
+                f'<td style="padding:6px 8px;text-align:right;">现价</td>'
+                f'<td style="padding:6px 8px;text-align:right;">涨幅%</td>'
+                f'<td style="padding:6px 8px;">技术信号</td>'
+                f'<td style="padding:6px 8px;">待建单</td></tr>'
                 f'{rows}</table></div>')
 
     st.markdown(_table(a_syms, "A股") + _table(hk_syms, "港股") + _table(crypto_syms, "加密"),
@@ -697,7 +736,7 @@ elif tab == "🔍 选股":
         dif, dea, hist = macd(closes)
         macd_h = hist[-1]
         upper, mid, lower = bollinger(closes)
-        adx_v = calc_adx(highs, lows, closes)[-1]
+        adx_v = adx(highs, lows, closes)[-1]
         regime = market_regime(adx_v)
         align = ma_align(closes)
         tags = []

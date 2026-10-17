@@ -531,7 +531,7 @@ if tab == "🏠 工作台":
     with c1:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;">¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;">¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
             </div>''', unsafe_allow_html=True)
@@ -549,14 +549,14 @@ if tab == "🏠 工作台":
     with c3:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">持仓市值</div>
-            <div class="num" style="font-size:22px;margin:8px 0;">¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;">¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
             </div>''', unsafe_allow_html=True)
     with c4:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">可用资金</div>
-            <div class="num" style="font-size:22px;margin:8px 0;">¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;">¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
             </div>''', unsafe_allow_html=True)

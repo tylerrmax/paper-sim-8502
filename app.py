@@ -273,7 +273,7 @@ def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=No
 
 # ============ 滚动行情条（四态：实时/最近收盘/已过期/未知） ============
 def render_ticker():
-    """行情并排静态展示：A股 | 港股 | 加密三列，不滚动，一眼看清"""
+    """行情表：代码 | 名称 | 涨幅% | 现价，券商标准格式，红涨绿跌"""
     try:
         from engine.realtime import fetch_all
         syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data")]
@@ -283,7 +283,6 @@ def render_ticker():
         syms = []
     db_dates = {r[0]: r[1] for r in
                 q("SELECT symbol, MAX(date) FROM market_data GROUP BY symbol")}
-    # 分类
     a_syms, hk_syms, crypto_syms = [], [], []
     all_syms = sorted(set(list(live.keys()) + list(db_dates.keys())))
     for sym in all_syms:
@@ -294,44 +293,44 @@ def render_ticker():
         else:
             a_syms.append(sym)
 
-    def _item(sym):
+    def _row(sym):
         d = live.get(sym, {})
         price = d.get("price")
         chg = d.get("change_pct", 0)
-        live_t = d.get("time", "")
-        db_d = db_dates.get(sym, "")
-        state, ts = quote_state(sym, live_t if price else "", db_d)
-        badge = QS_BADGE[state]
         if price:
             price_s = f"{price}"
         else:
             row = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,))
             price = row[0][0] if row and row[0][0] else 0
-            price_s = f"{price:.2f}"
+            price_s = f"{price:.2f}" if price else "--"
             if row:
                 prev = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1 OFFSET 1", (sym,))
                 if prev and prev[0][0]:
                     chg = (price - prev[0][0]) / prev[0][0] * 100
-        color = "#2ebd85" if chg >= 0 else "#f6465d"
-        arrow = "▲" if chg >= 0 else "▼"
-        return (f'<div style="padding:6px 0;border-bottom:1px solid #1e2532;">'
-                f'<b>{sym_name(sym)}</b><br>'
-                f'<span class="num" style="font-size:16px;">{price_s}</span> '
-                f'<span style="color:{color}">{arrow}{abs(chg):.2f}%</span> {badge}</div>')
+        color = "#f6465d" if chg >= 0 else "#2ebd85"
+        sign = "+" if chg >= 0 else ""
+        # 代码去前缀显示
+        code_show = sym[2:] if sym.startswith("HK") else sym
+        name_show = SYMBOL_CN.get(sym, "")
+        return (f'<tr><td style="padding:6px 8px;">{code_show}</td>'
+                f'<td style="padding:6px 8px;color:#1890ff;">{name_show}</td>'
+                f'<td style="padding:6px 8px;color:{color};text-align:right;">{sign}{chg:.2f}%</td>'
+                f'<td class="num" style="padding:6px 8px;color:{color};text-align:right;">{price_s}</td></tr>')
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown("**A股**")
-        for s in a_syms:
-            st.markdown(_item(s), unsafe_allow_html=True)
-    with c2:
-        st.markdown("**港股**")
-        for s in hk_syms:
-            st.markdown(_item(s), unsafe_allow_html=True)
-    with c3:
-        st.markdown("**加密**")
-        for s in crypto_syms:
-            st.markdown(_item(s), unsafe_allow_html=True)
+    def _table(syms_list, title):
+        if not syms_list:
+            return ""
+        rows = "".join(_row(s) for s in syms_list)
+        return (f'<div style="margin-bottom:16px;"><b>{title}</b>'
+                f'<table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:4px;">'
+                f'<tr style="color:#888;font-size:12px;"><td style="padding:4px 8px;">代码</td>'
+                f'<td style="padding:4px 8px;">名称</td>'
+                f'<td style="padding:4px 8px;text-align:right;">涨幅%</td>'
+                f'<td style="padding:4px 8px;text-align:right;">现价</td></tr>'
+                f'{rows}</table></div>')
+
+    st.markdown(_table(a_syms, "A股") + _table(hk_syms, "港股") + _table(crypto_syms, "加密"),
+                unsafe_allow_html=True)
 
 
 # ============ 顶栏：系统状态 + 策略 ============

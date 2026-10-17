@@ -420,20 +420,32 @@ acct = st.sidebar.selectbox("账户", accts, format_func=lambda x: ACCT_CN.get(x
 if tab == "🏠 工作台":
     st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
 
-    # ---- 闭环流程指引 ----
-    with st.expander("🔄 操作闭环：搜索→选股→验证→交付→券商兑现→回执", expanded=False):
-        st.markdown("""
-        | 步骤 | 位置 | 动作 |
-        |------|------|------|
-        | 1️⃣ 搜索 | 🔍 选股 → 全市场搜索 | 输入代码，新浪K线直看 |
-        | 2️⃣ 选股 | 🔍 选股 → 技术形态 | 看RSI/MACD/ADX/布林带 |
-        | 3️⃣ 交付 | 📝 交易 → 待建条件单 | 一键复制去同花顺 |
-        | 4️⃣ 券商兑现 | 同花顺App | 手动建条件单 |
-        | 5️⃣ 回执 | 📝 交易 → 回执录入 | 成交后登记，闭环完成 |
-        | 6️⃣ 复盘 | 🛡 验证 | 看毕业进度与风控 |
-        """)
+    # ---- 今日待办（最优先）：一眼知道要做什么 ----
+    # 待建条件单
+    pending_orders = q("""SELECT COUNT(*) FROM signals s
+        LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
+          AND s.symbol=f.symbol AND s.side=f.side
+        WHERE f.id IS NULL AND s.date >= date('now','-7 days')""")[0][0] or 0
+    # 待审批信号
+    pending_signals = q("""SELECT COUNT(*) FROM signals s
+        LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account
+          AND ap.symbol=s.symbol AND ap.side=s.side
+        LEFT JOIN fills f ON f.date=s.date AND f.account=s.account
+          AND f.symbol=s.symbol AND f.side=s.side
+        WHERE s.date>=date('now','-60 days') AND ap.date IS NULL AND f.date IS NULL""")[0][0] or 0
+    if pending_orders > 0 or pending_signals > 0:
+        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #f0b90b;border-radius:8px;
+            padding:12px 16px;margin-bottom:16px;">
+            <b>📋 今日待办</b><br>
+            {"· " + str(pending_orders) + "个待建条件单 → 📝交易页<br>" if pending_orders else ""}
+            {"· " + str(pending_signals) + "个待审批信号" if pending_signals else ""}
+            </div>''', unsafe_allow_html=True)
+    else:
+        st.markdown('''<div style="background:#1a1a2e;border:1px solid #2ebd85;border-radius:8px;
+            padding:12px 16px;margin-bottom:16px;">✅ 今日无待办</div>''',
+            unsafe_allow_html=True)
 
-    # ---- 1. 风险警报区（最优先）：阻断原因置顶 ----
+    # ---- 1. 风险警报区 ----
     alerts = []
     if status != "running":
         alerts.append(("warn", "⏸ 系统已暂停：新信号不会成交。已挂在券商的条件单请在券商端自行检查/撤销。"))
@@ -588,46 +600,24 @@ if tab == "🏠 工作台":
         st.line_chart({d: n for d, n in hist})
 
     # 三账户并排（对标验证终端）
-    st.subheader("三账户并排")
-    cols = st.columns(3)
-    for i, aid in enumerate(["sim_a", "sim_hk", "sim_crypto"]):
-        r = q("SELECT nav,pnl_day,ret_total FROM daily_report"
-              " WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
-        with cols[i]:
-            s = strategy_of(aid)
-            if r:
-                nav_, pnl_, ret_ = r[0]
-                ccy = {"sim_a": "CNY", "sim_hk": "HKD", "sim_crypto": "USDT"}.get(aid, "")
-                st.markdown(
-                    f'<div class="kpi-card">'
-                    f'<div class="kpi-label">{aid}（{ACCT_CN.get(aid, aid)}）'
-                    f' <span class="strategy-badge {s}">{STRATEGY_CN.get(s, s)}</span></div>'
-                    f'<div class="kpi-value">{nav_:,.0f} <span style="font-size:12px">{ccy}</span></div>'
-                    f'<div class="kpi-label">当日 <span style="color:{"#2ebd85" if pnl_ >= 0 else "#f6465d"}">'
-                    f'{pnl_:+,.0f}</span> · 累计 {ret_*100:+.2f}%</div></div>',
-                    unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="kpi-card"><div class="kpi-label">{aid}</div>'
-                            f'<div class="kpi-value">—</div></div>', unsafe_allow_html=True)
-
-    # 事件流（最近动态）
-    st.subheader("📡 事件流")
-    events = []
-    for d, a, s, sd, qty, px in q(
-            "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 5"):
-        events.append((d, f"💰 {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
-    for d, a, s, sd in q(
-            "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 5"):
-        events.append((d, f"📶 {ACCT_CN.get(a,a)} {sym_name(s)} {sd}信号"))
-    for d, a, s, sd, dc in q(
-            "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 5"):
-        icon = "✅" if dc == "approved" else "⏭"
-        events.append((d, f"{icon} {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {dc}"))
-    events.sort(reverse=True)
-    for d, txt in events[:10]:
-        st.write(f"`{d}` {txt}")
-    if not events:
-        st.write("暂无事件")
+    # 事件流（最近动态）- 折叠
+    with st.expander("📡 事件流", expanded=False):
+        events = []
+        for d, a, s, sd, qty, px in q(
+                "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 5"):
+            events.append((d, f"💰 {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
+        for d, a, s, sd in q(
+                "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 5"):
+            events.append((d, f"📶 {ACCT_CN.get(a,a)} {sym_name(s)} {sd}信号"))
+        for d, a, s, sd, dc in q(
+                "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 5"):
+            icon = "✅" if dc == "approved" else "⏭"
+            events.append((d, f"{icon} {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {dc}"))
+        events.sort(reverse=True)
+        for d, txt in events[:10]:
+            st.write(f"`{d}` {txt}")
+        if not events:
+            st.write("暂无事件")
 
 # ================================================================
 # 📈 行情与信号：实时行情 + 策略规则 + 触发线

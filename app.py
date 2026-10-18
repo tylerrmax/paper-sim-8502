@@ -109,6 +109,24 @@ def get_control():
     return r[0] if r else ("running", "auto")
 
 
+def check_system_health():
+    """系统健康检查：返回 (blocked: bool, reasons: list[str])
+    2026-10-18起：发现阻断性问题时顶部状态必须显示阻断，不得显示"正常运行"。"""
+    reasons = []
+    # 1. SELL信号无持仓
+    rows = q("""SELECT s.date, s.account, s.symbol FROM signals s
+                LEFT JOIN positions p ON p.account=s.account AND p.symbol=s.symbol
+                WHERE s.side='SELL' AND s.status='待执行'
+                  AND (p.qty IS NULL OR p.qty <= 0)""")
+    for d, a, sym in rows:
+        reasons.append(f"SELL信号无持仓: {a} {sym} ({d})")
+    # 2. 待执行信号中有已过期的
+    rows = q("SELECT COUNT(*) FROM signals WHERE status='已过期'")
+    if rows and rows[0][0] > 0:
+        reasons.append(f"{rows[0][0]}个信号已过期未处理")
+    return (len(reasons) > 0, reasons)
+
+
 def set_control(status=None, mode=None):
     con = sqlite3.connect(DB)
     cur = get_control()
@@ -195,7 +213,14 @@ st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_htm
 
 # 数据日期（交易员需要知道数据新旧，不说教）
 if CLOUD_DATA_ASOF:
-    st.caption(f"数据截至 {CLOUD_DATA_ASOF}")
+    # 区分：数据日期（交易日）vs 同步时间（文件推送时间）
+    # 周末无新数据时，数据日期停在周五属正常，不应误报为同步中断
+    data_date = q("SELECT MAX(date) FROM daily_report WHERE symbol='TOTAL'")
+    data_date_str = data_date[0][0] if data_date and data_date[0][0] else ""
+    if data_date_str:
+        st.caption(f"数据日期 {data_date_str} · 同步于 {CLOUD_DATA_ASOF}")
+    else:
+        st.caption(f"数据截至 {CLOUD_DATA_ASOF}")
 
 # ============ 行情状态四态判定 + 数字格式化助手 ============
 from datetime import datetime, timedelta
@@ -431,12 +456,18 @@ def render_ticker():
 # ============ 顶栏：系统状态 + 策略 ============
 status, mode = get_control()
 ver = CFG.get("meta", {}).get("version", "unknown")
+blocked, block_reasons = check_system_health()
 
 top1, top2, top3, top4 = st.columns(4)
 with top1:
-    st.markdown(f'<div class="kpi-card"><div class="kpi-label">系统状态</div>'
-                f'<div class="kpi-value">{"🟢 运行中" if status == "running" else "⏸ 已暂停"}</div></div>',
-                unsafe_allow_html=True)
+    if blocked:
+        st.markdown(f'<div class="kpi-card" style="border:1px solid #ff4d4f;"><div class="kpi-label">系统状态</div>'
+                    f'<div class="kpi-value" style="color:#ff4d4f;">⛔ 阻断</div></div>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="kpi-card"><div class="kpi-label">系统状态</div>'
+                    f'<div class="kpi-value">{"🟢 运行中" if status == "running" else "⏸ 已暂停"}</div></div>',
+                    unsafe_allow_html=True)
 with top2:
     st.markdown(f'<div class="kpi-card"><div class="kpi-label">执行模式</div>'
                 f'<div class="kpi-value">{"⚡ 自动" if mode == "auto" else "✋ 手动"}</div></div>',
@@ -454,6 +485,10 @@ with top4:
     st.markdown(f'<div class="kpi-card"><div class="kpi-label">分账户策略（2026-10-16 选A）</div>'
                 f'<div style="margin-top:6px">{badges}</div></div>',
                 unsafe_allow_html=True)
+
+# 阻断原因展示（2026-10-18起：有阻断时必须清晰显示）
+if blocked:
+    st.error("⛔ 系统阻断：" + "；".join(block_reasons[:5]))
 
 # ============ 导航（对标人工交易终端工作流） ============
 tab = st.sidebar.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"])

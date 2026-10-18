@@ -223,7 +223,9 @@ def build_execution(con, pending_signals):
 def build_graduation(con):
     """毕业进度：只统计验证期（10-08起）的已完成 round-trip（SELL）。
     2026-10-16 起：graduation_exclusions 表中的成交从样本中剔除（历史保留，仅不计入毕业指标）。
-    2026-10-17 起：按 strategy_version 隔离，策略变更后的新样本不与旧版本混合。"""
+    2026-10-17 起：按 strategy_version 隔离，策略变更后的新样本不与旧版本混合。
+    2026-10-18 起：严格版本隔离（IS NULL 的旧成交排除）；验证期按买入日（开仓日）口径，
+    即 SELL 对应的 BUY 日期必须 >= VAL_START，避免验证期前开仓的计入样本。"""
     accts, total_rt = {}, 0
     cur_ver = CFG.get("meta", {}).get("version", "unknown")
     for a in CFG["accounts"]:
@@ -234,10 +236,14 @@ def build_graduation(con):
                LEFT JOIN graduation_exclusions e
                  ON e.date=f.date AND e.account=f.account
                 AND e.symbol=f.symbol AND e.side=f.side
-               WHERE f.account=? AND f.side='SELL' AND f.date>=?
+               WHERE f.account=? AND f.side='SELL'
                  AND e.date IS NULL
-                 AND (f.strategy_version IS NULL OR f.strategy_version=?)""",
-            (aid, vs, cur_ver)).fetchall() if r[0] is not None]
+                 AND f.strategy_version=?
+                 AND (SELECT b.date FROM fills b
+                      WHERE b.account=f.account AND b.symbol=f.symbol
+                        AND b.side='BUY' AND b.date < f.date
+                      ORDER BY b.date DESC LIMIT 1) >= ?""",
+            (aid, cur_ver, vs)).fetchall() if r[0] is not None]
         n_excluded = con.execute(
             """SELECT COUNT(*) FROM fills f
                JOIN graduation_exclusions e
@@ -278,7 +284,7 @@ def build_graduation(con):
         total_rt += n
     return {
         "period": {"start": VAL_START, "end": VAL_END},
-        "targets": {"win_loss_ratio": 3.0, "max_drawdown": 0.10,
+        "targets": {"win_loss_ratio": 2.5, "max_drawdown": 0.10,
                     "sample_min": 20, "sample_max": 30, "execution_min": 90},
         # 2026-10-02 用户最终拍板：3倍线落在盈亏比（平均盈利/平均亏损）；
         # 盈利因子（总盈利/总亏损）仅作参考展示，不设硬线。

@@ -226,6 +226,8 @@ def _run_locked(db_path=DB, cfg=None):
             adx_by_sym[s] = {d: v for d, v in zip(dates, adx_vals) if v is not None}
             if strategy == "buyback":
                 gen = gen_buyback_signals(dates, closes, highs)
+            elif strategy == "disabled":
+                gen = []  # 2026-10-18起停掉：数据不支持正期望，不再生成新信号
             else:
                 gen = gen_signals(dates, closes, ma_long)
             for d, side, px in gen:

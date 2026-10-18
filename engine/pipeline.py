@@ -372,10 +372,16 @@ def _run_locked(db_path=DB, cfg=None):
                         stop_px = round(sig_px - 2 * atr_v, 2)
                 # 策略中文名
                 strat_cn = {"buyback": "接回策略", "ma20": "MA20趋势"}.get(strategy, strategy)
+                # 信号过期：超过5个交易日未执行的信号标记为已过期（2026-10-18起）
+                from datetime import datetime, timedelta
+                sig_date = datetime.strptime(d, "%Y-%m-%d").date()
+                today = datetime.now().date()
+                days_old = (today - sig_date).days
+                sig_status = "已过期" if days_old > 7 else "待执行"
                 con.execute(
                     "INSERT INTO signals(date,account,symbol,side,price,action_type,status,stop_price,strategy)"
                     " VALUES(?,?,?,?,?,?,?,?,?)",
-                    (d, aid, s, side, sig_px, act, "待执行", stop_px, strat_cn))
+                    (d, aid, s, side, sig_px, act, sig_status, stop_px, strat_cn))
                 # 有 T+1 bar 才加入待执行；否则信号保留，待数据到达后执行
                 if has_next_bar.get((s, d)):
                     pending.append((d, s, side, sig_px))

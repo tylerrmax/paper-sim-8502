@@ -36,6 +36,7 @@ FILES = [
     "engine/execution.py",
     "engine/batch_test.py",
     "engine/realtime.py",
+    "engine/indicators.py",
     "engine/tv_charts.py",
     "engine/order_validate.py",
     "engine/lightweight-charts.standalone.js",

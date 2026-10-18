@@ -454,6 +454,10 @@ def render_ticker():
 
 
 # ============ 顶栏：系统状态 + 策略 ============
+# 账户显示名：代码+中文名（2026-10-18起统一）
+_ACCT_CN_TOP = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
+def _acct_name_top(aid):
+    return f"{aid} {_ACCT_CN_TOP[aid]}" if aid in _ACCT_CN_TOP else aid
 status, mode = get_control()
 ver = CFG.get("meta", {}).get("version", "unknown")
 blocked, block_reasons = check_system_health()
@@ -478,9 +482,8 @@ with top3:
                 unsafe_allow_html=True)
 with top4:
     # 各账户策略徽标
-    _ACCT = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
     badges = " ".join(
-        f'<span class="strategy-badge {strategy_of(a["id"])}">{_ACCT.get(a["id"], a["id"])}：{STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
+        f'<span class="strategy-badge {strategy_of(a["id"])}">{_acct_name_top(a["id"])}：{STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
         for a in CFG["accounts"])
     st.markdown(f'<div class="kpi-card"><div class="kpi-label">分账户策略（2026-10-16 选A）</div>'
                 f'<div style="margin-top:6px">{badges}</div></div>',
@@ -527,6 +530,9 @@ if not IS_CLOUD:
 accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY account")]
          or ["sim_a", "sim_hk", "sim_crypto"])
 ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
+def acct_name(aid):
+    """账户显示名：代码+中文名，如 'sim_a A股'"""
+    return f"{aid} {ACCT_CN[aid]}" if aid in ACCT_CN else aid
 SYMBOL_CN = {
     "002446": "盛路通信",
     "002472": "双环传动",
@@ -717,14 +723,14 @@ if tab == "🏠 工作台":
         events = []
         for d, a, s, sd, qty, px in q(
                 "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 5"):
-            events.append((d, f"💰 {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
+            events.append((d, f"💰 {acct_name(a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
         for d, a, s, sd in q(
                 "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 5"):
-            events.append((d, f"📶 {ACCT_CN.get(a,a)} {sym_name(s)} {sd}信号"))
+            events.append((d, f"📶 {acct_name(a)} {sym_name(s)} {sd}信号"))
         for d, a, s, sd, dc in q(
                 "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 5"):
             icon = "✅" if dc == "approved" else "⏭"
-            events.append((d, f"{icon} {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {dc}"))
+            events.append((d, f"{icon} {acct_name(a)} {sym_name(s)} {sd} {dc}"))
         events.sort(reverse=True)
         for d, txt in events[:10]:
             st.write(f"`{d}` {txt}")
@@ -878,7 +884,7 @@ elif tab == "🔍 选股":
 elif tab == "📝 交易":
     st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)
     # 页内账户选择
-    acct = st.radio("账户", accts, format_func=lambda x: ACCT_CN.get(x, x),
+    acct = st.radio("账户", accts, format_func=lambda x: acct_name(x),
                     horizontal=True, key="trade_acct")
 
     # 待建条件单
@@ -1286,7 +1292,7 @@ elif tab == "🛡 验证":
         con.close()
         tg = g["targets"]
         # 表头
-        hdr = ["指标"] + [f"\1{ACCT_CN.get(aid, aid)}\2" for aid in ["sim_a", "sim_hk", "sim_crypto"]]
+        hdr = ["指标"] + [acct_name(aid) for aid in ["sim_a", "sim_hk", "sim_crypto"]]
         rows = []
         # 样本数
         r = ["样本数"]

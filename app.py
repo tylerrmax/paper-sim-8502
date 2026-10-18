@@ -539,9 +539,9 @@ if tab == "🏠 工作台":
         rc = core.get("sim_crypto", {}).get("ret", 0)
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#ffffff;"><span style="font-size:12px;color:#888;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#aaa;font-size:14px;"><span style="font-size:11px;">港股 </span>HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#aaa;font-size:14px;"><span style="font-size:11px;">加密货币 </span>${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#ffffff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
+            <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">港股 </span>HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
+            <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">加密货币 </span>${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
             <div style="font-size:12px;margin-top:4px;">
                 <span style="color:{_rg(ra)};">{ra*100:+.2f}%</span>
                 <span style="color:#666;"> | </span>
@@ -556,21 +556,21 @@ if tab == "🏠 工作台":
         pnl_c = core.get("sim_crypto", {}).get("pnl", 0)
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">当日盈亏</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:{_rg(pnl_a)};"><span style="font-size:12px;color:#888;">A股 </span>¥{_fmt(pnl_a)}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:{_rg(pnl_a)};"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(pnl_a)}</div>
             <div class="num" style="color:{_rg(pnl_hk)};font-size:14px;">HK${_fmt(pnl_hk)}</div>
             <div class="num" style="color:{_rg(pnl_c)};font-size:14px;">${_fmt(pnl_c)}</div>
             </div>''', unsafe_allow_html=True)
     with c3:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">持仓市值</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:12px;color:#888;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
             </div>''', unsafe_allow_html=True)
     with c4:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">可用资金</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:12px;color:#888;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
             </div>''', unsafe_allow_html=True)
@@ -631,8 +631,8 @@ if tab == "🏠 工作台":
         return (f'<div class="status-card"><div class="sc-label">{label} {badge}</div>'
                 f'<div class="sc-value nodata" style="font-size:18px">{val}</div></div>')
     def _fund_flow_panel(aid):
-        """主力资金：近5日净流入/流出"""
-        ccy = {"sim_a": "CNY", "sim_hk": "HKD", "sim_crypto": "USDT"}.get(aid, "")
+        """主力资金：近5日净流入/流出（单位：万）"""
+        ccy = {"sim_a": "万", "sim_hk": "万", "sim_crypto": "万"}.get(aid, "")
         rows = q("SELECT date, SUM(CASE WHEN side='BUY' THEN qty*price ELSE 0 END) as buy_amt,"
                  " SUM(CASE WHEN side='SELL' THEN qty*price ELSE 0 END) as sell_amt,"
                  " SUM(fee) as fees FROM fills WHERE account=? GROUP BY date"
@@ -642,10 +642,11 @@ if tab == "🏠 工作台":
             return
         for d, buy_amt, sell_amt, fees in rows:
             net = (sell_amt or 0) - (buy_amt or 0) - (fees or 0)
-            color = "#2ebd85" if net >= 0 else "#f6465d"
+            net_wan = net / 10000
+            color = "#00c853" if net >= 0 else "#ff4d4f"
             arrow = "▲" if net >= 0 else "▼"
-            st.markdown(f'<div style="padding:4px 0;"><span style="color:#888;">{d}</span> '
-                        f'<span style="color:{color};">{arrow} {net:+,.0f} {ccy}</span></div>',
+            st.markdown(f'<div style="padding:6px 0;font-size:15px;"><span style="color:#aaa;">{d}</span> '
+                        f'<span style="color:{color};font-weight:bold;">{arrow} {net_wan:+.2f}{ccy}</span></div>',
                         unsafe_allow_html=True)
 
     # 主力资金（三账户并排）

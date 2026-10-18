@@ -42,6 +42,9 @@ FILES = [
     "engine/lightweight-charts.standalone.js",
     "sync_snapshot.py",
     "run_daily.py",
+    # 数据文件已公开（用户要求）
+    "db/sim.db",
+    "config/strategy.yaml",
 ]
 
 

@@ -10,7 +10,8 @@ db/test.db
 data/
 *.db.bak.*
 
-# 敏感数据：移至私有仓库 paper-sim-8502-data
-db/sim.db
-config/strategy.yaml
-db/*.db*
+# 备份文件不进仓库
+db/*.bak.*
+db/*.db-shm
+db/*.db-wal
+db/*.lock

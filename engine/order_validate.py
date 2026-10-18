@@ -73,13 +73,16 @@ def validate_order(account, symbol, side, qty, price, signal_date, db_path=DB):
         if qty and qty > avail + 1e-9:
             errors.append(f"卖出 {qty} 超过持仓 {avail}")
 
-    # 8. 可用资金检查（BUY时）
-    if side == "BUY" and qty and price:
-        need = qty * price * 1.01  # 预留1%费用
-        nav_row = con.execute("SELECT cash FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (account,)).fetchone()
-        cash = nav_row[0] if nav_row else 0
-        if need > cash:
-            errors.append(f"需资金 {need:.2f} 超过可用 {cash:.2f}")
+    # 8. 可用资金检查（BUY时）- 数量必填
+    if side == "BUY":
+        if not qty or qty <= 0:
+            errors.append("买入数量缺失（必须带真实数量）")
+        elif price:
+            need = qty * price * 1.01  # 预留1%费用
+            nav_row = con.execute("SELECT cash FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (account,)).fetchone()
+            cash = nav_row[0] if nav_row else 0
+            if need > cash:
+                errors.append(f"需资金 {need:.2f} 超过可用 {cash:.2f}")
 
     # 9. 风险限额：单笔不超过账户20%
     if qty and price and account:
@@ -87,6 +90,18 @@ def validate_order(account, symbol, side, qty, price, signal_date, db_path=DB):
         nav = nav_row[0] if nav_row else 0
         if nav > 0 and (qty * price / nav) > 0.2:
             warnings.append(f"单笔占比 {(qty*price/nav)*100:.1f}% 超过20%")
+
+    # 10. 总仓位上限：股票70%、加密100%（2026-10-18起强制）
+    if side == "BUY" and qty and price and account:
+        cap = 0.7 if account in ("sim_a", "sim_hk") else 1.0
+        pos_row = con.execute("SELECT position_value FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (account,)).fetchone()
+        cur_pos = pos_row[0] if pos_row and pos_row[0] else 0
+        nav_row = con.execute("SELECT nav FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (account,)).fetchone()
+        nav = nav_row[0] if nav_row and nav_row[0] else 0
+        if nav > 0:
+            new_ratio = (cur_pos + qty * price) / nav
+            if new_ratio > cap + 1e-9:
+                errors.append(f"总仓位 {new_ratio*100:.1f}% 超过上限 {cap*100:.0f}%（当前持仓 {cur_pos:.2f}）")
 
     con.close()
     return (len(errors) == 0, errors, warnings)

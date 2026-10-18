@@ -13,3 +13,4 @@ data/
 # 敏感数据：移至私有仓库 paper-sim-8502-data
 db/sim.db
 config/strategy.yaml
+db/*.db*

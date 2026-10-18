@@ -53,8 +53,8 @@ signals:
   strategy: buyback
   per_account:
     sim_a: buyback
-    sim_hk: ma20
-    sim_crypto: ma20
+    sim_hk: disabled
+    sim_crypto: disabled
   ma_windows:
   - 5
   - 10

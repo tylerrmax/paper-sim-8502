@@ -1096,7 +1096,7 @@ elif tab == "🛡 验证":
 
     # ---- 验证 KPI 卡片（四态徽标，阻断原因优先） ----
     st.subheader("验证 KPI")
-    st.caption("毕业标准：期望值>0 · 盈亏比≥3 · 最大回撤≤10% · 样本20-30笔 · 执行分≥90 · 零数据事故 · 股票与加密分开算")
+    st.caption("毕业标准：期望值>0 · 盈亏比≥2.5（扣费后） · 最大回撤≤10% · 样本20-30笔 · 执行分≥90 · 零数据事故 · 股票与加密分开算")
 
     # 从 graduation 数据取 KPI（sync_snapshot.build_graduation 口径）
     sys.path.insert(0, BASE)

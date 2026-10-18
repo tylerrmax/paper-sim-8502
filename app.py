@@ -957,9 +957,11 @@ elif tab == "📝 交易":
                             unsafe_allow_html=True)
             with c2:
                 if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}"):
+                    _ap_state(f"{d}_{s}_{sd}", "approved", d, acct, s, sd)
                     st.success("已标记")
             with c3:
                 if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}"):
+                    _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
                     st.info("已跳过")
 
     # 券商回执录入（四态按钮反馈：已提交→执行中→已生效/失败）

@@ -117,6 +117,45 @@ def position_sizer(sim, aid, symbol, px, cfg, strategy, buy_frac, lots):
     return qty, ""
 
 
+def suggest_buy_qty_from_db(db_path, aid, symbol, px, cfg):
+    """从DB读取状态，计算建议买入数量（供app.py调用，与pipeline.position_sizer同逻辑）。
+    2026-10-18起：app的订单校验必须用此函数的结果，确保与实际下单数量一致。"""
+    import sqlite3, math
+    con = sqlite3.connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT nav, cash, position_value FROM daily_report "
+            "WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1",
+            (aid,)).fetchone()
+        if not row or not row[0] or row[0] <= 0:
+            return 0
+        nav, cash, pos_val = row[0], row[1] or 0, row[2] or 0
+        # 构造最小sim对象
+        class _Sim:
+            pass
+        sim = _Sim()
+        sim.cash = cash
+        # positions: 从positions表读取
+        sim.positions = {}
+        for r in con.execute(
+                "SELECT symbol, qty, avg_cost FROM positions WHERE account=?",
+                (aid,)).fetchall():
+            class _Lot:
+                pass
+            lot = _Lot()
+            lot.qty, lot.cost = r[1], r[2] or 0
+            sim.positions.setdefault(r[0], []).append(lot)
+        # 参数
+        _sig_cfg = cfg.get("signals", {})
+        strategy = _sig_cfg.get("per_account", {}).get(aid) or _sig_cfg.get("strategy", "ma20")
+        buy_frac = float((cfg.get("sizing", {}) or {}).get("buy_frac", 0.5))
+        lots = cfg.get("lots", {})
+        qty, _ = position_sizer(sim, aid, symbol, px, cfg, strategy, buy_frac, lots)
+        return qty
+    finally:
+        con.close()
+
+
 def run(db_path=DB, cfg=None):
     """日线管线入口（进程级串行）。
 

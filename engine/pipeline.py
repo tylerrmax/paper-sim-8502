@@ -411,7 +411,7 @@ def _run_locked(db_path=DB, cfg=None):
                         stop_px = round(sig_px - 2 * atr_v, 2)
                 # 策略中文名
                 strat_cn = {"buyback": "接回策略", "ma20": "MA20趋势"}.get(strategy, strategy)
-                # 信号过期：超过5个交易日未执行的信号标记为已过期（2026-10-18起）
+                # 信号过期：超过7天未执行的信号标记为已过期（2026-10-18起）
                 from datetime import datetime, timedelta
                 sig_date = datetime.strptime(d, "%Y-%m-%d").date()
                 today = datetime.now().date()

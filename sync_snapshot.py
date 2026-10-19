@@ -21,7 +21,7 @@ DB = os.environ.get("PAPER_SIM_DB", os.path.join(BASE, "db", "sim.db"))
 # 快照输出路径：生产固定 /tmp/sim_snapshot.json；测试时可覆盖，避免污染生产快照
 SNAPSHOT_PATH = os.environ.get("PAPER_SIM_SNAPSHOT", "/tmp/sim_snapshot.json")
 CFG = yaml.safe_load(open(os.path.join(BASE, "config", "strategy.yaml"), encoding="utf-8"))
-RULE_VERSION = "draft-2026-10-02"
+RULE_VERSION = CFG.get("meta", {}).get("version", "unknown")
 CUTOFF = (date.today() - timedelta(days=60)).isoformat()
 VAL_START = {"sim_crypto": "2026-10-03",  # 2026-10-02 用户拍板：加密提前起算
              "sim_a": "2026-10-08", "sim_hk": "2026-10-08"}
@@ -220,6 +220,35 @@ def build_execution(con, pending_signals):
     return {"slippage": slips, "guidance": guides}
 
 
+def _paired_round_trips(con, aid):
+    """按 FIFO 把 SELL 与其对应的 BUY 配对（同标的、按日期+id 顺序；同日买卖也能配上，分批建仓/平仓按数量消耗）。
+    返回 [{date, symbol, pnl, open_date, versions, excluded}]；找不到买入的卖出 open_date=None（数据异常，不计入样本）。"""
+    rows = con.execute(
+        "SELECT f.date, f.symbol, f.side, f.qty, f.pnl, f.strategy_version,"
+        " EXISTS(SELECT 1 FROM graduation_exclusions e WHERE e.date=f.date AND e.account=f.account"
+        "        AND e.symbol=f.symbol AND e.side=f.side)"
+        " FROM fills f WHERE f.account=? ORDER BY f.date, f.id", (aid,)).fetchall()
+    lots, out = {}, []
+    for d, sym, side, qty, pnl, ver, excl in rows:
+        if side == "BUY":
+            lots.setdefault(sym, []).append([float(qty), d, ver])
+            continue
+        remaining, open_date, versions = float(qty), None, set()
+        q = lots.setdefault(sym, [])
+        while remaining > 1e-9 and q:
+            take = min(remaining, q[0][0])
+            open_date = q[0][1] if open_date is None else open_date
+            versions.add(q[0][2])
+            q[0][0] -= take
+            remaining -= take
+            if q[0][0] <= 1e-9:
+                q.pop(0)
+        versions.add(ver)
+        out.append({"date": d, "symbol": sym, "pnl": pnl, "open_date": open_date,
+                    "versions": versions, "excluded": bool(excl)})
+    return out
+
+
 def build_graduation(con):
     """毕业进度：只统计验证期（10-08起）的已完成 round-trip（SELL）。
     2026-10-16 起：graduation_exclusions 表中的成交从样本中剔除（历史保留，仅不计入毕业指标）。
@@ -231,26 +260,17 @@ def build_graduation(con):
     for a in CFG["accounts"]:
         aid = a["id"]
         vs = VAL_START.get(aid, "2026-10-08")
-        pnls = [float(r[0]) for r in con.execute(
-            """SELECT f.pnl FROM fills f
-               LEFT JOIN graduation_exclusions e
-                 ON e.date=f.date AND e.account=f.account
-                AND e.symbol=f.symbol AND e.side=f.side
-               WHERE f.account=? AND f.side='SELL'
-                 AND e.date IS NULL
-                 AND f.strategy_version=?
-                 AND (SELECT b.date FROM fills b
-                      WHERE b.account=f.account AND b.symbol=f.symbol
-                        AND b.side='BUY' AND b.date < f.date
-                      ORDER BY b.date DESC LIMIT 1) >= ?""",
-            (aid, cur_ver, vs)).fetchall() if r[0] is not None]
-        n_excluded = con.execute(
-            """SELECT COUNT(*) FROM fills f
-               JOIN graduation_exclusions e
-                 ON e.date=f.date AND e.account=f.account
-                AND e.symbol=f.symbol AND e.side=f.side
-               WHERE f.account=? AND f.side='SELL' AND f.date>=?""",
-            (aid, vs)).fetchone()[0]
+        rts = _paired_round_trips(con, aid)
+        # 样本条件：未被排除；卖出与其消耗的全部买入都属于当前策略版本；开仓日(最早被消耗买入)>=验证期起点
+        pnls, n_ver_mismatch = [], 0
+        for t in rts:
+            if t["excluded"] or t["pnl"] is None or t["open_date"] is None or t["open_date"] < vs:
+                continue
+            if t["versions"] != {cur_ver}:
+                n_ver_mismatch += 1
+                continue
+            pnls.append(float(t["pnl"]))
+        n_excluded = sum(1 for t in rts if t["excluded"] and t["date"] >= vs)
         n = len(pnls)
         gp = sum(p for p in pnls if p > 0)
         gl = -sum(p for p in pnls if p < 0)
@@ -276,6 +296,10 @@ def build_graduation(con):
             "round_trips": n,
             "excluded_round_trips": n_excluded,
             "expectancy": round(sum(pnls) / n, 2) if n else None,
+            "expectancy_ci_low": (round(sum(pnls) / n - 1.96 * (sum((p - sum(pnls) / n) ** 2 for p in pnls) / (n - 1)) ** 0.5 / n ** 0.5, 2)
+                                  if n >= 2 else None),
+            "win_rate": round(len(wins) / n, 4) if n else None,
+            "version_mismatch_round_trips": n_ver_mismatch,
             "win_loss_ratio": wlr,
             "profit_factor": pf,
             "max_drawdown": round(mdd, 4),

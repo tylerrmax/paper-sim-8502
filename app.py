@@ -118,8 +118,9 @@ def check_system_health():
                 LEFT JOIN positions p ON p.account=s.account AND p.symbol=s.symbol
                 WHERE s.side='SELL' AND s.status='待执行'
                   AND (p.qty IS NULL OR p.qty <= 0)""")
+    _ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
     for d, a, sym in rows:
-        reasons.append(f"SELL信号无持仓: {a} {sym} ({d})")
+        reasons.append(f"SELL信号无持仓: {_ACCT_CN.get(a, a)} {sym} ({d})")
     # 2. 待执行信号中有已过期的
     rows = q("SELECT COUNT(*) FROM signals WHERE status='已过期'")
     if rows and rows[0][0] > 0:
@@ -454,10 +455,6 @@ def render_ticker():
 
 
 # ============ 顶栏：系统状态 + 策略 ============
-# 账户显示名：代码+中文名（2026-10-18起统一）
-_ACCT_CN_TOP = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-def _acct_name_top(aid):
-    return f"{aid} {_ACCT_CN_TOP[aid]}" if aid in _ACCT_CN_TOP else aid
 status, mode = get_control()
 ver = CFG.get("meta", {}).get("version", "unknown")
 blocked, block_reasons = check_system_health()
@@ -482,8 +479,9 @@ with top3:
                 unsafe_allow_html=True)
 with top4:
     # 各账户策略徽标
+    _ACCT = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
     badges = " ".join(
-        f'<span class="strategy-badge {strategy_of(a["id"])}">{_acct_name_top(a["id"])}：{STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
+        f'<span class="strategy-badge {strategy_of(a["id"])}">{_ACCT.get(a["id"], a["id"])}：{STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
         for a in CFG["accounts"])
     st.markdown(f'<div class="kpi-card"><div class="kpi-label">分账户策略（2026-10-16 选A）</div>'
                 f'<div style="margin-top:6px">{badges}</div></div>',
@@ -530,9 +528,6 @@ if not IS_CLOUD:
 accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY account")]
          or ["sim_a", "sim_hk", "sim_crypto"])
 ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-def acct_name(aid):
-    """账户显示名：代码+中文名，如 'sim_a A股'"""
-    return f"{aid} {ACCT_CN[aid]}" if aid in ACCT_CN else aid
 SYMBOL_CN = {
     "002446": "盛路通信",
     "002472": "双环传动",
@@ -723,14 +718,14 @@ if tab == "🏠 工作台":
         events = []
         for d, a, s, sd, qty, px in q(
                 "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 5"):
-            events.append((d, f"💰 {acct_name(a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
+            events.append((d, f"💰 {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
         for d, a, s, sd in q(
                 "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 5"):
-            events.append((d, f"📶 {acct_name(a)} {sym_name(s)} {sd}信号"))
+            events.append((d, f"📶 {ACCT_CN.get(a,a)} {sym_name(s)} {sd}信号"))
         for d, a, s, sd, dc in q(
                 "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 5"):
             icon = "✅" if dc == "approved" else "⏭"
-            events.append((d, f"{icon} {acct_name(a)} {sym_name(s)} {sd} {dc}"))
+            events.append((d, f"{icon} {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {dc}"))
         events.sort(reverse=True)
         for d, txt in events[:10]:
             st.write(f"`{d}` {txt}")
@@ -884,7 +879,7 @@ elif tab == "🔍 选股":
 elif tab == "📝 交易":
     st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)
     # 页内账户选择
-    acct = st.radio("账户", accts, format_func=lambda x: acct_name(x),
+    acct = st.radio("账户", accts, format_func=lambda x: ACCT_CN.get(x, x),
                     horizontal=True, key="trade_acct")
 
     # 待建条件单
@@ -905,8 +900,12 @@ elif tab == "📝 交易":
         # 预校验所有信号
         validated = []
         for d, s, sd, px in sigs:
-            # SELL用当前持仓做数量，BUY暂估1手用于校验框架
+            # SELL用当前持仓做数量；BUY用pipeline的position_sizer同逻辑
+            # （2026-10-18定：app校验必须用pipeline结果，避免校验数量与实际下单数量不一致）
             qty_est = None
+            if sd == "BUY":
+                from engine.pipeline import suggest_buy_qty_from_db
+                qty_est = suggest_buy_qty_from_db(DB, acct, s, px, CFG)
             if sd == "SELL":
                 pos = q("SELECT qty FROM positions WHERE account=? AND symbol=?", (acct, s))
                 qty_est = pos[0][0] if pos else 0
@@ -934,41 +933,42 @@ elif tab == "📝 交易":
             # 卡片列表：每行一个订单卡片，checkbox 在卡片内
             for d, s, sd, px, ok, errs, warns in valid_sigs:
                 direction = "买入" if sd == "BUY" else "卖出"
-            color = "#f6465d" if sd == "BUY" else "#2ebd85"
-            nm = sym_name(s)
-            key = f"order_{d}_{s}_{sd}"
-            checked = st.checkbox(f"{nm} · {direction} · {px:.2f} · {d}",
-                                  value=select_all, key=key)
-            if checked:
-                selected.append((s, direction, px, nm))
-        with top2:
-            if selected:
-                if st.button(f"📋 复制 {len(selected)} 条", key="copy_selected"):
-                    txt = "\n".join(f"{s} {d} 限价{px:.2f}" for s, d, px, _ in selected)
-                    st.code(txt, language=None)
-            else:
-                st.caption("勾选后批量复制")
-        st.divider()
-        # 逐条建单/跳过
-        for d, s, sd, px, ok, errs, warns in valid_sigs:
-            direction = "买入" if sd == "BUY" else "卖出"
-            color = "#f6465d" if sd == "BUY" else "#2ebd85"
-            nm = sym_name(s)
-            c1, c2, c3 = st.columns([3, 1, 1])
-            with c1:
-                st.markdown(f'<div style="padding:8px 0;"><b>{nm}</b> '
-                            f'<span style="color:{color};font-weight:bold;">{direction}</span> '
-                            f'<span class="num">{px:.2f}</span> '
-                            f'<span style="color:#666;font-size:12px;">{d}</span></div>',
-                            unsafe_allow_html=True)
-            with c2:
-                if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}"):
-                    _ap_state(f"{d}_{s}_{sd}", "approved", d, acct, s, sd)
-                    st.success("已标记")
-            with c3:
-                if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}"):
-                    _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
-                    st.info("已跳过")
+                nm = sym_name(s)
+                key = f"order_{d}_{s}_{sd}"
+                checked = st.checkbox(f"{nm} · {direction} · {px:.2f} · {d}",
+                                      value=select_all, key=key)
+                if checked:
+                    selected.append((s, direction, px, nm))
+            with top2:
+                if selected:
+                    if st.button(f"📋 复制 {len(selected)} 条", key="copy_selected"):
+                        txt = "\n".join(f"{s} {d} 限价{px:.2f}" for s, d, px, _ in selected)
+                        st.code(txt, language=None)
+                else:
+                    st.caption("勾选后批量复制")
+            st.divider()
+            # 逐条建单/跳过（落库到 approvals，刷新后不再回到待办）
+            for d, s, sd, px, ok, errs, warns in valid_sigs:
+                direction = "买入" if sd == "BUY" else "卖出"
+                color = "#f6465d" if sd == "BUY" else "#2ebd85"
+                nm = sym_name(s)
+                c1, c2, c3 = st.columns([3, 1, 1])
+                with c1:
+                    st.markdown(f'<div style="padding:8px 0;"><b>{nm}</b> '
+                                f'<span style="color:{color};font-weight:bold;">{direction}</span> '
+                                f'<span class="num">{px:.2f}</span> '
+                                f'<span style="color:#666;font-size:12px;">{d}</span></div>',
+                                unsafe_allow_html=True)
+                    for w in warns:
+                        st.caption(f"⚠️ {w}")
+                with c2:
+                    if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}"):
+                        _ap_state(f"{d}_{s}_{sd}", "approved", d, acct, s, sd)
+                        st.success(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+                with c3:
+                    if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}"):
+                        _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
+                        st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
 
     # 券商回执录入（四态按钮反馈：已提交→执行中→已生效/失败）
     st.subheader("🧾 券商回执录入")
@@ -1054,8 +1054,9 @@ elif tab == "💰 账户":
         w = csv.writer(out)
         w.writerow(["日期", "账户", "标的", "方向", "数量", "价格", "费用", "盈亏"])
         for r in q("SELECT date,account,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 500", (acct,)):
+            r = list(r); r[1] = ACCT_CN.get(r[1], r[1])
             w.writerow(r)
-        st.download_button("下载CSV", out.getvalue(), f"对账单_{acct}.csv", "text/csv", key="dl_stmt")
+        st.download_button("下载CSV", out.getvalue(), f"对账单_{ACCT_CN.get(acct, acct)}.csv", "text/csv", key="dl_stmt")
 
     # 持仓
     st.subheader("当前持仓")
@@ -1164,8 +1165,6 @@ elif tab == "🛡 验证":
         k1, k2, k3 = st.columns(3)
         with k1:
             stt = _vs_state(rt, tg["sample_min"], True) if rt >= tg["sample_min"] else "insufficient"
-            if rt > tg["sample_max"]:
-                stt = "fail"
             st.markdown(f'<div class="kpi-card"><div class="kpi-label">样本（round-trip） {vs_badge(stt)}</div>'
                         f'<div class="kpi-value">{rt} 笔</div>'
                         f'<div class="kpi-label">目标 {tg["sample_min"]}-{tg["sample_max"]} 笔</div></div>',
@@ -1279,7 +1278,7 @@ elif tab == "🛡 验证":
     if excl_r:
         st.write("**毕业样本剔除记录**（成交保留，仅不计入毕业指标）：")
         for d, a, s, sd, reason in excl_r:
-            st.write(f"- {d} {a} {s} {sd}: {reason}")
+            st.write(f"- {d} {ACCT_CN.get(a, a)} {s} {sd}: {reason}")
     else:
         st.write("无剔除记录")
 
@@ -1292,14 +1291,14 @@ elif tab == "🛡 验证":
         con.close()
         tg = g["targets"]
         # 表头
-        hdr = ["指标"] + [acct_name(aid) for aid in ["sim_a", "sim_hk", "sim_crypto"]]
+        hdr = ["指标"] + [f"{ACCT_CN.get(aid, aid)}" for aid in ["sim_a", "sim_hk", "sim_crypto"]]
         rows = []
         # 样本数
         r = ["样本数"]
         for aid in ["sim_a", "sim_hk", "sim_crypto"]:
             d = g["accounts"].get(aid, {})
             rt = d.get("round_trips") or 0
-            ok = tg["sample_min"] <= rt <= tg["sample_max"]
+            ok = rt >= tg["sample_min"]
             r.append(f"{'✅' if ok else '⏳'} {rt}")
         rows.append(r)
         # 盈亏比

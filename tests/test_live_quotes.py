@@ -79,3 +79,26 @@ def test_trading_logic_does_not_use_live_quotes():
     """信号校验/风控/pipeline/验证 KPI 不得引用实时行情。"""
     for f in ["engine/order_validate.py", "engine/pipeline.py", "engine/signal_guard.py", "sync_snapshot.py"]:
         assert "live_quotes" not in open(os.path.join(BASE, f), encoding="utf-8").read(), f
+
+
+def test_fmt_price_no_scientific_notation():
+    assert lq.fmt_price(82960.123, "BTCUSDT") == "82,960.12"
+    assert lq.fmt_price(3.765000104904175, "HK9660") == "3.765"
+    assert lq.fmt_price(7.19, "002446") == "7.19"
+    assert lq.fmt_price(None) == "--"
+    assert "e+" not in lq.fmt_price(1.23e9, "BTCUSDT")
+
+
+def test_parse_sina_indices():
+    txt = ('var hq_str_s_sh000001="上证指数,3735.3704,4.4504,0.12,4086930,69996975";\n'
+           'var hq_str_rt_hkHSI="HSI,恒生指数,23990.050,24186.830,24035.000,23846.990,23867.740,-319.090,-1.320";')
+    r = lq.parse_sina_indices(txt)
+    assert r[0] == {"name": "上证指数", "price": 3735.3704, "change_pct": 0.12}
+    assert r[1]["name"] == "恒生指数" and r[1]["price"] == 23867.74 and r[1]["change_pct"] == -1.32
+
+
+def test_live_today_pnl():
+    qs = {"A": {"price": 11.0, "change_pct": 10.0, "live": True},
+          "B": {"price": 5.0, "change_pct": 0.0, "live": False}}
+    pnl, val, n = lq.live_today_pnl([("A", 100), ("B", 100)], qs)
+    assert abs(pnl - 100.0) < 1e-9 and val == 1100.0 and n == 1

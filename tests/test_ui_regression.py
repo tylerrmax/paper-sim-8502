@@ -91,5 +91,14 @@ check("init_db 可运行", _r.returncode == 0)
 import os as _os
 _os.path.exists("/tmp/_t_init.db") and _os.remove("/tmp/_t_init.db")
 
+# 14. 终端视觉（2026-10-20）：红涨绿跌、深色主题、无科学计数法、待办对比度
+check("红涨绿跌：.up 用红色变量", ".up, .pos { color: var(--up)" in src and "--up:#ff5b6e" in src)
+check("updown_cls 助手", "def updown_cls" in src)
+check("价格不用 :.4g（避免科学计数法）", ":,.4g" not in src and ":.4g" not in src)
+check("待办框有显式文字色", ".todo-box { background: var(--panel); color: var(--text)" in src)
+check("深色主题 config.toml", 'base = "dark"' in open(".streamlit/config.toml").read())
+check("顶部行情条", "def render_ticker_strip" in src)
+
 print(f"\n通过 {len(passed)}/{len(passed)+len(failed)}")
 sys.exit(1 if failed else 0)
+

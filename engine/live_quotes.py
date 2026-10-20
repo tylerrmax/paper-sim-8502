@@ -226,3 +226,61 @@ def get_quotes(symbols, db_path, fetchers=None):
     if missing:
         out.update(close_fallback(db_path, missing))
     return out
+
+
+# ---------------- 指数（顶部行情条）：新浪 ----------------
+INDICES = [("s_sh000001", "上证指数"), ("s_sz399001", "深证成指"), ("s_sz399006", "创业板指"),
+           ("s_sh000300", "沪深300"), ("rt_hkHSI", "恒生指数")]
+
+
+def parse_sina_indices(text):
+    out = []
+    for code, name in INDICES:
+        m = re.search(rf'hq_str_{code}="([^"]*)"', text)
+        if not m or not m.group(1):
+            continue
+        p = m.group(1).split(",")
+        try:
+            if code.startswith("rt_hk"):
+                price, chg = float(p[6]), float(p[8])
+            else:
+                price, chg = float(p[1]), float(p[3])
+        except (ValueError, IndexError):
+            continue
+        out.append({"name": name, "price": price, "change_pct": chg})
+    return out
+
+
+def fetch_indices():
+    try:
+        url = "https://hq.sinajs.cn/list=" + ",".join(c for c, _ in INDICES)
+        return parse_sina_indices(_get(url, referer="https://finance.sina.com.cn", encoding="gbk"))
+    except Exception:
+        return []
+
+
+def fmt_price(v, symbol=None):
+    """价格格式：千分位 + 按市场取小数位（加密 2 位、港股 3 位、A股 2 位），绝不出现科学计数法。"""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "--"
+    mkt = market_of(symbol) if symbol else "a"
+    dec = 3 if mkt == "hk" else 2
+    return f"{v:,.{dec}f}"
+
+
+def live_today_pnl(positions, quotes):
+    """按近实时报价估算今日持仓盈亏：Σ qty × (现价 − 昨收)，昨收由报价涨跌幅反推。
+    positions: [(symbol, qty)]；只统计 live 报价，返回 (pnl, live_value, n_live)。仅供展示。"""
+    pnl, val, n = 0.0, 0.0, 0
+    for sym, qty in positions:
+        d = quotes.get(sym) or {}
+        if not d.get("live") or not d.get("price") or not qty:
+            continue
+        price = float(d["price"])
+        prev = price / (1 + float(d.get("change_pct", 0)) / 100)
+        pnl += qty * (price - prev)
+        val += qty * price
+        n += 1
+    return pnl, val, n

@@ -191,71 +191,115 @@ st.set_page_config(page_title="独立交易终端", layout="wide", page_icon="�
 # 深色交易终端视觉规范（统一，禁止白色卡片混搭）
 st.markdown("""
 <style>
-/* 全局：深色终端底 */
-.main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #1a1a2e; }
-@media (prefers-color-scheme: dark) { .main-title { color: #e8ecf1; } }
-.sub-title { font-size: 13px; color: #8a8f9c; margin-bottom: 16px; }
-/* 统一卡片：深色 */
-.kpi-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
-            padding: 14px 16px; margin-bottom: 10px; color: #e8ecf1; }
-.kpi-label { font-size: 12px; color: #8a8f9c; margin-bottom: 4px; }
-.kpi-value { font-size: 22px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, monospace; color: #e8ecf1; }
-.kpi-value.up { color: #2ebd85; } .kpi-value.down { color: #f6465d; }
-.kpi-value.big { font-size: 28px; }
-/* 数字统一：等宽字体 */
-.num { font-family: ui-monospace, SFMono-Regular, monospace; font-variant-numeric: tabular-nums; }
-.pos { color: #2ebd85; } .neg { color: #f6465d; } .flat { color: #8a8f9c; }
+/* ===== 券商/交易所终端风格（深色，WCAG AA 对比度）=====
+   颜色约定（中国市场）：涨/盈 = 红 #ff5b6e，跌/亏 = 绿 #26c281；
+   状态语义（达标/超限）另用 .ok/.bad，不与涨跌色混用 */
+:root { --bg:#0b0e14; --panel:#131823; --line:#232b3a; --text:#e8ecf1; --muted:#9aa3b2;
+        --up:#ff5b6e; --down:#26c281; --warn:#f0b90b; --info:#4ea1ff; }
+.block-container { padding-top: 1.2rem; padding-bottom: 2rem; max-width: 100%; }
+.main-title { font-size: 22px; font-weight: 800; letter-spacing: 1px; color: var(--text); margin-bottom: 2px; }
+.sub-title { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.section-head { font-size: 16px; font-weight: 700; margin: 12px 0 8px 0; padding-bottom: 6px;
+                border-bottom: 1px solid var(--line); color: var(--text); }
+.section-sub { font-size: 13px; font-weight: 700; color: var(--muted); margin: 6px 0; letter-spacing: .5px; }
+/* 数字：等宽 + 表格数字 */
+.num, .kpi-value, td.num { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                           font-variant-numeric: tabular-nums; }
+.up, .pos { color: var(--up) !important; } .down, .neg { color: var(--down) !important; }
+.flat { color: var(--muted); }
+.ok { color: var(--down); } .bad { color: var(--up); }
+/* 卡片 */
+.kpi-card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+            padding: 10px 12px; margin-bottom: 8px; color: var(--text); }
+.kpi-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.kpi-value { font-size: 20px; font-weight: 700; color: var(--text); }
+.kpi-value.big { font-size: 24px; }
+.kpi-value.ok { color: var(--down); } .kpi-value.bad { color: var(--up); }
+.mrow { display:flex; align-items:baseline; gap:8px; padding:2px 0; }
+.mrow .mlabel { color: var(--muted); font-size: 12px; min-width: 52px; }
+.mrow.big .num { font-size: 20px; font-weight: 700; } .mrow.sm .num { font-size: 14px; }
+.tag-date { font-size: 10px; color: var(--muted); margin-left: auto; }
+/* 待办 */
+.todo-box { background: var(--panel); color: var(--text); border-radius: 6px; padding: 10px 14px;
+            margin-bottom: 12px; line-height: 1.7; font-size: 14px; }
+.todo-box.warn { border: 1px solid var(--warn); } .todo-box.ok { border: 1px solid var(--down); }
+.todo-box b { color: var(--warn); }
+/* 紧凑表格 */
+table.dense, .stTable table { width: 100%; border-collapse: collapse; font-size: 13px; color: var(--text); }
+table.dense th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px;
+                 border-bottom: 1px solid var(--line); padding: 4px 6px; }
+table.dense td { padding: 4px 6px; border-bottom: 1px solid #1a2130; }
+table.dense td.num { text-align: right; }
+table { color: var(--text); }
+/* 顶部行情条 */
+.ticker-strip { display:flex; flex-wrap:wrap; gap:4px 18px; background: var(--panel); border:1px solid var(--line);
+                border-radius:6px; padding:6px 12px; margin-bottom:8px; font-size:13px; }
+.ticker-strip .ti { white-space:nowrap; } .ticker-strip .tn { color: var(--muted); margin-right:6px; }
+.ticker-strip .tt { margin-left:auto; color: var(--muted); font-size: 11px; }
 /* 策略徽标 */
-.strategy-badge { display: inline-block; padding: 3px 12px; border-radius: 12px;
-                  font-size: 12px; font-weight: 600; }
-.strategy-badge.buyback { background: rgba(46,189,133,.15); color: #2ebd85; }
-.strategy-badge.ma20 { background: rgba(240,185,11,.15); color: #f0b90b; }
-/* 分区标题 */
-.section-head { font-size: 18px; font-weight: 700; margin: 20px 0 12px 0;
-                padding-bottom: 8px; border-bottom: 2px solid #1e2532; color: #e8ecf1; }
+.strategy-badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+.strategy-badge.buyback { background: rgba(78,161,255,.15); color: var(--info); }
+.strategy-badge.ma20 { background: rgba(240,185,11,.15); color: var(--warn); }
 /* 横幅：四态 */
-.alert-banner { border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; font-size: 14px; }
-.alert-banner.warn { background: rgba(240,185,11,.12); border: 1px solid rgba(240,185,11,.3); color: #f0b90b; }
-.alert-banner.info { background: rgba(24,144,255,.1); border: 1px solid rgba(24,144,255,.3); color: #1890ff; }
-.alert-banner.success { background: rgba(46,189,133,.1); border: 1px solid rgba(46,189,133,.3); color: #2ebd85; }
-.alert-banner.danger { background: rgba(246,70,93,.1); border: 1px solid rgba(246,70,93,.35); color: #f6465d; }
-/* 状态卡片：深色统一（替代原白色 .status-card） */
-.status-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
-               padding: 16px; margin-bottom: 12px; color: #e8ecf1; }
-.status-card .sc-label { font-size: 13px; color: #8a8f9c; margin-bottom: 8px; }
-.status-card .sc-value { font-size: 26px; font-weight: 700; font-family: ui-monospace, monospace; color: #e8ecf1; }
-.status-card .sc-value.paused { color: #8a8f9c; }
-.status-card .sc-value.nodata { color: #5a6270; }
+.alert-banner { border-radius: 6px; padding: 10px 14px; margin-bottom: 10px; font-size: 14px; }
+.alert-banner.warn { background: rgba(240,185,11,.12); border: 1px solid rgba(240,185,11,.4); color: var(--warn); }
+.alert-banner.info { background: rgba(78,161,255,.1); border: 1px solid rgba(78,161,255,.4); color: var(--info); }
+.alert-banner.success { background: rgba(38,194,129,.1); border: 1px solid rgba(38,194,129,.4); color: var(--down); }
+.alert-banner.danger { background: rgba(255,91,110,.1); border: 1px solid rgba(255,91,110,.4); color: var(--up); }
+/* 状态卡片 */
+.status-card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+               padding: 12px; margin-bottom: 10px; color: var(--text); }
+.status-card .sc-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.status-card .sc-value { font-size: 22px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text); }
+.status-card .sc-value.paused, .status-card .sc-value.nodata { color: var(--muted); }
 /* 行情状态徽标：实时 / 最近收盘 / 已过期 / 未知 */
-.qs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
-.qs-live { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
-.qs-close { background: rgba(24,144,255,.14); color: #1890ff; border: 1px solid rgba(24,144,255,.35); }
-.qs-stale { background: rgba(240,185,11,.14); color: #f0b90b; border: 1px solid rgba(240,185,11,.35); }
-.qs-unknown { background: rgba(138,143,156,.14); color: #8a8f9c; border: 1px solid rgba(138,143,156,.35); }
+.qs { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 700; }
+.qs-live { background: rgba(78,161,255,.16); color: var(--info); border: 1px solid rgba(78,161,255,.45); }
+.qs-close { background: rgba(154,163,178,.14); color: #c3cad6; border: 1px solid rgba(154,163,178,.4); }
+.qs-stale { background: rgba(240,185,11,.14); color: var(--warn); border: 1px solid rgba(240,185,11,.4); }
+.qs-unknown { background: rgba(154,163,178,.14); color: var(--muted); border: 1px solid rgba(154,163,178,.35); }
 /* 验证状态徽标：达标 / 未达标 / 样本不足 / 数据异常 */
-.vs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
-.vs-pass { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
-.vs-fail { background: rgba(246,70,93,.14); color: #f6465d; border: 1px solid rgba(246,70,93,.4); }
-.vs-insufficient { background: rgba(240,185,11,.14); color: #f0b90b; border: 1px solid rgba(240,185,11,.35); }
-.vs-anomaly { background: rgba(177,59,179,.16); color: #c77ddb; border: 1px solid rgba(177,59,179,.4); }
+.vs { display: inline-block; padding: 1px 8px; border-radius: 8px; font-size: 11px; font-weight: 700; }
+.vs-pass { background: rgba(38,194,129,.16); color: var(--down); border: 1px solid rgba(38,194,129,.45); }
+.vs-fail { background: rgba(255,91,110,.14); color: var(--up); border: 1px solid rgba(255,91,110,.45); }
+.vs-insufficient { background: rgba(240,185,11,.14); color: var(--warn); border: 1px solid rgba(240,185,11,.4); }
+.vs-anomaly { background: rgba(199,125,219,.16); color: #d39be3; border: 1px solid rgba(199,125,219,.45); }
 /* 按钮状态 */
-.btn-state { display: inline-block; padding: 4px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; }
-.btn-submitted { background: rgba(24,144,255,.15); color: #1890ff; }
-.btn-running { background: rgba(240,185,11,.15); color: #f0b90b; }
-.btn-done { background: rgba(46,189,133,.15); color: #2ebd85; }
-.btn-failed { background: rgba(246,70,93,.15); color: #f6465d; }
-/* 表格：深色 */
-table { color: #e8ecf1; }
-/* 响应式：手机端卡片全宽 */
+.btn-state { display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+.btn-submitted { background: rgba(78,161,255,.15); color: var(--info); }
+.btn-running { background: rgba(240,185,11,.15); color: var(--warn); }
+.btn-done { background: rgba(38,194,129,.15); color: var(--down); }
+.btn-failed { background: rgba(255,91,110,.15); color: var(--up); }
 @media (max-width: 768px) {
-  .main-title { font-size: 22px; }
-  .kpi-value.big { font-size: 22px; }
-  .status-card .sc-value { font-size: 20px; }
+  .main-title { font-size: 18px; } .kpi-value.big { font-size: 20px; } .mrow.big .num { font-size: 17px; }
+  .status-card .sc-value { font-size: 18px; }
 }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_html=True)
+
+
+def render_ticker_strip():
+    """顶部行情条：主要指数 + 自选近实时价（仅展示）+ 实时更新时间。"""
+    from engine.live_quotes import fetch_indices, fmt_price, is_market_open
+    items = []
+    for ix in indices_cached():
+        items.append(f'<span class="ti"><span class="tn">{ix["name"]}</span>'
+                     f'<span class="num {updown_cls(ix["change_pct"])}">{ix["price"]:,.2f} '
+                     f'{ix["change_pct"]:+.2f}%</span></span>')
+    qs = live_quotes_cached(all_quote_symbols())
+    for sym in all_quote_symbols():
+        d = qs.get(sym)
+        if not d:
+            continue
+        items.append(f'<span class="ti"><span class="tn">{SYMBOL_CN.get(sym, sym)}</span>'
+                     f'<span class="num {updown_cls(d.get("change_pct", 0))}">{fmt_price(d["price"], sym)} '
+                     f'{d.get("change_pct", 0):+.2f}%</span></span>')
+    now = datetime.now(CN_TZ)
+    state = "交易中" if any(is_market_open(m, now) for m in ("a", "hk")) else "休市"
+    items.append(f'<span class="tt">{state} · 更新 {now.strftime("%H:%M:%S")}（北京时间）</span>')
+    st.markdown(f'<div class="ticker-strip">{"".join(items)}</div>', unsafe_allow_html=True)
 
 # 数据日期（交易员需要知道数据新旧，不说教）
 if CLOUD_DATA_ASOF:
@@ -264,7 +308,7 @@ if CLOUD_DATA_ASOF:
     data_date = q("SELECT MAX(date) FROM daily_report WHERE symbol='TOTAL'")
     data_date_str = data_date[0][0] if data_date and data_date[0][0] else ""
     if data_date_str:
-        st.caption(f"数据日期 {data_date_str} · 同步于 {CLOUD_DATA_ASOF}")
+        st.caption(f"官方收盘数据日期 {data_date_str} · 同步于 {CLOUD_DATA_ASOF} · 近实时价见顶部行情条")
     else:
         st.caption(f"数据截至 {CLOUD_DATA_ASOF}")
 
@@ -273,7 +317,7 @@ from datetime import datetime, timedelta
 
 def quote_state(symbol, live_time_str, db_date_str):
     """行情四态：live(实时)/close(最近收盘)/stale(已过期)/unknown(未知)
-    live: 实时接口返回且时间戳在15分钟内（交易时段）
+    live: 实时接口返回且时间戳在15分钟内（交易时段）；永不把快照伪装成实时
     close: 非交易时段但有当日/上一交易日收盘数据
     stale: 数据超过2个自然日
     unknown: 无任何数据"""
@@ -319,11 +363,27 @@ def fmt_pct(v):
     """统一涨跌幅格式：+x.xx% / -x.xx%，着色"""
     try:
         f = float(v)
-        cls = "pos" if f > 0 else ("neg" if f < 0 else "flat")
+        cls = updown_cls(f)
         arrow = "▲" if f > 0 else ("▼" if f < 0 else "")
         return f'<span class="num {cls}">{arrow}{abs(f):.2f}%</span>'
     except (ValueError, TypeError):
         return '<span class="num flat">--</span>'
+
+CN_TZ = __import__("zoneinfo").ZoneInfo("Asia/Shanghai")
+UP_COLOR, DOWN_COLOR = "#ff5b6e", "#26c281"  # 中国惯例：红涨绿跌
+
+
+def updown_cls(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "flat"
+    return "up" if f > 0 else ("down" if f < 0 else "flat")
+
+
+def updown_color(v):
+    return UP_COLOR if (v or 0) > 0 else (DOWN_COLOR if (v or 0) < 0 else "#9aa3b2")
+
 
 def fmt_num(v, dec=2):
     """统一数字格式"""
@@ -372,17 +432,18 @@ def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=No
     return "pass" if ok else "fail"
 
 # ============ 滚动行情条（四态：实时/最近收盘/已过期/未知） ============
-def live_cell(d):
+def live_cell(d, sym=None):
     """实时价单元格：价格 + 来源·时间·延迟标签（单独一列，不覆盖官方收盘价）。"""
     if not d:
         return '<span class="num flat">--</span>'
     t = (d.get("time") or "")[-8:] if d.get("live") else (d.get("time") or "")
     cls = "qs-live" if d.get("live") else "qs-unknown"
-    return (f'<span class="num">{d["price"]:,.4g}</span> '
-            f'<span class="num" style="font-size:11px;color:{"#f6465d" if d.get("change_pct", 0) >= 0 else "#2ebd85"};">'
+    from engine.live_quotes import fmt_price
+    return (f'<span class="num {updown_cls(d.get("change_pct", 0))}">{fmt_price(d["price"], sym)}</span> '
+            f'<span class="num {updown_cls(d.get("change_pct", 0))}" style="font-size:11px;">'
             f'{d.get("change_pct", 0):+.2f}%</span><br>'
             f'<span class="qs {cls}" style="font-size:10px;">{d.get("delay", "")}</span> '
-            f'<span style="font-size:10px;color:#888;">{d.get("source", "")} {t}</span>')
+            f'<span style="font-size:10px;color:#9aa3b2;">{d.get("source", "")} {t}</span>')
 
 
 def render_ticker(quotes=None):
@@ -408,7 +469,7 @@ def render_ticker(quotes=None):
             # BUY 开仓 @价格 | 止损 @价格
             stop_s = f" | 止损 @{stop_px:.2f}" if stop_px else ""
             if sym in {str(x) for x in (CFG.get("display_only") or [])}:
-                stop_s += "<br><span style='font-size:11px;color:#888;'>只展示标的，不建买单</span>"
+                stop_s += "<br><span style='font-size:11px;color:#9aa3b2;'>只展示标的，不建买单</span>"
             pending[sym] = f"{side} {act} @{px:.2f}{stop_s}"
         else:
             # SELL 止盈/止损/信号平仓 @价格 + 持仓上下文
@@ -425,12 +486,12 @@ def render_ticker(quotes=None):
                         act = "止盈"
                     elif pnl_pct < -5:
                         act = "止损"
-                hold_s = f"<br><span style='font-size:11px;color:#888;'>持仓：是 | 成本 {cost:.2f} | 浮盈 {pnl_pct:+.1f}%</span>"
+                hold_s = f"<br><span style='font-size:11px;color:#9aa3b2;'>持仓：是 | 成本 {cost:.2f} | 浮盈 {pnl_pct:+.1f}%</span>"
                 from engine.signal_guard import check_exit_price
                 for _iss in check_exit_price(side, px, cur_px, act):
-                    hold_s += f"<br><span style='font-size:11px;color:#f6465d;'>⚠ {_iss}</span>"
+                    hold_s += f"<br><span style='font-size:11px;color:#ff5b6e;'>⚠ {_iss}</span>"
             else:
-                hold_s = f"<br><span style='font-size:11px;color:#888;'>无持仓，仅供观察</span>"
+                hold_s = f"<br><span style='font-size:11px;color:#9aa3b2;'>无持仓，仅供观察</span>"
             pending[sym] = f"{side} {act} @{px:.2f}{hold_s}"
 
     def _tech_signals(sym):
@@ -471,20 +532,20 @@ def render_ticker(quotes=None):
                 prev = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1 OFFSET 1", (sym,))
                 if prev and prev[0][0]:
                     chg = (price - prev[0][0]) / prev[0][0] * 100
-        color = "#f6465d" if chg >= 0 else "#2ebd85"
+        color = updown_color(chg)
         sign = "+" if chg >= 0 else ""
         code_show = sym[2:] if sym.startswith("HK") else sym
         name_show = SYMBOL_CN.get(sym, "")
         tech = _tech_signals(sym)
         order = pending.get(sym, "-")
-        order_style = f'color:#f0b90b;font-weight:bold;' if order != "-" else 'color:#666;'
-        return (f'<tr><td style="padding:8px;">{code_show}</td>'
-                f'<td style="padding:8px;color:#1890ff;">{name_show}</td>'
-                f'<td class="num" style="padding:8px;color:{color};text-align:right;">{price_s}</td>'
-                f'<td style="padding:8px;color:{color};text-align:right;">{sign}{chg:.2f}%</td>'
-                f'<td style="padding:8px;text-align:right;">{live_cell(quotes.get(sym))}</td>'
-                f'<td style="padding:8px;font-size:12px;color:#aaa;">{tech}</td>'
-                f'<td style="padding:8px;{order_style}">{order}</td></tr>')
+        order_style = f'color:#f0b90b;font-weight:bold;' if order != "-" else 'color:#9aa3b2;'
+        return (f'<tr><td style="padding:4px 6px;">{code_show}</td>'
+                f'<td style="padding:4px 6px;color:#1890ff;">{name_show}</td>'
+                f'<td class="num" style="padding:4px 6px;color:{color};text-align:right;">{price_s}</td>'
+                f'<td style="padding:4px 6px;color:{color};text-align:right;">{sign}{chg:.2f}%</td>'
+                f'<td style="padding:4px 6px;text-align:right;">{live_cell(quotes.get(sym), sym)}</td>'
+                f'<td style="padding:4px 6px;font-size:12px;color:#9aa3b2;">{tech}</td>'
+                f'<td style="padding:4px 6px;{order_style}">{order}</td></tr>')
 
     # 分类
     a_syms, hk_syms, crypto_syms = [], [], []
@@ -504,14 +565,14 @@ def render_ticker(quotes=None):
         syms_sorted = sorted(syms_list, key=lambda s: (0 if s in pending else 1, s))
         rows = "".join(_row(s) for s in syms_sorted)
         return (f'<div style="margin-bottom:16px;"><b>{title}</b>'
-                f'<table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:4px;">'
-                f'<tr style="color:#888;font-size:12px;border-bottom:1px solid #1e2532;">'
-                f'<td style="padding:6px 8px;">代码</td><td style="padding:6px 8px;">名称</td>'
-                f'<td style="padding:6px 8px;text-align:right;">现价</td>'
-                f'<td style="padding:6px 8px;text-align:right;">涨幅%</td>'
-                f'<td style="padding:6px 8px;text-align:right;">实时价（仅展示）</td>'
-                f'<td style="padding:6px 8px;">技术信号</td>'
-                f'<td style="padding:6px 8px;">待建单</td></tr>'
+                f'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:4px;">'
+                f'<tr style="color:#9aa3b2;font-size:12px;border-bottom:1px solid #1e2532;">'
+                f'<td style="padding:4px 6px;">代码</td><td style="padding:4px 6px;">名称</td>'
+                f'<td style="padding:4px 6px;text-align:right;">现价</td>'
+                f'<td style="padding:4px 6px;text-align:right;">涨幅%</td>'
+                f'<td style="padding:4px 6px;text-align:right;">实时价（仅展示）</td>'
+                f'<td style="padding:4px 6px;">技术信号</td>'
+                f'<td style="padding:4px 6px;">待建单</td></tr>'
                 f'{rows}</table></div>')
 
     st.markdown(_table(a_syms, "A股") + _table(hk_syms, "港股") + _table(crypto_syms, "加密"),
@@ -568,6 +629,12 @@ live_auto = st.sidebar.toggle("⚡ 实时价自动刷新（交易时段每10秒�
 def live_quotes_cached(symbols):
     from engine.live_quotes import get_quotes
     return get_quotes(list(symbols), DB)
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def indices_cached():
+    from engine.live_quotes import fetch_indices
+    return fetch_indices()
 
 
 def live_refresh_interval():
@@ -628,6 +695,8 @@ SYMBOL_CN = {
 def sym_name(code):
     """标的显示名：代码+中文名，如 '002446 盛路通信'"""
     return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
+st.fragment(render_ticker_strip, run_every=live_refresh_interval())()
+
 # 自选行情：工作台默认展开，其它页面折叠，避免每页顶部被大表挤占
 _px_date = q("SELECT MAX(date) FROM market_data")
 with st.expander(f"📋 自选行情（现价=官方收盘 {(_px_date[0][0] if _px_date else '') or '--'}）",
@@ -646,60 +715,49 @@ acct = "sim_a"  # 默认，页内可覆盖
 if tab == "🏠 工作台":
     st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
 
-    # ---- 核心数据（验证终端优势沿用）：总资产/当日盈亏/持仓市值/可用资金 ----
-    # 交易所标准：红涨绿跌，数字 vibrant
-    st.markdown("**核心数据**")
+    # ---- 核心数据：官方收盘口径 + 交易时段近实时估算（仅展示，不参与信号/风控/验证） ----
     core = {}
     for aid in ["sim_a", "sim_hk", "sim_crypto"]:
-        r = q("SELECT nav, pnl_day, cash, position_value, ret_total FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
+        r = q("SELECT nav, pnl_day, cash, position_value, ret_total, date FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
         if r:
-            core[aid] = {"nav": r[0][0], "pnl": r[0][1] or 0, "cash": r[0][2] or 0, "pos": r[0][3] or 0, "ret": r[0][4] or 0}
-    # 货币：A股CNY 港股HKD 加密USDT
-    def _fmt(v): return f"{v:,.2f}"
-    # 交易所色：涨红 #ff4d4f，跌绿 #00c853
-    def _rg(v): return "#ff4d4f" if v >= 0 else "#00c853"
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        ra = core.get("sim_a", {}).get("ret", 0)
-        rh = core.get("sim_hk", {}).get("ret", 0)
-        rc = core.get("sim_crypto", {}).get("ret", 0)
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#ffffff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">港股 </span>HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">加密货币 </span>${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
-            <div style="font-size:12px;margin-top:4px;">
-                <span style="color:{_rg(ra)};">{ra*100:+.2f}%</span>
-                <span style="color:#666;"> | </span>
-                <span style="color:{_rg(rh)};">{rh*100:+.2f}%</span>
-                <span style="color:#666;"> | </span>
-                <span style="color:{_rg(rc)};">{rc*100:+.2f}%</span>
-            </div>
-            </div>''', unsafe_allow_html=True)
-    with c2:
-        pnl_a = core.get("sim_a", {}).get("pnl", 0)
-        pnl_hk = core.get("sim_hk", {}).get("pnl", 0)
-        pnl_c = core.get("sim_crypto", {}).get("pnl", 0)
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">当日盈亏</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:{_rg(pnl_a)};"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(pnl_a)}</div>
-            <div class="num" style="color:{_rg(pnl_hk)};font-size:14px;">HK${_fmt(pnl_hk)}</div>
-            <div class="num" style="color:{_rg(pnl_c)};font-size:14px;">${_fmt(pnl_c)}</div>
-            </div>''', unsafe_allow_html=True)
-    with c3:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">持仓市值</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
-            </div>''', unsafe_allow_html=True)
-    with c4:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">可用资金</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
-            </div>''', unsafe_allow_html=True)
+            core[aid] = {"nav": r[0][0], "pnl": r[0][1] or 0, "cash": r[0][2] or 0, "pos": r[0][3] or 0,
+                         "ret": r[0][4] or 0, "date": r[0][5]}
+    CCY = {"sim_a": "¥", "sim_hk": "HK$", "sim_crypto": "$"}
+
+    def _core_fragment():
+        from engine.live_quotes import live_today_pnl, is_market_open, market_of
+        qs = live_quotes_cached(all_quote_symbols())
+        view = {}
+        for aid, c in core.items():
+            pos_rows = q("SELECT symbol, qty FROM positions WHERE account=? AND qty>0", (aid,))
+            mkt = {"sim_a": "a", "sim_hk": "hk", "sim_crypto": "crypto"}[aid]
+            pnl_l, val_l, n_l = live_today_pnl(pos_rows, qs)
+            use_live = is_market_open(mkt) and n_l == len(pos_rows) and n_l > 0
+            pv = val_l if use_live else c["pos"]
+            view[aid] = {"nav": c["cash"] + pv, "pos": pv, "cash": c["cash"],
+                         "pnl": pnl_l if use_live else c["pnl"], "live": use_live,
+                         "ret": c["ret"], "date": c["date"]}
+        now_s = datetime.now(CN_TZ).strftime("%H:%M:%S")
+        cards = [("账户总资产", "nav"), ("当日盈亏", "pnl"), ("持仓市值", "pos"), ("可用资金", "cash")]
+        cols = st.columns(4)
+        for col, (label, key) in zip(cols, cards):
+            lines = []
+            for i, aid in enumerate(["sim_a", "sim_hk", "sim_crypto"]):
+                v = view.get(aid, {})
+                val = v.get(key, 0) or 0
+                cls = updown_cls(val) if key == "pnl" else ""
+                tag = ('<span class="qs qs-live">实时</span>' if v.get("live") and key in ("nav", "pnl", "pos")
+                       else f'<span class="tag-date">{v.get("date", "")}</span>')
+                size = "big" if i == 0 else "sm"
+                lines.append(f'<div class="mrow {size}"><span class="mlabel">{ACCT_CN[aid]}</span>'
+                             f'<span class="num {cls}">{CCY[aid]}{val:,.2f}</span>{tag}</div>')
+            col.markdown(f'<div class="kpi-card"><div class="kpi-label">{label}</div>{"".join(lines)}</div>',
+                         unsafe_allow_html=True)
+        st.caption(f"更新于 {now_s}（北京时间）· 交易时段按近实时报价估算，仅供参考；风控/验证用官方收盘价")
+        return view
+
+    st.markdown('<div class="section-sub">核心数据</div>', unsafe_allow_html=True)
+    st.fragment(_core_fragment, run_every=live_refresh_interval())()
 
     # ---- 今日待办（最优先）：一眼知道要做什么 ----
     # 待建条件单
@@ -725,16 +783,14 @@ if tab == "🏠 工作台":
         for _b in account_risk_breaches(_aid, _c["nav"], _c["pos"], (_top[0][0] if _top else 0) or 0):
             risk_todo.append(f"{ACCT_CN.get(_aid, _aid)}{_b}，已禁止新买入，需减仓")
     if pending_orders > 0 or pending_signals > 0 or risk_todo:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #f0b90b;border-radius:8px;
-            padding:12px 16px;margin-bottom:16px;">
+        st.markdown(f'''<div class="todo-box warn">
             <b>📋 今日待办</b><br>
             {"".join("· ⛔ " + t + "<br>" for t in risk_todo)}
             {"· " + str(pending_orders) + "个待建条件单 → 📝交易页<br>" if pending_orders else ""}
             {"· " + str(pending_signals) + "个待审批信号" if pending_signals else ""}
             </div>''', unsafe_allow_html=True)
     else:
-        st.markdown('''<div style="background:#1a1a2e;border:1px solid #2ebd85;border-radius:8px;
-            padding:12px 16px;margin-bottom:16px;">✅ 今日无待办</div>''',
+        st.markdown('''<div class="todo-box ok">✅ 今日无待办</div>''',
             unsafe_allow_html=True)
 
     # ---- 1. 风险警报区 ----
@@ -768,35 +824,42 @@ if tab == "🏠 工作台":
         return (f'<div class="status-card"><div class="sc-label">{label} {badge}</div>'
                 f'<div class="sc-value nodata" style="font-size:18px">{val}</div></div>')
     def _fund_flow_panel(aid):
-        """主力资金：近5日净流入/流出（单位：万）"""
-        ccy = {"sim_a": "万", "sim_hk": "万", "sim_crypto": "万"}.get(aid, "")
-        rows = q("SELECT date, SUM(CASE WHEN side='BUY' THEN qty*price ELSE 0 END) as buy_amt,"
-                 " SUM(CASE WHEN side='SELL' THEN qty*price ELSE 0 END) as sell_amt,"
-                 " SUM(fee) as fees FROM fills WHERE account=? GROUP BY date"
-                 " ORDER BY date DESC LIMIT 5", (aid,))
-        if not rows:
+        """资金流：近5个交易日（daily_report 每日都有，不再只列有成交的日子）
+        当日盈亏 + 成交净额（卖出−买入−费用）；交易时段首行为"今日（实时）"估算。"""
+        from engine.live_quotes import live_today_pnl, is_market_open
+        ccy = CCY[aid]
+        mkt = {"sim_a": "a", "sim_hk": "hk", "sim_crypto": "crypto"}[aid]
+        today = datetime.now(CN_TZ).strftime("%Y-%m-%d")
+        rows = q("""SELECT r.date, r.pnl_day,
+                      (SELECT COALESCE(SUM(CASE WHEN f.side='SELL' THEN f.qty*f.price ELSE -f.qty*f.price END)
+                              - SUM(f.fee), 0) FROM fills f WHERE f.account=r.account AND f.date=r.date)
+                    FROM daily_report r WHERE r.account=? AND r.symbol='TOTAL'
+                    ORDER BY r.date DESC LIMIT 5""", (aid,))
+        out = ['<table class="dense"><tr><th>日期</th><th>当日盈亏</th><th>成交净额</th></tr>']
+        if is_market_open(mkt) and not (rows and rows[0][0] == today):
+            pos_rows = q("SELECT symbol, qty FROM positions WHERE account=? AND qty>0", (aid,))
+            pnl_l, _, n_l = live_today_pnl(pos_rows, live_quotes_cached(all_quote_symbols()))
+            if n_l:
+                out.append(f'<tr><td>今日 <span class="qs qs-live">实时</span></td>'
+                           f'<td class="num {updown_cls(pnl_l)}">{ccy}{pnl_l:+,.2f}</td><td class="num flat">—</td></tr>')
+        for d, pnl, net in rows:
+            pnl, net = pnl or 0, net or 0
+            out.append(f'<tr><td>{"今日 " if d == today else ""}{d}</td>'
+                       f'<td class="num {updown_cls(pnl)}">{ccy}{pnl:+,.2f}</td>'
+                       f'<td class="num {updown_cls(net) if net else "flat"}">{ccy}{net:+,.2f}</td></tr>')
+        if len(out) == 1:
             st.write("暂无")
             return
-        for d, buy_amt, sell_amt, fees in rows:
-            net = (sell_amt or 0) - (buy_amt or 0) - (fees or 0)
-            net_wan = net / 10000
-            color = "#00c853" if net >= 0 else "#ff4d4f"
-            arrow = "▲" if net >= 0 else "▼"
-            st.markdown(f'<div style="padding:6px 0;font-size:15px;"><span style="color:#aaa;">{d}</span> '
-                        f'<span style="color:{color};font-weight:bold;">{arrow} {net_wan:+.2f}{ccy}</span></div>',
-                        unsafe_allow_html=True)
+        st.markdown("".join(out) + "</table>", unsafe_allow_html=True)
 
-    # 主力资金（三账户并排）
-    fc1, fc2, fc3 = st.columns(3)
-    with fc1:
-        with st.expander("💰 A股资金流", expanded=False):
-            _fund_flow_panel("sim_a")
-    with fc2:
-        with st.expander("💰 港股资金流", expanded=False):
-            _fund_flow_panel("sim_hk")
-    with fc3:
-        with st.expander("💰 加密资金流", expanded=False):
-            _fund_flow_panel("sim_crypto")
+    # 资金流（三账户并排，随自动刷新更新）
+    def _flow_fragment():
+        fc1, fc2, fc3 = st.columns(3)
+        for col, aid in zip((fc1, fc2, fc3), ("sim_a", "sim_hk", "sim_crypto")):
+            with col:
+                st.markdown(f'<div class="kpi-label">💰 {ACCT_CN[aid]}资金流</div>', unsafe_allow_html=True)
+                _fund_flow_panel(aid)
+    st.fragment(_flow_fragment, run_every=live_refresh_interval())()
 
     # ---- 3. 三账户概览（并排） ----
     # ---- 4. 待处理信号（今日信号 + 待审批） ----
@@ -883,7 +946,7 @@ elif tab == "🔍 选股":
             if results:
                 st.write(f"命中 {len(results)} 只：")
                 for sym, chg, rsi_v, macd_s, px in sorted(results, key=lambda x: -abs(x[1])):
-                    color = "#f6465d" if chg >= 0 else "#2ebd85"
+                    color = updown_color(chg)
                     st.markdown(f"<span style='color:{color};'>{sym} {SYMBOL_CN.get(sym,'')} "
                                 f"{chg:+.2f}%</span> RSI {rsi_v:.0f} MACD{macd_s} @{px:.2f}",
                                 unsafe_allow_html=True)
@@ -1069,14 +1132,14 @@ elif tab == "📝 交易":
             # 逐条建单/跳过（落库到 approvals，刷新后不再回到待办）
             for d, s, sd, px, ok, errs, warns in valid_sigs:
                 direction = "买入" if sd == "BUY" else "卖出"
-                color = "#f6465d" if sd == "BUY" else "#2ebd85"
+                color = UP_COLOR if sd == "BUY" else DOWN_COLOR
                 nm = sym_name(s)
                 c1, c2, c3 = st.columns([3, 1, 1])
                 with c1:
                     st.markdown(f'<div style="padding:8px 0;"><b>{nm}</b> '
                                 f'<span style="color:{color};font-weight:bold;">{direction}</span> '
                                 f'<span class="num">{px:.2f}</span> '
-                                f'<span style="color:#666;font-size:12px;">{d}</span></div>',
+                                f'<span style="color:#9aa3b2;font-size:12px;">{d}</span></div>',
                                 unsafe_allow_html=True)
                     for w in warns:
                         st.caption(f"⚠️ {w}")
@@ -1200,7 +1263,7 @@ elif tab == "💰 账户":
                     d_ = qs.get(s_) or {}
                     lp = d_.get("price")
                     lrows.append({"标的": sym_name(s_), "数量": qty_, "收盘价": f"{last_:.2f}",
-                                  "实时价": f"{lp:.4g}" if lp else "--",
+                                  "实时价": __import__("engine.live_quotes", fromlist=["fmt_price"]).fmt_price(lp, s_) if lp else "--",
                                   "实时市值": f"{lp*qty_:,.2f}" if lp else "--",
                                   "实时浮盈亏": f"{(lp-avg_)*qty_:+,.0f} ({(lp-avg_)/avg_*100:+.1f}%)" if lp and avg_ else "--",
                                   "来源": d_.get("source", "--"), "时间": d_.get("time", "--"),
@@ -1238,11 +1301,11 @@ elif tab == "💰 账户":
                     if sd == "BUY":
                         marks.append({"time": d, "position": "belowBar",
                                       "shape": "arrowUp", "text": "买",
-                                      "color": "#2ebd85"})
+                                      "color": UP_COLOR})
                     else:
                         marks.append({"time": d, "position": "aboveBar",
                                       "shape": "arrowDown", "text": "卖",
-                                      "color": "#f6465d"})
+                                      "color": DOWN_COLOR})
                 upl = (last - avg) * qty if last and avg else 0
                 upl_pct = (last - avg) / avg * 100 if last and avg else 0
                 st.write(f"**{sym_name(s)}** 成本 {avg:.2f} · 现价 {last:.2f} · "
@@ -1377,7 +1440,7 @@ elif tab == "🛡 验证":
             _pcap, _ccap = risk_caps(acct)
             ok = pos_ratio <= _pcap + 1e-9
             st.markdown(f'<div class="kpi-card"><div class="kpi-label">仓位 {"✅" if ok else "⛔ 超限·禁止新买入"}</div>'
-                        f'<div class="kpi-value {"up" if ok else "down"}">{pos_ratio*100:.1f}%</div>'
+                        f'<div class="kpi-value {"ok" if ok else "bad"}">{pos_ratio*100:.1f}%</div>'
                         f'<div class="kpi-label">上限 {_pcap*100:.0f}%</div></div>', unsafe_allow_html=True)
         with c2:
             pos_r = q("SELECT symbol,market_value FROM positions WHERE account=? AND qty>0 ORDER BY market_value DESC", (acct,))
@@ -1385,7 +1448,7 @@ elif tab == "🛡 验证":
             sym = pos_r[0][0] if pos_r else "—"
             ok = conc <= _ccap + 1e-9
             st.markdown(f'<div class="kpi-card"><div class="kpi-label">集中度（{sym}）{"✅" if ok else "⛔ 超限·禁止新买入"}</div>'
-                        f'<div class="kpi-value {"up" if ok else "down"}">{conc*100:.1f}%</div>'
+                        f'<div class="kpi-value {"ok" if ok else "bad"}">{conc*100:.1f}%</div>'
                         f'<div class="kpi-label">上限 {_ccap*100:.0f}%</div></div>', unsafe_allow_html=True)
         with c3:
             last_buy = q("""SELECT qty*price FROM fills WHERE account=? AND side='BUY'

@@ -110,22 +110,60 @@ def get_control():
 
 
 def check_system_health():
-    """系统健康检查：返回 (blocked: bool, reasons: list[str])
-    2026-10-18起：发现阻断性问题时顶部状态必须显示阻断，不得显示"正常运行"。"""
-    reasons = []
-    # 1. SELL信号无持仓
-    rows = q("""SELECT s.date, s.account, s.symbol FROM signals s
-                LEFT JOIN positions p ON p.account=s.account AND p.symbol=s.symbol
-                WHERE s.side='SELL' AND s.status='待执行'
-                  AND (p.qty IS NULL OR p.qty <= 0)""")
+    """系统健康检查：返回 (blocked: bool, reasons: list[str], isolated: list[str])
+    2026-10-18起：发现阻断性问题时顶部状态必须显示阻断，不得显示"正常运行"。
+    2026-10-20起：单条无效信号（无持仓 SELL / display_only BUY）只隔离、不阻断全系统。"""
+    reasons, isolated = [], []
     _ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-    for d, a, sym in rows:
-        reasons.append(f"SELL信号无持仓: {_ACCT_CN.get(a, a)} {sym} ({d})")
-    # 2. 待执行信号中有已过期的
+    for d, a, sym, sd, issues in invalid_signals():
+        isolated.append(f"{_ACCT_CN.get(a, a)} {sym} {sd} ({d})：{'；'.join(issues)}")
+    # 待执行信号中有已过期的
     rows = q("SELECT COUNT(*) FROM signals WHERE status='已过期'")
     if rows and rows[0][0] > 0:
         reasons.append(f"{rows[0][0]}个信号已过期未处理")
-    return (len(reasons) > 0, reasons)
+    return (len(reasons) > 0, reasons, isolated)
+
+
+def invalid_signals():
+    """近7天未成交信号中未通过前置校验的（含 pipeline 已标记"已隔离"的）。
+    返回 [(date, account, symbol, side, issues)]"""
+    from engine.signal_guard import check_signal, ISOLATED_STATUS
+    disp = CFG.get("display_only") or []
+    out = []
+    for d, a, sym, sd, px, st_, stop_px in q("""SELECT s.date, s.account, s.symbol, s.side, s.price,
+            s.status, s.stop_price FROM signals s
+            LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
+              AND s.symbol=f.symbol AND s.side=f.side
+            WHERE f.id IS NULL AND s.date >= date('now','-7 days')"""):
+        pos = q("SELECT qty FROM positions WHERE account=? AND symbol=?", (a, sym))
+        issues = check_signal(sd, sym, pos[0][0] if pos else 0, disp, price=px, stop_price=stop_px)
+        if not issues and st_ == ISOLATED_STATUS:
+            issues = ["pipeline 已隔离"]
+        if issues:
+            out.append((d, a, sym, sd, issues))
+    return out
+
+
+def invalid_signal_keys():
+    return {(d, a, s, sd) for d, a, s, sd, _ in invalid_signals()}
+
+
+def latest_price(sym):
+    """全站统一价格来源（2026-10-20）：market_data 最新收盘价 + 日期。"""
+    r = q("SELECT close, date FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,))
+    return (r[0][0], r[0][1]) if r and r[0][0] else (None, None)
+
+
+def risk_caps(aid):
+    """(总仓位上限, 单标的集中度上限)，与 engine/order_validate 同口径。"""
+    from engine.order_validate import _position_cap, _conc_cap
+    return _position_cap(CFG, aid), _conc_cap(CFG, aid)
+
+
+def account_risk_breaches(aid, nav, pos_value, top_value):
+    from engine.signal_guard import risk_breaches
+    pc, cc = risk_caps(aid)
+    return risk_breaches(nav, pos_value, top_value, pc, cc)
 
 
 def set_control(status=None, mode=None):
@@ -318,23 +356,20 @@ def vs_badge(state):
 
 def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=None):
     """判定验证状态：先看样本是否足够，再看是否达标"""
-    if value is None:
-        return "anomaly"
+    # 样本不足优先：样本为 0 时指标本来就算不出，不能显示成"数据异常"
     if sample_n is not None and sample_min is not None and sample_n < sample_min:
         return "insufficient"
+    if value is None:
+        return "anomaly"
     ok = (value >= target) if higher_is_better else (value <= target)
     return "pass" if ok else "fail"
 
 # ============ 滚动行情条（四态：实时/最近收盘/已过期/未知） ============
 def render_ticker():
     """作战大屏：代码 | 名称 | 现价 | 涨幅% | 技术信号 | 待建单，完整闭环"""
-    try:
-        from engine.realtime import fetch_all
-        syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data")]
-        live = fetch_all(syms)
-    except Exception:
-        live = {}
-        syms = []
+    # 2026-10-20：全站统一用 market_data 最新收盘价（与账户/验证/技术形态同源同时间戳），
+    # 不再用盘中实时报价覆盖，避免同一标的出现两个价格
+    live = {}
     from engine.indicators import rsi, macd, bollinger, adx, market_regime, ma_align
 
     # 待建单：未成交的信号（新格式：方向 动作类型 @价格 | 止损 @价格）
@@ -343,13 +378,16 @@ def render_ticker():
         s.action_type, s.stop_price FROM signals s
         LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
           AND s.symbol=f.symbol AND s.side=f.side
-        WHERE f.id IS NULL AND s.date >= date('now','-7 days')"""):
+        WHERE f.id IS NULL AND s.date >= date('now','-7 days')
+          AND COALESCE(s.status,'') != '已隔离'"""):
         # 动作类型：老信号无值时推断
         if not act:
             act = "开仓" if side == "BUY" else "信号平仓"
         if side == "BUY":
             # BUY 开仓 @价格 | 止损 @价格
             stop_s = f" | 止损 @{stop_px:.2f}" if stop_px else ""
+            if sym in {str(x) for x in (CFG.get("display_only") or [])}:
+                stop_s += "<br><span style='font-size:11px;color:#888;'>只展示标的，不建买单</span>"
             pending[sym] = f"{side} {act} @{px:.2f}{stop_s}"
         else:
             # SELL 止盈/止损/信号平仓 @价格 + 持仓上下文
@@ -367,6 +405,9 @@ def render_ticker():
                     elif pnl_pct < -5:
                         act = "止损"
                 hold_s = f"<br><span style='font-size:11px;color:#888;'>持仓：是 | 成本 {cost:.2f} | 浮盈 {pnl_pct:+.1f}%</span>"
+                from engine.signal_guard import check_exit_price
+                for _iss in check_exit_price(side, px, cur_px, act):
+                    hold_s += f"<br><span style='font-size:11px;color:#f6465d;'>⚠ {_iss}</span>"
             else:
                 hold_s = f"<br><span style='font-size:11px;color:#888;'>无持仓，仅供观察</span>"
             pending[sym] = f"{side} {act} @{px:.2f}{hold_s}"
@@ -457,7 +498,7 @@ def render_ticker():
 # ============ 顶栏：系统状态 + 策略 ============
 status, mode = get_control()
 ver = CFG.get("meta", {}).get("version", "unknown")
-blocked, block_reasons = check_system_health()
+blocked, block_reasons, isolated_sigs = check_system_health()
 
 top1, top2, top3, top4 = st.columns(4)
 with top1:
@@ -490,6 +531,8 @@ with top4:
 # 阻断原因展示（2026-10-18起：有阻断时必须清晰显示）
 if blocked:
     st.error("⛔ 系统阻断：" + "；".join(block_reasons[:5]))
+if isolated_sigs:
+    st.warning(f"⚠ {len(isolated_sigs)} 条无效信号已隔离（不生成订单指引，不影响系统运行）：" + "；".join(isolated_sigs[:5]))
 
 # ============ 导航（对标人工交易终端工作流） ============
 tab = st.sidebar.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"])
@@ -543,8 +586,11 @@ SYMBOL_CN = {
 def sym_name(code):
     """标的显示名：代码+中文名，如 '002446 盛路通信'"""
     return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
-render_ticker()
-# 标的代码→中文名（展示用，查不到时回退显示代码）
+# 自选行情：工作台默认展开，其它页面折叠，避免每页顶部被大表挤占
+_px_date = q("SELECT MAX(date) FROM market_data")
+with st.expander(f"📋 自选行情（现价=最近收盘 {(_px_date[0][0] if _px_date else '') or '--'}）",
+                 expanded=(tab == "🏠 工作台")):
+    render_ticker()
 
 # 账户选择：工作台为三账户统一视图，不再用全局下拉；
 # 需要按账户筛选的页面（交易/账户）使用页内选择器
@@ -616,7 +662,8 @@ if tab == "🏠 工作台":
     pending_orders = q("""SELECT COUNT(*) FROM signals s
         LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
           AND s.symbol=f.symbol AND s.side=f.side
-        WHERE f.id IS NULL AND s.date >= date('now','-7 days')""")[0][0] or 0
+        WHERE f.id IS NULL AND s.date >= date('now','-7 days')
+          AND COALESCE(s.status,'') != '已隔离'""")[0][0] or 0
     # 待审批信号
     pending_signals = q("""SELECT COUNT(*) FROM signals s
         LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account
@@ -624,10 +671,20 @@ if tab == "🏠 工作台":
         LEFT JOIN fills f ON f.date=s.date AND f.account=s.account
           AND f.symbol=s.symbol AND f.side=s.side
         WHERE s.date>=date('now','-60 days') AND ap.date IS NULL AND f.date IS NULL""")[0][0] or 0
-    if pending_orders > 0 or pending_signals > 0:
+    # 风控超限：硬性禁止新买入，并列入待办（2026-10-20）
+    risk_todo = []
+    for _aid in ["sim_a", "sim_hk", "sim_crypto"]:
+        _c = core.get(_aid)
+        if not _c:
+            continue
+        _top = q("SELECT MAX(market_value) FROM positions WHERE account=? AND qty>0", (_aid,))
+        for _b in account_risk_breaches(_aid, _c["nav"], _c["pos"], (_top[0][0] if _top else 0) or 0):
+            risk_todo.append(f"{ACCT_CN.get(_aid, _aid)}{_b}，已禁止新买入，需减仓")
+    if pending_orders > 0 or pending_signals > 0 or risk_todo:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #f0b90b;border-radius:8px;
             padding:12px 16px;margin-bottom:16px;">
             <b>📋 今日待办</b><br>
+            {"".join("· ⛔ " + t + "<br>" for t in risk_todo)}
             {"· " + str(pending_orders) + "个待建条件单 → 📝交易页<br>" if pending_orders else ""}
             {"· " + str(pending_signals) + "个待审批信号" if pending_signals else ""}
             </div>''', unsafe_allow_html=True)
@@ -700,7 +757,6 @@ if tab == "🏠 工作台":
     # ---- 3. 三账户概览（并排） ----
     # ---- 4. 待处理信号（今日信号 + 待审批） ----
     # ---- 5. 当前账户总览 ----
-        st.info("该账户暂无数据")
 
     # 净值曲线
     hist = q("SELECT date,nav FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date", (acct,))
@@ -709,8 +765,13 @@ if tab == "🏠 工作台":
         import pandas as pd
         df = pd.DataFrame(hist, columns=["date", "nav"])
         df["date"] = pd.to_datetime(df["date"])
-        df = df.set_index("date")
-        st.line_chart(df["nav"])
+        # X 轴只覆盖实际数据范围，Y 轴不强制从 0 开始
+        import altair as alt
+        _x = alt.X("date:T", title=None, scale=alt.Scale(
+            domain=[df["date"].min().isoformat(), df["date"].max().isoformat()]))
+        st.altair_chart(alt.Chart(df).mark_line().encode(
+            x=_x, y=alt.Y("nav:Q", title=None, scale=alt.Scale(zero=False))),
+            use_container_width=True)
 
     # 三账户并排（对标验证终端）
     # 事件流（最近动态）- 折叠
@@ -899,7 +960,12 @@ elif tab == "📝 交易":
             st.session_state.order_select_all = False
         # 预校验所有信号
         validated = []
+        from engine.signal_guard import check_signal
+        _bad = {(d_, s_, sd_): iss for d_, a_, s_, sd_, iss in invalid_signals() if a_ == acct}
         for d, s, sd, px in sigs:
+            if (d, s, sd) in _bad:  # 前置校验未过：隔离，不再进入订单校验
+                validated.append((d, s, sd, px, False, ["已隔离：" + "；".join(_bad[(d, s, sd)])], []))
+                continue
             # SELL用当前持仓做数量；BUY用pipeline的position_sizer同逻辑
             # （2026-10-18定：app校验必须用pipeline结果，避免校验数量与实际下单数量不一致）
             qty_est = None
@@ -910,6 +976,15 @@ elif tab == "📝 交易":
                 pos = q("SELECT qty FROM positions WHERE account=? AND symbol=?", (acct, s))
                 qty_est = pos[0][0] if pos else 0
             ok, errs, warns = validate_order(acct, s, sd, qty_est, px, d)
+            if sd == "SELL":
+                from engine.signal_guard import check_exit_price
+                _cur, _ = latest_price(s)
+                _cost = q("SELECT avg_cost FROM positions WHERE account=? AND symbol=?", (acct, s))
+                _act = "止盈" if (_cost and _cost[0][0] and _cur and _cur > _cost[0][0]) else None
+                _px_issues = check_exit_price(sd, px, _cur, _act)
+                if _px_issues:
+                    errs = errs + _px_issues
+                    ok = False
             validated.append((d, s, sd, px, ok, errs, warns))
         # 拦截：有校验失败的先提示
         failed = [v for v in validated if not v[4]]
@@ -1238,18 +1313,19 @@ elif tab == "🛡 验证":
         pos_ratio = pv / nav if nav else 0
         c1, c2, c3 = st.columns(3)
         with c1:
-            ok = pos_ratio <= 0.7
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">仓位 {"✅" if ok else "⚠"}</div>'
+            _pcap, _ccap = risk_caps(acct)
+            ok = pos_ratio <= _pcap + 1e-9
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">仓位 {"✅" if ok else "⛔ 超限·禁止新买入"}</div>'
                         f'<div class="kpi-value {"up" if ok else "down"}">{pos_ratio*100:.1f}%</div>'
-                        f'<div class="kpi-label">上限 70%</div></div>', unsafe_allow_html=True)
+                        f'<div class="kpi-label">上限 {_pcap*100:.0f}%</div></div>', unsafe_allow_html=True)
         with c2:
             pos_r = q("SELECT symbol,market_value FROM positions WHERE account=? AND qty>0 ORDER BY market_value DESC", (acct,))
             conc = (pos_r[0][1] / nav) if pos_r and nav else 0
             sym = pos_r[0][0] if pos_r else "—"
-            ok = conc <= 0.4
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">集中度（{sym}）{"✅" if ok else "⚠"}</div>'
+            ok = conc <= _ccap + 1e-9
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">集中度（{sym}）{"✅" if ok else "⛔ 超限·禁止新买入"}</div>'
                         f'<div class="kpi-value {"up" if ok else "down"}">{conc*100:.1f}%</div>'
-                        f'<div class="kpi-label">上限 40%</div></div>', unsafe_allow_html=True)
+                        f'<div class="kpi-label">上限 {_ccap*100:.0f}%</div></div>', unsafe_allow_html=True)
         with c3:
             last_buy = q("""SELECT qty*price FROM fills WHERE account=? AND side='BUY'
                             ORDER BY date DESC LIMIT 1""", (acct,))
@@ -1315,7 +1391,7 @@ elif tab == "🛡 验证":
             d = g["accounts"].get(aid, {})
             mdd = d.get("max_drawdown")
             ok = mdd is not None and mdd <= tg["max_drawdown"]
-            r.append(f"{'✅' if ok else ''} {mdd*100:.1f}%" if mdd is not None else "—")
+            r.append(f"{'✅' if ok else ''} {mdd*100:.2f}%" if mdd is not None else "—")
         rows.append(r)
         # 期望值
         r = ["期望值"]

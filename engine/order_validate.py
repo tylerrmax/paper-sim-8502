@@ -82,6 +82,13 @@ def _position_cap(cfg, account):
     return float(risk.get("max_crypto_position_pct", 100)) / 100.0
 
 
+def _conc_cap(cfg, account):
+    """单标的集中度上限（risk.max_single_symbol_pct，缺省 40%，与验证页一致）。加密账户单标的，不适用。"""
+    if account == "sim_crypto":
+        return 1.0
+    return float((cfg.get("risk") or {}).get("max_single_symbol_pct", 40)) / 100.0
+
+
 def _limit_pct(cfg, symbol):
     boards = {_norm(k): v for k, v in (cfg.get("boards") or {}).items()}
     lp = (cfg.get("rules") or {}).get("limit_pct") or {"main": 0.1, "star": 0.2}
@@ -235,6 +242,13 @@ def _validate(con, cfg, errors, warnings, account, sym, side, qty, price, signal
             errors.append("账户净值/现金缺失，无法校验资金与仓位（失败关闭）")
         else:
             nav, cash, cur_pos = tot[0], tot[1] or 0, tot[2] or 0
+            # 账户已超限（仓位/集中度）：硬性禁止新买入（2026-10-20）
+            from engine.signal_guard import risk_breaches
+            top = con.execute("SELECT MAX(market_value) FROM positions WHERE account=? AND qty>0",
+                              (account,)).fetchone()
+            for b in risk_breaches(nav, cur_pos, (top[0] if top else 0) or 0,
+                                   _position_cap(cfg, account), _conc_cap(cfg, account)):
+                errors.append(f"风控超限，禁止新买入：{b}")
             notional = qty * price
             need = notional + _fee_est(cfg, account, notional)
             if need > cash + 1e-9:

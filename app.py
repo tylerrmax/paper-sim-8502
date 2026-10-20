@@ -155,9 +155,16 @@ def latest_price(sym):
 
 
 def risk_caps(aid):
-    """(总仓位上限, 单标的集中度上限)，与 engine/order_validate 同口径。"""
-    from engine.order_validate import _position_cap, _conc_cap
-    return _position_cap(CFG, aid), _conc_cap(CFG, aid)
+    """(总仓位上限, 单标的集中度上限)，与 engine/order_validate 同口径。
+    2026-10-20 hotfix：直接读 CFG，不再跨模块导入私有函数。Streamlit Cloud 热更新时
+    进程内 sys.modules 可能仍是旧版 engine.order_validate（无 _conc_cap），导致 ImportError。"""
+    risk = CFG.get("risk") or {}
+    if aid in ("sim_a", "sim_hk"):
+        pos_cap = float(risk.get("max_stock_position_pct", 70)) / 100.0
+    else:
+        pos_cap = float(risk.get("max_crypto_position_pct", 100)) / 100.0
+    conc_cap = 1.0 if aid == "sim_crypto" else float(risk.get("max_single_symbol_pct", 40)) / 100.0
+    return pos_cap, conc_cap
 
 
 def account_risk_breaches(aid, nav, pos_value, top_value):

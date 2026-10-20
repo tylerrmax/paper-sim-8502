@@ -102,3 +102,18 @@ def test_order_validate_blocks_buy_when_over_limits(tmp_path):
     assert not ok
     assert any("禁止新买入" in e and "总仓位" in e for e in errs)
     assert any("禁止新买入" in e and "集中度" in e for e in errs)
+
+
+def test_app_risk_caps_match_order_validate():
+    """app.risk_caps 与 order_validate 同口径，且 app 不再导入 order_validate 私有函数。"""
+    import ast
+    import yaml
+    from engine import order_validate as ov
+    src = open(os.path.join(BASE, "app.py"), encoding="utf-8").read()
+    assert "from engine.order_validate import _" not in src
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "risk_caps")
+    cfg = yaml.safe_load(open(os.path.join(BASE, "config", "strategy.yaml"), encoding="utf-8"))
+    ns = {"CFG": cfg}
+    exec(compile(ast.Module([fn], []), "app.py", "exec"), ns)
+    for aid in ("sim_a", "sim_hk", "sim_crypto"):
+        assert ns["risk_caps"](aid) == (ov._position_cap(cfg, aid), ov._conc_cap(cfg, aid))

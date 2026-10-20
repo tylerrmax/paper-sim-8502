@@ -372,11 +372,25 @@ def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=No
     return "pass" if ok else "fail"
 
 # ============ 滚动行情条（四态：实时/最近收盘/已过期/未知） ============
-def render_ticker():
+def live_cell(d):
+    """实时价单元格：价格 + 来源·时间·延迟标签（单独一列，不覆盖官方收盘价）。"""
+    if not d:
+        return '<span class="num flat">--</span>'
+    t = (d.get("time") or "")[-8:] if d.get("live") else (d.get("time") or "")
+    cls = "qs-live" if d.get("live") else "qs-unknown"
+    return (f'<span class="num">{d["price"]:,.4g}</span> '
+            f'<span class="num" style="font-size:11px;color:{"#f6465d" if d.get("change_pct", 0) >= 0 else "#2ebd85"};">'
+            f'{d.get("change_pct", 0):+.2f}%</span><br>'
+            f'<span class="qs {cls}" style="font-size:10px;">{d.get("delay", "")}</span> '
+            f'<span style="font-size:10px;color:#888;">{d.get("source", "")} {t}</span>')
+
+
+def render_ticker(quotes=None):
     """作战大屏：代码 | 名称 | 现价 | 涨幅% | 技术信号 | 待建单，完整闭环"""
     # 2026-10-20：全站统一用 market_data 最新收盘价（与账户/验证/技术形态同源同时间戳），
     # 不再用盘中实时报价覆盖，避免同一标的出现两个价格
     live = {}
+    quotes = quotes or {}
     from engine.indicators import rsi, macd, bollinger, adx, market_regime, ma_align
 
     # 待建单：未成交的信号（新格式：方向 动作类型 @价格 | 止损 @价格）
@@ -468,6 +482,7 @@ def render_ticker():
                 f'<td style="padding:8px;color:#1890ff;">{name_show}</td>'
                 f'<td class="num" style="padding:8px;color:{color};text-align:right;">{price_s}</td>'
                 f'<td style="padding:8px;color:{color};text-align:right;">{sign}{chg:.2f}%</td>'
+                f'<td style="padding:8px;text-align:right;">{live_cell(quotes.get(sym))}</td>'
                 f'<td style="padding:8px;font-size:12px;color:#aaa;">{tech}</td>'
                 f'<td style="padding:8px;{order_style}">{order}</td></tr>')
 
@@ -494,6 +509,7 @@ def render_ticker():
                 f'<td style="padding:6px 8px;">代码</td><td style="padding:6px 8px;">名称</td>'
                 f'<td style="padding:6px 8px;text-align:right;">现价</td>'
                 f'<td style="padding:6px 8px;text-align:right;">涨幅%</td>'
+                f'<td style="padding:6px 8px;text-align:right;">实时价（仅展示）</td>'
                 f'<td style="padding:6px 8px;">技术信号</td>'
                 f'<td style="padding:6px 8px;">待建单</td></tr>'
                 f'{rows}</table></div>')
@@ -544,6 +560,25 @@ if isolated_sigs:
 # ============ 导航（对标人工交易终端工作流） ============
 tab = st.sidebar.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"])
 st.sidebar.markdown("---")
+# 近实时行情自动刷新（仅交易时段，按市场判断；只影响展示，不影响信号/风控/验证）
+live_auto = st.sidebar.toggle("⚡ 实时价自动刷新（交易时段每10秒）", value=True, key="live_auto")
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def live_quotes_cached(symbols):
+    from engine.live_quotes import get_quotes
+    return get_quotes(list(symbols), DB)
+
+
+def live_refresh_interval():
+    from engine.live_quotes import is_market_open
+    if not live_auto:
+        return None
+    return "10s" if any(is_market_open(m) for m in ("a", "hk")) else None
+
+
+def all_quote_symbols():
+    return tuple(sorted(r[0] for r in q("SELECT DISTINCT symbol FROM market_data")))
 
 # 侧边栏：控制（云端只读时整个隐藏，不占地方）
 if not IS_CLOUD:
@@ -595,9 +630,11 @@ def sym_name(code):
     return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
 # 自选行情：工作台默认展开，其它页面折叠，避免每页顶部被大表挤占
 _px_date = q("SELECT MAX(date) FROM market_data")
-with st.expander(f"📋 自选行情（现价=最近收盘 {(_px_date[0][0] if _px_date else '') or '--'}）",
+with st.expander(f"📋 自选行情（现价=官方收盘 {(_px_date[0][0] if _px_date else '') or '--'}）",
                  expanded=(tab == "🏠 工作台")):
-    render_ticker()
+    def _ticker_fragment():
+        render_ticker(live_quotes_cached(all_quote_symbols()))
+    st.fragment(_ticker_fragment, run_every=live_refresh_interval())()
 
 # 账户选择：工作台为三账户统一视图，不再用全局下拉；
 # 需要按账户筛选的页面（交易/账户）使用页内选择器
@@ -1153,6 +1190,23 @@ elif tab == "💰 账户":
                          "市值": f"{mv:,.2f}",
                          "浮盈亏": f"{upl:+,.0f} ({upl_pct:+.1f}%)"})
         st.table(rows)
+
+        # 实时视图：只用于展示，市值/浮盈亏按近实时价估算；风控、验证仍用官方收盘价
+        with st.expander("⚡ 实时视图（仅供参考，不影响风控/验证）", expanded=False):
+            def _live_pos_fragment():
+                qs = live_quotes_cached(tuple(sorted(p_[0] for p_ in pos)))
+                lrows = []
+                for s_, qty_, avg_, last_, mv_ in pos:
+                    d_ = qs.get(s_) or {}
+                    lp = d_.get("price")
+                    lrows.append({"标的": sym_name(s_), "数量": qty_, "收盘价": f"{last_:.2f}",
+                                  "实时价": f"{lp:.4g}" if lp else "--",
+                                  "实时市值": f"{lp*qty_:,.2f}" if lp else "--",
+                                  "实时浮盈亏": f"{(lp-avg_)*qty_:+,.0f} ({(lp-avg_)/avg_*100:+.1f}%)" if lp and avg_ else "--",
+                                  "来源": d_.get("source", "--"), "时间": d_.get("time", "--"),
+                                  "延迟": d_.get("delay", "--")})
+                st.table(lrows)
+            st.fragment(_live_pos_fragment, run_every=live_refresh_interval())()
 
         # TradingView 级 K线（每个持仓标的）
         st.subheader("持仓K线")

@@ -88,8 +88,8 @@ def kline_html(symbol, bars, ma_periods=(5, 10, 20, 30, 60), price_lines=None, m
     timeScale: {{ borderColor: '#1e2532', timeVisible: false }},
   }});
   var candles = chart.addCandlestickSeries({{
-    upColor: '#ff5b6e', downColor: '#26c281',
-    wickUpColor: '#ff5b6e', wickDownColor: '#26c281',
+    upColor: '#f6465d', downColor: '#2ebd85',
+    wickUpColor: '#f6465d', wickDownColor: '#2ebd85',
     borderVisible: false,
   }});
   candles.setData({j_candles});

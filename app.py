@@ -53,9 +53,12 @@ CFG_PATH = os.path.join(BASE, "config", "strategy.yaml")
 # 云端模式检测：Streamlit Cloud 文件系统是临时的，写操作不持久
 # 通过环境变量 STREAMLIT_CLOUD 判断
 import streamlit as st
+
 ENABLE_WRITE = st.secrets.get("general", {}).get("ENABLE_WRITE_ACCESS", "false").lower() == "true"
-IS_CLOUD = (os.environ.get("STREAMLIT_CLOUD") == "1" or "streamlit" in os.environ.get("HOSTNAME", "")) and not ENABLE_WRITECLOUD_DATA_ASOF = ""  # 云端数据推送时间（从 db/sim.db 的 mtime 推断）
+IS_CLOUD = (os.environ.get("STREAMLIT_CLOUD") == "1" or "streamlit" in os.environ.get("HOSTNAME", "")) and not ENABLE_WRITE
+
 if IS_CLOUD:
+    # 云端只读模式：复制 DB 到临时位置避免锁定问题
     # 云端用只读模式：复制 DB 到临时位置避免锁定问题
     import tempfile, shutil
     _tmp = os.path.join(tempfile.gettempdir(), "sim_cloud.db")

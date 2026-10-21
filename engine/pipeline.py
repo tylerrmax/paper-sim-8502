@@ -417,20 +417,12 @@ def _run_locked(db_path=DB, cfg=None):
                 today = datetime.now().date()
                 days_old = (today - sig_date).days
                 sig_status = "已过期" if days_old > 7 else "待执行"
-                # 前置校验（2026-10-20）：无持仓的 SELL / display_only 的 BUY 直接隔离，
-                # 入库留痕但不进入待执行队列，也不触发全局阻断
-                from engine.signal_guard import check_signal, ISOLATED_STATUS
-                _issues = check_signal(side, s, sim.position_qty(s),
-                                       cfg.get("display_only") or [], price=sig_px,
-                                       stop_price=stop_px)
-                if _issues:
-                    sig_status = ISOLATED_STATUS
                 con.execute(
                     "INSERT INTO signals(date,account,symbol,side,price,action_type,status,stop_price,strategy)"
                     " VALUES(?,?,?,?,?,?,?,?,?)",
                     (d, aid, s, side, sig_px, act, sig_status, stop_px, strat_cn))
                 # 有 T+1 bar 才加入待执行；否则信号保留，待数据到达后执行
-                if has_next_bar.get((s, d)) and sig_status != ISOLATED_STATUS:
+                if has_next_bar.get((s, d)):
                     pending.append((d, s, side, sig_px))
                 # 无 T+1 bar（如最新日期）：信号已入库，pending 待下次跑批
             # 历史成交补重放：bar 缺失导致信号未重新生成时（如行情漏入库），

@@ -141,94 +141,87 @@ def set_control(status=None, mode=None):
 
 
 # ============ 页面配置 ============
-st.set_page_config(page_title="独立交易终端", layout="wide", page_icon="📊")
+st.set_page_config(page_title="8502", layout="wide")
 
-# 深色交易终端视觉规范（统一，禁止白色卡片混搭）
+# 深色交易终端。卡片保持深色，不混入白底。
 st.markdown("""
 <style>
-/* 全局：深色终端底 */
-.main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #1a1a2e; }
-@media (prefers-color-scheme: dark) { .main-title { color: #e8ecf1; } }
-.sub-title { font-size: 13px; color: #8a8f9c; margin-bottom: 16px; }
-/* 统一卡片：深色 */
-.kpi-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
-            padding: 14px 16px; margin-bottom: 10px; color: #e8ecf1; }
-.kpi-label { font-size: 12px; color: #8a8f9c; margin-bottom: 4px; }
-.kpi-value { font-size: 22px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, monospace; color: #e8ecf1; }
+.block-container { padding-top: 1.1rem; max-width: 1180px; }
+.main-title { font-size: 13px; font-weight: 650; letter-spacing: .14em; color: #e8ecf1; }
+.sub-title { font-size: 12px; color: #8a8f9c; margin-top: 2px; }
+.topbar { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 8px; }
+.sim-pill { font-size: 11px; letter-spacing: .12em; color: #8a8f9c; border: 1px solid #2a3342; border-radius: 999px; padding: 4px 10px; }
+.kpi-card, .book, .lvl, .desk-hero { background: #10141b; border: 1px solid #1e2532; border-radius: 12px; color: #e8ecf1; }
+.kpi-card { padding: 14px 16px; margin-bottom: 10px; }
+.kpi-label, .book-k, .lvl-k, .lvl-n { font-size: 12px; color: #8a8f9c; }
+.kpi-value, .book-v, .lvl-v { font-family: ui-monospace, SFMono-Regular, monospace; font-variant-numeric: tabular-nums; font-weight: 650; color: #e8ecf1; }
+.kpi-value { font-size: 22px; }
 .kpi-value.up { color: #f6465d; } .kpi-value.down { color: #2ebd85; }
-.kpi-value.big { font-size: 28px; }
-/* 数字统一：等宽字体 */
 .num { font-family: ui-monospace, SFMono-Regular, monospace; font-variant-numeric: tabular-nums; }
 .pos { color: #f6465d; } .neg { color: #2ebd85; } .flat { color: #8a8f9c; }
-/* 策略徽标 */
-.strategy-badge { display: inline-block; padding: 3px 12px; border-radius: 12px;
-                  font-size: 12px; font-weight: 600; }
-.strategy-badge.buyback { background: rgba(46,189,133,.15); color: #2ebd85; }
-.strategy-badge.ma20 { background: rgba(240,185,11,.15); color: #f0b90b; }
-/* 分区标题 */
-.section-head { font-size: 18px; font-weight: 700; margin: 20px 0 12px 0;
-                padding-bottom: 8px; border-bottom: 2px solid #1e2532; color: #e8ecf1; }
-/* 横幅：四态 */
-.alert-banner { border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; font-size: 14px; }
-.alert-banner.warn { background: rgba(240,185,11,.12); border: 1px solid rgba(240,185,11,.3); color: #f0b90b; }
-.alert-banner.info { background: rgba(24,144,255,.1); border: 1px solid rgba(24,144,255,.3); color: #1890ff; }
-.alert-banner.success { background: rgba(46,189,133,.1); border: 1px solid rgba(46,189,133,.3); color: #2ebd85; }
-.alert-banner.danger { background: rgba(246,70,93,.1); border: 1px solid rgba(246,70,93,.35); color: #f6465d; }
-/* 状态卡片：深色统一（替代原白色 .status-card） */
-.status-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
-               padding: 16px; margin-bottom: 12px; color: #e8ecf1; }
-.status-card .sc-label { font-size: 13px; color: #8a8f9c; margin-bottom: 8px; }
-.status-card .sc-value { font-size: 26px; font-weight: 700; font-family: ui-monospace, monospace; color: #e8ecf1; }
-.status-card .sc-value.paused { color: #8a8f9c; }
-.status-card .sc-value.nodata { color: #5a6270; }
-/* 行情状态徽标：实时 / 最近收盘 / 已过期 / 未知 */
-.qs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
-.qs-live { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
-.qs-close { background: rgba(24,144,255,.14); color: #1890ff; border: 1px solid rgba(24,144,255,.35); }
-.qs-stale { background: rgba(240,185,11,.14); color: #f0b90b; border: 1px solid rgba(240,185,11,.35); }
-.qs-unknown { background: rgba(138,143,156,.14); color: #8a8f9c; border: 1px solid rgba(138,143,156,.35); }
-/* 验证状态徽标：达标 / 未达标 / 样本不足 / 数据异常 */
-.vs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
-.vs-pass { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
-.vs-fail { background: rgba(246,70,93,.14); color: #f6465d; border: 1px solid rgba(246,70,93,.4); }
-.vs-insufficient { background: rgba(240,185,11,.14); color: #f0b90b; border: 1px solid rgba(240,185,11,.35); }
-.vs-anomaly { background: rgba(177,59,179,.16); color: #c77ddb; border: 1px solid rgba(177,59,179,.4); }
-/* 按钮状态 */
-.btn-state { display: inline-block; padding: 4px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; }
-.btn-submitted { background: rgba(24,144,255,.15); color: #1890ff; }
-.btn-running { background: rgba(240,185,11,.15); color: #f0b90b; }
-.btn-done { background: rgba(46,189,133,.15); color: #2ebd85; }
-.btn-failed { background: rgba(246,70,93,.15); color: #f6465d; }
-/* 表格：深色 */
-table { color: #e8ecf1; }
-/* 响应式：手机端卡片全宽 */
-@media (max-width: 768px) {
-  .main-title { font-size: 22px; }
-  .kpi-value.big { font-size: 22px; }
-  .status-card .sc-value { font-size: 20px; }
+.risk { color: #f6465d; }
+.strategy-badge { display: inline-block; margin: 2px 4px 0 0; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #2a3342; color: #c5ccd6; }
+.section-head { font-size: 13px; font-weight: 650; letter-spacing: .08em; margin: 18px 0 10px; color: #8a8f9c; }
+.alert-banner, .halt { border-radius: 10px; padding: 10px 12px; margin: 8px 0 12px; font-size: 13px; line-height: 1.45; }
+.alert-banner.warn, .halt.warn { background: rgba(240,185,11,.08); border: 1px solid rgba(240,185,11,.28); color: #f0b90b; }
+.alert-banner.info { background: rgba(154,166,178,.08); border: 1px solid #2a3342; color: #c5ccd6; }
+.alert-banner.success { background: rgba(46,189,133,.08); border: 1px solid rgba(46,189,133,.28); color: #2ebd85; }
+.alert-banner.danger, .halt { background: rgba(246,70,93,.08); border: 1px solid rgba(246,70,93,.28); color: #f3b4bd; }
+.halt b { color: #f6465d; font-weight: 650; }
+.status-card { background: #10141b; border: 1px solid #1e2532; border-radius: 12px; padding: 14px 16px; color: #e8ecf1; }
+.status-card .sc-label { font-size: 12px; color: #8a8f9c; }
+.status-card .sc-value { font-size: 18px; font-family: ui-monospace, monospace; }
+.rail { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 0 4px; }
+.rail .kpi-card { margin: 0; padding: 10px 12px; }
+.rail .kpi-value { font-size: 16px; }
+.book { padding: 12px 14px; min-height: 148px; }
+.book-h { font-size: 12px; color: #8a8f9c; margin-bottom: 8px; }
+.book-row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; font-size: 13px; }
+.lvl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0 12px; }
+.lvl { padding: 12px 14px; }
+.lvl-v { font-size: 22px; margin: 4px 0; }
+.desk-hero { padding: 16px 18px 14px; margin-bottom: 10px; }
+.desk-hero-top, .desk-quote { display: flex; justify-content: space-between; gap: 16px; }
+.desk-kicker { font-size: 12px; letter-spacing: .16em; color: #e8ecf1; }
+.desk-symbol { font-size: 22px; font-weight: 650; margin: 8px 0 6px; }
+.desk-px-num { font-size: 28px; font-family: ui-monospace, monospace; text-align: right; }
+.regime { display: inline-block; border: 1px solid #2a3342; border-radius: 999px; padding: 2px 8px; font-size: 12px; color: #c5ccd6; margin-right: 8px; }
+.qs, .vs { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; border: 1px solid #2a3342; }
+.qs-live, .vs-pass { color: #2ebd85; }
+.qs-close { color: #9eb6d4; }
+.qs-stale, .vs-insufficient { color: #f0b90b; }
+.qs-unknown, .vs-unknown { color: #8a8f9c; }
+.vs-fail { color: #f6465d; }
+.vs-anomaly { color: #c77ddb; }
+div[data-testid="stRadio"] [role="radiogroup"] { gap: 2px; flex-wrap: wrap; background: transparent; border-bottom: 1px solid #1e2532; padding-bottom: 0; }
+div[data-testid="stRadio"] [role="radiogroup"] label { border: 0 !important; border-radius: 0 !important; background: transparent !important; padding: 8px 14px 9px !important; border-bottom: 2px solid transparent !important; }
+div[data-testid="stRadio"] label > div > div:first-child { display: none !important; }
+div[data-testid="stMetric"] { background: #10141b; border: 1px solid #1e2532; border-radius: 12px; padding: 10px 12px; }
+div[data-testid="stExpander"] details { background: #10141b; border: 1px solid #1e2532; border-radius: 12px; }
+@media (max-width: 800px) {
+  .rail, .lvl-grid { grid-template-columns: 1fr 1fr; }
+  .desk-symbol { font-size: 18px; }
+  .desk-px-num { font-size: 22px; }
 }
-
-/* 顶部主导航：紧凑、可换行，侧边栏仅保留运维控制 */
-div[data-testid="stRadio"] [role="radiogroup"] { gap: 6px; flex-wrap: wrap; }
-div[data-testid="stRadio"] [role="radiogroup"] label { border: 1px solid #28303d; border-radius: 8px; padding: 5px 10px; }
-:root { --theme-up: #f6465d; --theme-down: #2ebd85; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_html=True)
+_asof = ""
+_dd = q("SELECT MAX(date) FROM daily_report WHERE symbol='TOTAL'")
+_dd = _dd[0][0] if _dd and _dd[0][0] else ""
+if _dd and CLOUD_DATA_ASOF:
+    _asof = f"数据日期 {_dd} · 同步 {CLOUD_DATA_ASOF}"
+elif _dd:
+    _asof = f"数据日期 {_dd}"
+elif CLOUD_DATA_ASOF:
+    _asof = f"同步 {CLOUD_DATA_ASOF}"
+st.markdown(
+    f'<div class="topbar"><div><div class="main-title">8502</div>'
+    f'<div class="sub-title">独立交易终端 · 模拟</div></div>'
+    f'<div class="sub-title">{_asof}</div></div>',
+    unsafe_allow_html=True)
 
-# 数据日期（交易员需要知道数据新旧，不说教）
-if CLOUD_DATA_ASOF:
-    # 区分：数据日期（交易日）vs 同步时间（文件推送时间）
-    # 周末无新数据时，数据日期停在周五属正常，不应误报为同步中断
-    data_date = q("SELECT MAX(date) FROM daily_report WHERE symbol='TOTAL'")
-    data_date_str = data_date[0][0] if data_date and data_date[0][0] else ""
-    if data_date_str:
-        st.caption(f"数据日期 {data_date_str} · 同步于 {CLOUD_DATA_ASOF}")
-    else:
-        st.caption(f"数据截至 {CLOUD_DATA_ASOF}")
-
-NAV_OPTIONS = ["🧭 决策台", "🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"]
+NAV_OPTIONS = ["决策台", "工作台", "选股", "交易", "账户", "验证"]
 tab = st.radio("主导航", NAV_OPTIONS, horizontal=True, label_visibility="collapsed", key="main_navigation")
 
 # ============ 行情状态四态判定 + 数字格式化助手 ============
@@ -467,37 +460,24 @@ status, mode = get_control()
 ver = CFG.get("meta", {}).get("version", "unknown")
 blocked, block_reasons = check_system_health()
 
-top1, top2, top3, top4 = st.columns(4)
-with top1:
-    if blocked:
-        st.markdown(f'<div class="kpi-card" style="border:1px solid #f6465d;"><div class="kpi-label">系统状态</div>'
-                    f'<div class="kpi-value" style="color:#f6465d;">⛔ 阻断</div></div>',
-                    unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="kpi-card"><div class="kpi-label">系统状态</div>'
-                    f'<div class="kpi-value">{"🟢 运行中" if status == "running" else "⏸ 已暂停"}</div></div>',
-                    unsafe_allow_html=True)
-with top2:
-    st.markdown(f'<div class="kpi-card"><div class="kpi-label">执行模式</div>'
-                f'<div class="kpi-value">{"⚡ 自动" if mode == "auto" else "✋ 手动"}</div></div>',
-                unsafe_allow_html=True)
-with top3:
-    st.markdown(f'<div class="kpi-card"><div class="kpi-label">规则版本</div>'
-                f'<div class="kpi-value" style="font-size:16px">{ver}</div></div>',
-                unsafe_allow_html=True)
-with top4:
-    # 各账户策略徽标
-    _ACCT = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-    badges = " ".join(
-        f'<span class="strategy-badge {strategy_of(a["id"])}">{_ACCT.get(a["id"], a["id"])}：{STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
-        for a in CFG["accounts"])
-    st.markdown(f'<div class="kpi-card"><div class="kpi-label">分账户策略（2026-10-16 选A）</div>'
-                f'<div style="margin-top:6px">{badges}</div></div>',
-                unsafe_allow_html=True)
-
-# 阻断原因展示（2026-10-18起：有阻断时必须清晰显示）
+status_txt = "阻断" if blocked else ("运行" if status == "running" else "暂停")
+status_cls = "risk" if blocked else ""
+mode_txt = "自动" if mode == "auto" else "手动"
+_ACCT = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密"}
+badges = " ".join(
+    f'<span class="strategy-badge">{_ACCT.get(a["id"], a["id"])} {STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
+    for a in CFG["accounts"])
+st.markdown(
+    f'<div class="rail">'
+    f'<div class="kpi-card"><div class="kpi-label">状态</div><div class="kpi-value {status_cls}">{status_txt}</div></div>'
+    f'<div class="kpi-card"><div class="kpi-label">执行</div><div class="kpi-value">{mode_txt}</div></div>'
+    f'<div class="kpi-card"><div class="kpi-label">规则</div><div class="kpi-value">{ver}</div></div>'
+    f'<div class="kpi-card"><div class="kpi-label">账户策略</div><div>{badges}</div></div>'
+    f'</div>',
+    unsafe_allow_html=True)
 if blocked:
-    st.error("⛔ 系统阻断：" + "；".join(block_reasons[:5]))
+    lines = "".join(f"<div>{r}</div>" for r in block_reasons[:5])
+    st.markdown(f'<div class="halt"><b>阻断 · {len(block_reasons[:5])}</b>{lines}</div>', unsafe_allow_html=True)
 
 # ============ 导航（对标人工交易终端工作流） ============
 # 主导航已前置至标题区。
@@ -523,7 +503,7 @@ if not IS_CLOUD:
         asof = run(DB, cfg2)
         write_report(DB, cfg2, asof)
         st.rerun()
-    if st.sidebar.button("🔄 刷新数据（拉取+重算）"):
+    if st.sidebar.button("刷新数据"):
         with st.spinner("拉取行情并重算…"):
             r = subprocess.run([sys.executable, os.path.join(BASE, "run_daily.py")],
                                capture_output=True, text=True, timeout=300)
@@ -560,69 +540,50 @@ acct = "sim_a"  # 默认，页内可覆盖
 # ================================================================
 # 🏠 工作台：系统状态 + 今日信号 + 账户总览
 # ================================================================
-if tab == "🧭 决策台":
+if tab == "决策台":
     from engine.decision_desk import render_decision_desk
     render_decision_desk(q, CFG, accts, ACCT_CN, SYMBOL_CN,
                          strategy_of, strategy_desc, quote_state, DB)
 
-elif tab == "🏠 工作台":
-    st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
+elif tab == "工作台":
     render_ticker()
 
-    # ---- 核心数据（验证终端优势沿用）：总资产/当日盈亏/持仓市值/可用资金 ----
-    # 交易所标准：红涨绿跌，数字 vibrant
-    st.markdown("**核心数据**")
+    st.markdown('<div class="section-head">账户</div>', unsafe_allow_html=True)
     core = {}
     for aid in ["sim_a", "sim_hk", "sim_crypto"]:
         r = q("SELECT nav, pnl_day, cash, position_value, ret_total FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
         if r:
             core[aid] = {"nav": r[0][0], "pnl": r[0][1] or 0, "cash": r[0][2] or 0, "pos": r[0][3] or 0, "ret": r[0][4] or 0}
-    # 货币：A股CNY 港股HKD 加密USDT
     def _fmt(v): return f"{v:,.2f}"
-    # 交易所色：涨红 #f6465d，跌绿 #2ebd85
-    def _rg(v): return "#f6465d" if v >= 0 else "#2ebd85"
+    def _tone(v):
+        if v > 1e-9: return "pos"
+        if v < -1e-9: return "neg"
+        return "flat"
+    def _book(title, rows):
+        body = "".join(
+            f'<div class="book-row"><span class="book-k">{k}</span><span class="num book-v {cls}">{val}</span></div>'
+            for k, val, cls in rows)
+        return f'<div class="book"><div class="book-h">{title}</div>{body}</div>'
+    labels = [("sim_a", "A股", "¥"), ("sim_hk", "港股", "HK$"), ("sim_crypto", "加密", "$")]
     c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        ra = core.get("sim_a", {}).get("ret", 0)
-        rh = core.get("sim_hk", {}).get("ret", 0)
-        rc = core.get("sim_crypto", {}).get("ret", 0)
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#e8ecf1;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">港股 </span>HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">加密货币 </span>${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
-            <div style="font-size:12px;margin-top:4px;">
-                <span style="color:{_rg(ra)};">{ra*100:+.2f}%</span>
-                <span style="color:#666;"> | </span>
-                <span style="color:{_rg(rh)};">{rh*100:+.2f}%</span>
-                <span style="color:#666;"> | </span>
-                <span style="color:{_rg(rc)};">{rc*100:+.2f}%</span>
-            </div>
-            </div>''', unsafe_allow_html=True)
-    with c2:
-        pnl_a = core.get("sim_a", {}).get("pnl", 0)
-        pnl_hk = core.get("sim_hk", {}).get("pnl", 0)
-        pnl_c = core.get("sim_crypto", {}).get("pnl", 0)
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">当日盈亏</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:{_rg(pnl_a)};"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(pnl_a)}</div>
-            <div class="num" style="color:{_rg(pnl_hk)};font-size:14px;">HK${_fmt(pnl_hk)}</div>
-            <div class="num" style="color:{_rg(pnl_c)};font-size:14px;">${_fmt(pnl_c)}</div>
-            </div>''', unsafe_allow_html=True)
-    with c3:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">持仓市值</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#e8ecf1;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
-            </div>''', unsafe_allow_html=True)
-    with c4:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">可用资金</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#e8ecf1;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
-            </div>''', unsafe_allow_html=True)
+    books = [
+        ("总资产", lambda a, p: (f"{p}{_fmt(core.get(a, {}).get('nav', 0))}", "")),
+        ("当日盈亏", lambda a, p: (f"{p}{_fmt(core.get(a, {}).get('pnl', 0))}", _tone(core.get(a, {}).get("pnl", 0)))),
+        ("持仓市值", lambda a, p: (f"{p}{_fmt(core.get(a, {}).get('pos', 0))}", "")),
+        ("可用资金", lambda a, p: (f"{p}{_fmt(core.get(a, {}).get('cash', 0))}", "")),
+    ]
+    for col, (title, pick) in zip((c1, c2, c3, c4), books):
+        rows = []
+        for aid, name, prefix in labels:
+            val, cls = pick(aid, prefix)
+            rows.append((name, val, cls))
+        if title == "总资产":
+            rows.append(("收益", " · ".join(
+                f'<span class="{_tone(core.get(a, {}).get("ret", 0))}">{core.get(a, {}).get("ret", 0)*100:+.2f}%</span>'
+                for a, _, _ in labels
+            ), ""))
+        with col:
+            st.markdown(_book(title, rows), unsafe_allow_html=True)
 
     # ---- 今日待办（最优先）：一眼知道要做什么 ----
     # 待建条件单
@@ -638,21 +599,18 @@ elif tab == "🏠 工作台":
           AND f.symbol=s.symbol AND f.side=s.side
         WHERE s.date>=date('now','-60 days') AND ap.date IS NULL AND f.date IS NULL""")[0][0] or 0
     if pending_orders > 0 or pending_signals > 0:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #f0b90b;border-radius:8px;
-            padding:12px 16px;margin-bottom:16px;">
-            <b>📋 今日待办</b><br>
-            {"· " + str(pending_orders) + "个待建条件单 → 📝交易页<br>" if pending_orders else ""}
-            {"· " + str(pending_signals) + "个待审批信号" if pending_signals else ""}
-            </div>''', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="alert-banner warn"><b>待办</b>'
+            f'{"<div>" + str(pending_orders) + " 个待建条件单，在交易页处理</div>" if pending_orders else ""}'
+            f'{"<div>" + str(pending_signals) + " 个待审批信号</div>" if pending_signals else ""}'
+            f'</div>', unsafe_allow_html=True)
     else:
-        st.markdown('''<div style="background:#1a1a2e;border:1px solid #2ebd85;border-radius:8px;
-            padding:12px 16px;margin-bottom:16px;">✅ 今日无待办</div>''',
-            unsafe_allow_html=True)
+        st.markdown('<div class="alert-banner success">今日无待办</div>', unsafe_allow_html=True)
 
     # ---- 1. 风险警报区 ----
     alerts = []
     if status != "running":
-        alerts.append(("warn", "⏸ 系统已暂停：新信号不会成交。已挂在券商的条件单请在券商端自行检查/撤销。"))
+        alerts.append(("warn", "系统已暂停。新信号不会成交；已挂条件单请在券商端核对。"))
     # 破止损持仓检查（buyback）
     try:
         _bs = q("""SELECT p.symbol, p.qty, p.avg_cost, m.close FROM positions p
@@ -662,7 +620,7 @@ elif tab == "🏠 工作台":
                    WHERE p.account=? AND p.qty>0""", (acct,))
         for _s, _q, _avg, _last in _bs:
             if _avg and _last and _last < _avg * 0.95 and strategy_of(acct) == "buyback":
-                alerts.append(("danger", f"🔴 破止损仍持仓：{_s} 现价{_last:.2f} < 成本{_avg:.2f}×0.95"))
+                alerts.append(("danger", f"破止损仍持仓：{_s} 现价 {_last:.2f}，成本 {_avg:.2f}"))
     except Exception:
         pass
     for _lvl, _msg in alerts:
@@ -692,33 +650,31 @@ elif tab == "🏠 工作台":
         for d, buy_amt, sell_amt, fees in rows:
             net = (sell_amt or 0) - (buy_amt or 0) - (fees or 0)
             net_wan = net / 10000
-            color = "#f6465d" if net >= 0 else "#2ebd85"
-            arrow = "▲" if net >= 0 else "▼"
-            st.markdown(f'<div style="padding:6px 0;font-size:15px;"><span style="color:#aaa;">{d}</span> '
-                        f'<span style="color:{color};font-weight:bold;">{arrow} {net_wan:+.2f}{ccy}</span></div>',
+            if abs(net) < 1e-6:
+                color, arrow = "#8a8f9c", "·"
+            elif net > 0:
+                color, arrow = "#f6465d", "▲"
+            else:
+                color, arrow = "#2ebd85", "▼"
+            st.markdown(f'<div class="book-row"><span class="book-k">{d}</span>'
+                        f'<span class="num" style="color:{color};">{arrow} {net_wan:+.2f}{ccy}</span></div>',
                         unsafe_allow_html=True)
 
     # 主力资金（三账户并排）
     fc1, fc2, fc3 = st.columns(3)
     with fc1:
-        with st.expander("💰 A股资金流", expanded=False):
+        with st.expander("A股资金流", expanded=False):
             _fund_flow_panel("sim_a")
     with fc2:
-        with st.expander("💰 港股资金流", expanded=False):
+        with st.expander("港股资金流", expanded=False):
             _fund_flow_panel("sim_hk")
     with fc3:
-        with st.expander("💰 加密资金流", expanded=False):
+        with st.expander("加密资金流", expanded=False):
             _fund_flow_panel("sim_crypto")
 
-    # ---- 3. 三账户概览（并排） ----
-    # ---- 4. 待处理信号（今日信号 + 待审批） ----
-    # ---- 5. 当前账户总览 ----
-        st.info("该账户暂无数据")
-
-    # 净值曲线
     hist = q("SELECT date,nav FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date", (acct,))
     if hist:
-        st.subheader("净值曲线")
+        st.markdown('<div class="section-head">净值</div>', unsafe_allow_html=True)
         import pandas as pd
         df = pd.DataFrame(hist, columns=["date", "nav"])
         df["date"] = pd.to_datetime(df["date"])
@@ -727,18 +683,18 @@ elif tab == "🏠 工作台":
 
     # 三账户并排（对标验证终端）
     # 事件流（最近动态）- 折叠
-    with st.expander("📡 事件流", expanded=False):
+    with st.expander("事件流", expanded=False):
         events = []
         for d, a, s, sd, qty, px in q(
                 "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 5"):
-            events.append((d, f"💰 {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
+            events.append((d, f"成交 {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {qty} @ {px}"))
         for d, a, s, sd in q(
                 "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 5"):
-            events.append((d, f"📶 {ACCT_CN.get(a,a)} {sym_name(s)} {sd}信号"))
+            events.append((d, f"信号 {ACCT_CN.get(a,a)} {sym_name(s)} {sd}"))
         for d, a, s, sd, dc in q(
                 "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 5"):
-            icon = "✅" if dc == "approved" else "⏭"
-            events.append((d, f"{icon} {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {dc}"))
+            mark = "已批" if dc == "approved" else "跳过"
+            events.append((d, f"{mark} {ACCT_CN.get(a,a)} {sym_name(s)} {sd}"))
         events.sort(reverse=True)
         for d, txt in events[:10]:
             st.write(f"`{d}` {txt}")
@@ -748,10 +704,8 @@ elif tab == "🏠 工作台":
 # ================================================================
 # 📈 行情与信号：实时行情 + 策略规则 + 触发线
 # ================================================================
-elif tab == "🔍 选股":
-    st.header("🔍 选股")
-    # ---- 筛选器（Unusual Whales式）：涨幅/量比/RSI/MACD/资金 ----
-    with st.expander("🎯 条件筛选", expanded=False):
+elif tab == "选股":
+    with st.expander("条件筛选", expanded=False):
         f1, f2, f3 = st.columns(3)
         with f1:
             chg_min = st.number_input("涨幅% ≥", value=-10.0, step=1.0, key="f_chg_min")
@@ -761,7 +715,7 @@ elif tab == "🔍 选股":
             rsi_max = st.number_input("RSI ≤", value=100, step=5, key="f_rsi_max")
         with f3:
             macd_f = st.selectbox("MACD", ["不限", "多头", "空头"], key="f_macd")
-        if st.button("🔍 筛选", key="do_screen"):
+        if st.button("筛选", key="do_screen"):
             from engine.indicators import rsi, macd
             results = []
             for sym in SYMBOL_CN.keys():
@@ -798,7 +752,7 @@ elif tab == "🔍 选股":
             else:
                 st.info("无符合条件的标的")
     # ---- 全市场搜索：任意A股/港股代码，新浪实时K线 ----
-    with st.expander("🔎 全市场搜索（任意代码）", expanded=False):
+    with st.expander("代码检索", expanded=False):
         s_code = st.text_input("输入代码，如 600519 / 002446 / 00700", key="mkt_search")
         if s_code:
             code = s_code.strip()
@@ -824,7 +778,7 @@ elif tab == "🔍 选股":
     from engine.indicators import rsi, macd, bollinger, ma_align, adx as calc_adx, market_regime
     from engine.signals import moving_average
     # ---- 市场面：涨跌分布 ----
-    st.subheader("📊 涨跌分布")
+    st.markdown('<div class="section-head">涨跌分布</div>', unsafe_allow_html=True)
     adv, dec, flat = 0, 0, 0
     for sym in SYMBOL_CN:
         rows = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 2", (sym,))
@@ -838,7 +792,7 @@ elif tab == "🔍 选股":
     c2.metric("下跌", dec)
     c3.metric("持平", flat)
     # ---- 持仓资讯：每个标的新闻直达 ----
-    with st.expander("📰 持仓资讯", expanded=False):
+    with st.expander("持仓资讯", expanded=False):
         for sym in sorted(SYMBOL_CN.keys()):
             nm = sym_name(sym)
             if len(sym) == 6 and sym.isdigit():
@@ -854,7 +808,7 @@ elif tab == "🔍 选股":
             elif sym == "BTCUSDT":
                 st.markdown(f"**{nm}** · [金色财经](https://www.jinse.cn) · [币世界](https://www.bishijie.com)")
     # ---- 技术形态：每个标的指标面板 ----
-    st.subheader("📐 技术形态")
+    st.markdown('<div class="section-head">技术形态</div>', unsafe_allow_html=True)
     import time as _time
     _ts = int(_time.time())
     for sym in sorted(SYMBOL_CN.keys()):
@@ -874,23 +828,23 @@ elif tab == "🔍 选股":
         regime = market_regime(adx_v)
         align = ma_align(closes)
         tags = []
-        if rsi_v and rsi_v > 70: tags.append("⚠️超买")
-        elif rsi_v and rsi_v < 30: tags.append("💡超卖")
-        tags.append("🟢MACD多" if (macd_h and macd_h > 0) else "🔴MACD空")
-        if regime == "trend": tags.append("📈趋势")
-        elif regime == "range": tags.append("📊震荡")
-        if align > 0.5: tags.append("✅均线多")
-        elif align < -0.5: tags.append("❌均线空")
-        if last_c and upper[-1] and last_c > upper[-1]: tags.append("🔥破上轨")
-        if last_c and lower[-1] and last_c < lower[-1]: tags.append("🧊破下轨")
-        with st.expander(f"{sym_name(sym)} @ {last_c:.2f} | {' '.join(tags)}", expanded=False):
+        if rsi_v and rsi_v > 70: tags.append("超买")
+        elif rsi_v and rsi_v < 30: tags.append("超卖")
+        tags.append("MACD 多" if (macd_h and macd_h > 0) else "MACD 空")
+        if regime == "trend": tags.append("趋势")
+        elif regime == "range": tags.append("震荡")
+        if align > 0.5: tags.append("均线多")
+        elif align < -0.5: tags.append("均线空")
+        if last_c and upper[-1] and last_c > upper[-1]: tags.append("破上轨")
+        if last_c and lower[-1] and last_c < lower[-1]: tags.append("破下轨")
+        with st.expander(f"{sym_name(sym)}   {last_c:.2f}   {' · '.join(tags)}", expanded=False):
             # 专业K线（Lightweight Charts，多均线+成交量）
             from engine.tv_charts import kline_html
             html = kline_html(sym, bars, height=380)
             st.components.v1.html(html, height=400, scrolling=False)
 
-elif tab == "📝 交易":
-    st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)
+elif tab == "交易":
+    st.markdown('<div class="section-head">交易执行</div>', unsafe_allow_html=True)
     # 页内账户选择
     acct = st.radio("账户", accts, format_func=lambda x: ACCT_CN.get(x, x),
                     horizontal=True, key="trade_acct")
@@ -927,7 +881,7 @@ elif tab == "📝 交易":
         # 拦截：有校验失败的先提示
         failed = [v for v in validated if not v[4]]
         if failed:
-            st.warning(f"⛔ {len(failed)} 条信号校验未通过，已拦截（不生成订单指引）")
+            st.warning(f"{len(failed)} 条信号未通过校验，已拦截，不生成订单。")
             for d, s, sd, px, ok, errs, warns in failed:
                 st.caption(f"{sym_name(s)} {sd} @{px} ({d}): {'; '.join(errs)}")
         valid_sigs = [v for v in validated if v[4]]
@@ -954,7 +908,7 @@ elif tab == "📝 交易":
                     selected.append((s, direction, px, nm))
             with top2:
                 if selected:
-                    if st.button(f"📋 复制 {len(selected)} 条", key="copy_selected"):
+                    if st.button(f"复制 {len(selected)} 条", key="copy_selected"):
                         txt = "\n".join(f"{s} {d} 限价{px:.2f}" for s, d, px, _ in selected)
                         st.code(txt, language=None)
                 else:
@@ -973,18 +927,18 @@ elif tab == "📝 交易":
                                 f'<span style="color:#666;font-size:12px;">{d}</span></div>',
                                 unsafe_allow_html=True)
                     for w in warns:
-                        st.caption(f"⚠️ {w}")
+                        st.caption(w)
                 with c2:
-                    if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}"):
+                    if st.button("已建单", key=f"done_{d}_{s}_{sd}"):
                         _ap_state(f"{d}_{s}_{sd}", "approved", d, acct, s, sd)
                         st.success(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
                 with c3:
-                    if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}"):
+                    if st.button("跳过", key=f"skip_{d}_{s}_{sd}"):
                         _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
                         st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
 
     # 券商回执录入（四态按钮反馈：已提交→执行中→已生效/失败）
-    st.subheader("🧾 券商回执录入")
+    st.markdown('<div class="section-head">回执录入</div>', unsafe_allow_html=True)
     if not IS_CLOUD:
         # 按钮状态机：session_state 持久化上次操作结果
         if "receipt_state" not in st.session_state:
@@ -1052,8 +1006,8 @@ elif tab == "📝 交易":
 # ================================================================
 # 💰 持仓与账本：持仓 + 成交 + 净值
 # ================================================================
-elif tab == "💰 账户":
-    st.markdown('<div class="section-head">💰 持仓与账本</div>', unsafe_allow_html=True)
+elif tab == "账户":
+    st.markdown('<div class="section-head">持仓与账本</div>', unsafe_allow_html=True)
 
     # 账户切换（标签式）
     acct_choice = st.radio("账户", ["A股", "港股", "加密货币"], horizontal=True, key="acct_tab")
@@ -1061,7 +1015,7 @@ elif tab == "💰 账户":
     acct = acct_map[acct_choice]
 
     # 导出对账单
-    if st.button("📥 导出对账单CSV", key="export_stmt"):
+    if st.button("导出对账单 CSV", key="export_stmt"):
         import csv, io
         out = io.StringIO()
         w = csv.writer(out)
@@ -1148,8 +1102,8 @@ elif tab == "💰 账户":
 # ================================================================
 # 🛡 验证与风控：验证 KPI + 风控指标 + 审计
 # ================================================================
-elif tab == "🛡 验证":
-    st.markdown('<div class="section-head">🛡 验证与风控</div>', unsafe_allow_html=True)
+elif tab == "验证":
+    st.markdown('<div class="section-head">验证与风控</div>', unsafe_allow_html=True)
 
     # ---- 验证 KPI 卡片（四态徽标，阻断原因优先） ----
     st.subheader("验证 KPI")
@@ -1172,7 +1126,7 @@ elif tab == "🛡 验证":
             blockers.append(f"样本不足：当前 {rt} 笔，需要 {tg['sample_min']}-{tg['sample_max']} 笔")
         if blockers:
             for b in blockers:
-                st.markdown(f'<div class="alert-banner warn">⛔ 阻断：{b}</div>',
+                st.markdown(f'<div class="alert-banner warn">阻断 · {b}</div>',
                             unsafe_allow_html=True)
 
         k1, k2, k3 = st.columns(3)
@@ -1238,7 +1192,7 @@ elif tab == "🛡 验证":
 
         excl = d.get("excluded_round_trips", 0)
         if excl:
-            st.warning(f"⚠ 有 {excl} 笔成交因策略错配被剔除出毕业样本（历史保留，见 graduation_exclusions 表）")
+            st.warning(f"{excl} 笔成交因策略错配未计入毕业样本，成交记录仍保留。")
     except Exception as e:
         st.error(f"毕业数据读取失败：{e}")
 
@@ -1252,16 +1206,16 @@ elif tab == "🛡 验证":
         c1, c2, c3 = st.columns(3)
         with c1:
             ok = pos_ratio <= 0.7
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">仓位 {"✅" if ok else "⚠"}</div>'
-                        f'<div class="kpi-value {"up" if ok else "down"}">{pos_ratio*100:.1f}%</div>'
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">仓位 · {"以内" if ok else "超限"}</div>'
+                        f'<div class="kpi-value {"flat" if ok else "risk"}">{pos_ratio*100:.1f}%</div>'
                         f'<div class="kpi-label">上限 70%</div></div>', unsafe_allow_html=True)
         with c2:
             pos_r = q("SELECT symbol,market_value FROM positions WHERE account=? AND qty>0 ORDER BY market_value DESC", (acct,))
             conc = (pos_r[0][1] / nav) if pos_r and nav else 0
             sym = pos_r[0][0] if pos_r else "—"
             ok = conc <= 0.4
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">集中度（{sym}）{"✅" if ok else "⚠"}</div>'
-                        f'<div class="kpi-value {"up" if ok else "down"}">{conc*100:.1f}%</div>'
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">集中度 {sym} · {"以内" if ok else "超限"}</div>'
+                        f'<div class="kpi-value {"flat" if ok else "risk"}">{conc*100:.1f}%</div>'
                         f'<div class="kpi-label">上限 40%</div></div>', unsafe_allow_html=True)
         with c3:
             last_buy = q("""SELECT qty*price FROM fills WHERE account=? AND side='BUY'
@@ -1280,10 +1234,10 @@ elif tab == "🛡 验证":
     for s, qty_, avg_, last_ in breached:
         if strat == "buyback" and last_ and avg_:
             if (last_ - avg_) / avg_ <= -0.05:
-                st.error(f"🔴 {s} 现价 {last_:.2f} 已跌破止损线（成本 {avg_:.2f}，-{abs((last_-avg_)/avg_*100):.1f}%），仍持有 {qty_} 股")
+                st.error(f"{s} 现价 {last_:.2f} 已跌破止损（成本 {avg_:.2f}，{(last_-avg_)/avg_*100:.1f}%），仍持有 {qty_:.0f}")
                 found = True
     if not found:
-        st.success("✅ 无破止损持仓")
+        st.success("无破止损持仓")
 
     # ---- 审计 ----
     st.subheader("审计")
@@ -1296,7 +1250,7 @@ elif tab == "🛡 验证":
         st.write("无剔除记录")
 
     # ---- 底部验证仪表盘（5指标 × 3账户，对标验证终端） ----
-    st.subheader("📊 验证仪表盘")
+    st.markdown('<div class="section-head">验证仪表盘</div>', unsafe_allow_html=True)
     try:
         from sync_snapshot import build_graduation
         con = sqlite3.connect(DB)
@@ -1312,7 +1266,7 @@ elif tab == "🛡 验证":
             d = g["accounts"].get(aid, {})
             rt = d.get("round_trips") or 0
             ok = rt >= tg["sample_min"]
-            r.append(f"{'✅' if ok else '⏳'} {rt}")
+            r.append(f"{rt}" if ok else f"{rt} · 不足")
         rows.append(r)
         # 盈亏比
         r = ["盈亏比"]
@@ -1320,7 +1274,7 @@ elif tab == "🛡 验证":
             d = g["accounts"].get(aid, {})
             wlr = d.get("win_loss_ratio")
             ok = wlr is not None and wlr >= tg["win_loss_ratio"]
-            r.append(f"{'✅' if ok else ''} {wlr if wlr else '—'}")
+            r.append(f"{wlr:.2f}" if ok else (f"{wlr:.2f} · 未达标" if wlr else "—"))
         rows.append(r)
         # 最大回撤
         r = ["最大回撤"]
@@ -1328,7 +1282,7 @@ elif tab == "🛡 验证":
             d = g["accounts"].get(aid, {})
             mdd = d.get("max_drawdown")
             ok = mdd is not None and mdd <= tg["max_drawdown"]
-            r.append(f"{'✅' if ok else ''} {mdd*100:.1f}%" if mdd is not None else "—")
+            r.append(f"{mdd*100:.1f}%" if ok else f"{mdd*100:.1f}% · 超限") if mdd is not None else r.append("—")
         rows.append(r)
         # 期望值
         r = ["期望值"]
@@ -1336,7 +1290,7 @@ elif tab == "🛡 验证":
             d = g["accounts"].get(aid, {})
             exp = d.get("expectancy")
             ok = exp is not None and exp > 0
-            r.append(f"{'✅' if ok else ''} {exp}" if exp is not None else "—")
+            r.append(f"{exp:.2f}" if ok else (f"{exp:.2f} · 未达标" if exp is not None else "—"))
         rows.append(r)
         # 验证期收益
         r = ["验证期收益"]

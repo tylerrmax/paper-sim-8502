@@ -82,9 +82,6 @@ def render_decision_desk(q, cfg, accounts, account_names, symbol_names,
     import streamlit as st
     from engine.indicators import rsi, macd, adx as calc_adx, market_regime
 
-    st.markdown('<div class="section-head">🧭 决策台</div>', unsafe_allow_html=True)
-    st.caption("读取 8502 历史行情、虚拟账户、持仓和引擎信号。这里只复核交易计划，不写订单、不改策略、不连接券商。")
-
     left, right = st.columns([1, 2])
     with left:
         account = st.selectbox("交易账户", accounts,
@@ -119,7 +116,6 @@ def render_decision_desk(q, cfg, accounts, account_names, symbol_names,
     strategy = strategy_of(account)
     strategy_text = "策略停用" if strategy in ("disabled", None, "") else strategy_desc(strategy)
     currency = {"sim_a": "CNY", "sim_hk": "HKD", "sim_crypto": "USDT"}.get(account, "")
-    st.caption(f"数据日期：{latest_date} · 数据状态：{state_text} · 账户策略：{strategy_text}")
 
     equity_row = q("SELECT nav,cash,position_value FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1",
                    (account,))
@@ -130,14 +126,6 @@ def render_decision_desk(q, cfg, accounts, account_names, symbol_names,
     qty_held, avg_cost, market_value = pos_rows[0] if pos_rows else (0, 0, 0)
     qty_held, avg_cost, market_value = float(qty_held or 0), float(avg_cost or 0), float(market_value or 0)
 
-    cols = st.columns(4)
-    cols[0].metric("最新收盘", f"{float(last_close):,.4f}")
-    cols[1].metric("账户净值", f"{equity:,.2f} {currency}" if equity else "暂无账户快照")
-    cols[2].metric("可用现金", f"{cash:,.2f} {currency}" if equity else "—")
-    cols[3].metric("当前持仓", f"{qty_held:,.4f}" if qty_held % 1 else f"{qty_held:,.0f}")
-
-    frame = pd.DataFrame(bars, columns=["日期", "开盘", "最高", "最低", "收盘", "成交量"])
-    st.line_chart(frame.set_index("日期")["收盘"], height=220)
     closes = [float(row[4]) for row in bars]
     highs = [float(row[2]) for row in bars]
     lows = [float(row[3]) for row in bars]
@@ -145,12 +133,44 @@ def render_decision_desk(q, cfg, accounts, account_names, symbol_names,
     rsi_values = rsi(closes)
     _, _, macd_hist = macd(closes)
     adx_values = calc_adx(highs, lows, closes)
-    cols = st.columns(4)
-    cols[0].metric("MA20", f"{ma20:.4f}" if ma20 is not None else "样本不足")
-    cols[1].metric("RSI(14)", f"{rsi_values[-1]:.1f}" if rsi_values and rsi_values[-1] is not None else "样本不足")
-    cols[2].metric("MACD", "多头" if macd_hist and macd_hist[-1] > 0 else "空头/未确认")
-    cols[3].metric("市场状态", market_regime(adx_values[-1]) if adx_values else "未知")
-    st.caption("技术指标仅整理已有行情，不会触发新的交易策略。")
+    regime_raw = market_regime(adx_values[-1]) if adx_values else "unknown"
+    regime_cn = {"trend": "趋势", "range": "区间震荡", "transitional": "过渡", "unknown": "未知"}.get(regime_raw, "未知")
+    rsi_txt = f"{rsi_values[-1]:.1f}" if rsi_values and rsi_values[-1] is not None else "—"
+    ma_txt = f"{ma20:,.4f}" if ma20 is not None else "—"
+    macd_txt = "多头" if macd_hist and macd_hist[-1] and macd_hist[-1] > 0 else "空头"
+    if ma20 is None:
+        read = "均线样本不足。"
+    elif float(last_close) >= ma20:
+        read = "收盘位于 20 日均线之上。"
+    else:
+        read = "收盘位于 20 日均线之下。"
+    held_txt = f"{qty_held:,.4f}" if qty_held % 1 else f"{qty_held:,.0f}"
+    name = f"{symbol}  {symbol_names.get(symbol, '')}".strip()
+    st.markdown(
+        f'<div class="desk-hero"><div class="desk-hero-top"><div>'
+        f'<div class="desk-kicker">决策台</div>'
+        f'<div class="sub-title">只读复核 · 不写订单 · 不改策略</div></div>'
+        f'<div class="sim-pill">模拟</div></div>'
+        f'<div class="desk-quote" style="margin-top:14px"><div>'
+        f'<div class="lvl-k">标的</div><div class="desk-symbol">{name}</div>'
+        f'<span class="regime">{regime_cn}</span>'
+        f'<span class="sub-title">数据日期：{latest_date} · {state_text}</span>'
+        f'<div class="sub-title" style="margin-top:8px">{read} {strategy_text}</div></div>'
+        f'<div><div class="lvl-k" style="text-align:right">收盘</div>'
+        f'<div class="desk-px-num">{float(last_close):,.4f}</div>'
+        f'<div class="sub-title" style="text-align:right">{currency}</div></div></div></div>',
+        unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="lvl-grid">'
+        f'<div class="lvl"><div class="lvl-k">账户净值</div><div class="lvl-v">{equity:,.2f}</div><div class="lvl-n">{currency if equity else "暂无快照"}</div></div>'
+        f'<div class="lvl"><div class="lvl-k">可用现金</div><div class="lvl-v">{cash:,.2f}</div><div class="lvl-n">持仓 {held_txt}</div></div>'
+        f'<div class="lvl"><div class="lvl-k">MA20</div><div class="lvl-v">{ma_txt}</div><div class="lvl-n">RSI {rsi_txt}</div></div>'
+        f'<div class="lvl"><div class="lvl-k">MACD</div><div class="lvl-v">{macd_txt}</div><div class="lvl-n">{regime_cn}</div></div>'
+        f'</div>',
+        unsafe_allow_html=True)
+    frame = pd.DataFrame(bars, columns=["日期", "开盘", "最高", "最低", "收盘", "成交量"])
+    st.line_chart(frame.set_index("日期")["收盘"], height=220)
+    st.caption("收盘序列来自当前数据库，不是示意图。指标不触发新策略。")
 
     cols_available = _signal_columns(q)
     fields = ["date", "side", "price"]
@@ -160,12 +180,18 @@ def render_decision_desk(q, cfg, accounts, account_names, symbol_names,
                (account, symbol))
     if signal:
         sig_date, sig_side, sig_price, sig_action, sig_stop = signal[0]
-        st.write(f"**最近引擎信号**：{sig_date} · {sig_side} · 参考价 {float(sig_price):,.4f}"
-                 + (f" · 动作 {sig_action}" if sig_action else "")
-                 + (f" · 止损 {float(sig_stop):,.4f}" if sig_stop else ""))
+        st.markdown(
+            f'<div class="lvl"><div class="lvl-k">最近引擎信号</div>'
+            f'<div class="lvl-v" style="font-size:16px">{sig_date} · {sig_side}</div>'
+            f'<div class="lvl-n">参考价 {float(sig_price):,.4f}'
+            + (f" · {sig_action}" if sig_action else "")
+            + (f" · 止损 {float(sig_stop):,.4f}" if sig_stop else "")
+            + "</div></div>",
+            unsafe_allow_html=True)
     else:
         sig_date, sig_side, sig_price, sig_action, sig_stop = (None, None, None, None, None)
-        st.info("该账户/标的暂无引擎信号。研究结论不等于引擎信号。")
+        st.markdown('<div class="lvl"><div class="lvl-k">最近引擎信号</div><div class="lvl-n">该账户此标的暂无引擎信号。研究结论不是入场信号。</div></div>',
+                    unsafe_allow_html=True)
 
     if equity <= 0:
         st.warning("账户净值快照缺失或无效。停止仓位计算，请先检查账户账本。")
@@ -184,7 +210,7 @@ def render_decision_desk(q, cfg, accounts, account_names, symbol_names,
     stop_default = max(stop_default, float(last_close) * 0.01)
     step = max(float(last_close) * 0.001, 0.000001)
 
-    st.markdown("#### 交易计划试算")
+    st.markdown('<div class="section-head">资金与风险</div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     with c1:
         risk_pct = st.number_input("单笔风险上限（净值 %）", min_value=0.25, max_value=5.0,
@@ -200,18 +226,33 @@ def render_decision_desk(q, cfg, accounts, account_names, symbol_names,
     risk = calculate_position_size(equity, cash, position_value, float(last_close), float(stop_price),
                                    float(risk_pct), lot_size, max_pct)
     rr = (float(target_price) - float(last_close)) / (float(last_close) - float(stop_price)) if float(stop_price) < float(last_close) else None
-    r1, r2, r3, r4 = st.columns(4)
-    r1.metric("单笔风险预算", f"{risk.get('risk_budget', 0):,.2f} {currency}")
-    r2.metric("理论数量上限", f"{risk.get('quantity', 0):,.6g}" if risk.get("valid") else "—")
-    r3.metric("参考金额", f"{risk.get('notional', 0):,.2f} {currency}" if risk.get("valid") else "—")
-    r4.metric("潜在收益风险比", f"{rr:.2f}:1" if rr is not None else "止损价无效")
+    loss = risk.get("estimated_loss", 0) if risk.get("valid") else None
+    qty_txt = f"{risk.get('quantity', 0):,.6g}" if risk.get("valid") else "—"
+    notional_txt = f"{risk.get('notional', 0):,.2f}" if risk.get("valid") else "—"
+    loss_txt = f"{loss:,.2f}" if loss is not None else "—"
+    rr_txt = f"{rr:.2f} : 1" if rr is not None else "止损无效"
+    dist = float(last_close) - float(stop_price)
+    st.markdown(
+        f'<div class="lvl-grid">'
+        f'<div class="lvl"><div class="lvl-k">计划止损</div><div class="lvl-v risk">{float(stop_price):,.4f}</div>'
+        f'<div class="lvl-n">距收盘 {dist:,.4f}</div></div>'
+        f'<div class="lvl"><div class="lvl-k">第一目标</div><div class="lvl-v">{float(target_price):,.4f}</div>'
+        f'<div class="lvl-n">收益风险比 {rr_txt}</div></div>'
+        f'<div class="lvl"><div class="lvl-k">单笔风险预算</div><div class="lvl-v">{risk.get("risk_budget", 0):,.2f}</div>'
+        f'<div class="lvl-n">{currency} · 上限 {float(risk_pct):.2f}%</div></div>'
+        f'<div class="lvl"><div class="lvl-k">理论数量</div><div class="lvl-v">{qty_txt}</div>'
+        f'<div class="lvl-n">金额 {notional_txt} {currency}</div></div>'
+        f'<div class="lvl"><div class="lvl-k">止损估算损失</div><div class="lvl-v risk">{loss_txt}</div>'
+        f'<div class="lvl-n">未计费用与滑点</div></div>'
+        f'<div class="lvl"><div class="lvl-k">计划后仓位</div><div class="lvl-v">{risk.get("exposure_after_pct", 0):.1f}%</div>'
+        f'<div class="lvl-n">上限 {max_pct:.0f}%</div></div>'
+        f'</div>',
+        unsafe_allow_html=True)
     if not risk.get("valid"):
         st.warning(risk.get("reason", "仓位试算无效"))
     elif risk["quantity"] <= 0:
-        st.warning("在当前现金、止损距离和组合仓位限制下，理论可用数量为 0。")
-    else:
-        st.caption(f"按止损反推数量：风险预算 {risk['risk_budget']:,.2f} {currency}；估算止损风险 {risk['estimated_loss']:,.2f} {currency}；计划后仓位 {risk['exposure_after_pct']:.1f}%（上限 {max_pct:.0f}%）。")
-    st.caption("理论试算未计手续费、滑点、跳空损失或流动性影响，不是可执行订单数量。")
+        st.warning("现金、止损距离或组合仓位限制下，理论数量为 0。")
+    st.caption("数量 = 风险预算 ÷（收盘 − 止损），再按交易单位取整。这是理论上限，不是下单数量。")
 
     display_only = {str(s).zfill(6) if str(s).isdigit() else str(s) for s in (cfg.get("display_only") or [])}
     is_display_only = symbol in display_only

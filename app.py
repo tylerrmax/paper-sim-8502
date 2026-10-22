@@ -198,6 +198,13 @@ div[data-testid="stRadio"] [role="radiogroup"] label { border: 0 !important; bor
 div[data-testid="stRadio"] label > div > div:first-child { display: none !important; }
 div[data-testid="stMetric"] { background: #10141b; border: 1px solid #1e2532; border-radius: 12px; padding: 10px 12px; }
 div[data-testid="stExpander"] details { background: #10141b; border: 1px solid #1e2532; border-radius: 12px; }
+.attn { border: 1px solid rgba(240,185,11,.32); background: rgba(240,185,11,.07); color: #e6d7ad; border-radius: 10px; padding: 8px 12px; font-size: 13px; margin: 12px 0; }
+.panel { background: #10141b; border: 1px solid #1e2532; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+.desk-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.desk-table th { color: #8a8f9c; font-weight: 500; font-size: 12px; text-align: right; padding: 6px 8px; border-bottom: 1px solid #1e2532; }
+.desk-table td { padding: 7px 8px; border-bottom: 1px solid #161c27; text-align: right; }
+.desk-table th:first-child, .desk-table td:first-child { text-align: left; }
+.chip { display: inline-block; border: 1px solid #2a3342; border-radius: 999px; padding: 1px 7px; font-size: 11px; color: #c5ccd6; }
 @media (max-width: 800px) {
   .rail, .lvl-grid { grid-template-columns: 1fr 1fr; }
   .desk-symbol { font-size: 18px; }
@@ -591,21 +598,75 @@ elif tab == "工作台":
         LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
           AND s.symbol=f.symbol AND s.side=f.side
         WHERE f.id IS NULL AND s.date >= date('now','-7 days')""")[0][0] or 0
-    # 待审批信号
     pending_signals = q("""SELECT COUNT(*) FROM signals s
         LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account
           AND ap.symbol=s.symbol AND ap.side=s.side
         LEFT JOIN fills f ON f.date=s.date AND f.account=s.account
           AND f.symbol=s.symbol AND f.side=s.side
         WHERE s.date>=date('now','-60 days') AND ap.date IS NULL AND f.date IS NULL""")[0][0] or 0
-    if pending_orders > 0 or pending_signals > 0:
+    held = {r[0] for r in q("SELECT DISTINCT symbol FROM positions WHERE qty>0")}
+    open_sigs = q("""SELECT s.date, s.account, s.symbol, s.side, s.price FROM signals s
+        LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
+          AND s.symbol=f.symbol AND s.side=f.side
+        WHERE f.id IS NULL AND s.date >= date('now','-7 days')
+        ORDER BY s.date DESC LIMIT 8""")
+    above = listed = 0
+    rows_html = []
+    for sym in sorted(SYMBOL_CN):
+        bars = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 21", (sym,))
+        if len(bars) < 2 or not bars[0][0] or not bars[1][0]:
+            continue
+        last, prev = float(bars[0][0]), float(bars[1][0])
+        chg = (last - prev) / prev * 100
+        dist = None
+        if len(bars) >= 20 and all(r[0] for r in bars[:20]):
+            ma = sum(float(r[0]) for r in bars[:20]) / 20
+            dist = (last - ma) / ma * 100 if ma else None
+            listed += 1
+            if dist is not None and dist >= 0:
+                above += 1
+        flag = "持仓" if sym in held else ("待处理" if any(s[2] == sym for s in open_sigs) else "观察")
+        dist_td = f'<td class="num {_tone(dist)}">{dist:+.2f}%</td>' if dist is not None else '<td class="flat">—</td>'
+        rows_html.append(
+            f'<tr><td>{sym_name(sym)}</td><td class="num">{last:,.2f}</td>'
+            f'<td class="num {_tone(chg)}">{chg:+.2f}%</td>{dist_td}'
+            f'<td><span class="chip">{flag}</span></td></tr>')
+    breadth = f"{above}/{listed}" if listed else "—"
+    st.markdown(
+        f'<div class="attn">观察池 {len(rows_html)} 只 · 站上 MA20 {breadth}'
+        f' · 待建条件单 {pending_orders} · 待审批 {pending_signals} · 有持仓 {len(held)}'
+        f'<div class="sub-title">只统计本终端观察池，不是全市场宽度。</div></div>',
+        unsafe_allow_html=True)
+    left, right = st.columns([1.7, 1])
+    with left:
+        table = "".join(rows_html) or '<tr><td>观察池暂无足够行情</td></tr>'
         st.markdown(
-            f'<div class="alert-banner warn"><b>待办</b>'
-            f'{"<div>" + str(pending_orders) + " 个待建条件单，在交易页处理</div>" if pending_orders else ""}'
-            f'{"<div>" + str(pending_signals) + " 个待审批信号</div>" if pending_signals else ""}'
-            f'</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="alert-banner success">今日无待办</div>', unsafe_allow_html=True)
+            '<div class="panel"><div class="book-h">观察名单</div>'
+            '<table class="desk-table"><tr><th>标的</th><th>收盘</th><th>涨跌</th><th>距 MA20</th><th>状态</th></tr>'
+            + table + '</table></div>',
+            unsafe_allow_html=True)
+    with right:
+        if open_sigs:
+            items = "".join(
+                f'<div class="book-row"><span>{d} {ACCT_CN.get(a, a)} {sym_name(s)}</span>'
+                f'<span class="num">{sd} {float(px):,.2f}</span></div>'
+                for d, a, s, sd, px in open_sigs)
+        else:
+            items = '<div class="sub-title">近 7 日没有未成交信号</div>'
+        nav_a = core.get("sim_a", {}).get("nav") or 0
+        pos_a = core.get("sim_a", {}).get("pos") or 0
+        cash_a = core.get("sim_a", {}).get("cash") or 0
+        ratio = pos_a / nav_a * 100 if nav_a else 0
+        a_held = q("SELECT COUNT(*) FROM positions WHERE account='sim_a' AND qty>0")[0][0] or 0
+        st.markdown(
+            f'<div class="panel"><div class="book-h">今日待办 · {len(open_sigs)}</div>{items}</div>'
+            f'<div class="panel"><div class="book-h">A股账户风险</div>'
+            f'<div class="book-row"><span class="book-k">持仓市值</span><span class="num">{_fmt(pos_a)}</span></div>'
+            f'<div class="book-row"><span class="book-k">可用现金</span><span class="num">{_fmt(cash_a)}</span></div>'
+            f'<div class="book-row"><span class="book-k">仓位</span><span class="num {"risk" if ratio > 70 else "flat"}">{ratio:.1f}%</span></div>'
+            f'<div class="book-row"><span class="book-k">持仓只数</span><span class="num">{a_held}</span></div>'
+            f'<div class="sub-title">仓位上限 70%。超限用红色标出。</div></div>',
+            unsafe_allow_html=True)
 
     # ---- 1. 风险警报区 ----
     alerts = []

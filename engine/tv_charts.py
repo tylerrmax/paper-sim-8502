@@ -84,6 +84,7 @@ def kline_html(symbol, bars, ma_periods=(5, 10, 20, 30, 60), price_lines=None, m
                fontFamily: 'ui-monospace, monospace' }},
     grid: {{ vertLines: {{ color: 'rgba(30,37,50,0.5)' }},
              horzLines: {{ color: 'rgba(30,37,50,0.5)' }} }},
+    localization: {{ locale: 'zh-CN' }},
     crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
     rightPriceScale: {{ borderColor: '#1e2532' }},
     timeScale: {{ borderColor: '#1e2532', timeVisible: false }},

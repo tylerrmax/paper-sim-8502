@@ -54,8 +54,18 @@ CFG_PATH = os.path.join(BASE, "config", "strategy.yaml")
 # 通过环境变量 STREAMLIT_CLOUD 判断
 import streamlit as st
 
-ENABLE_WRITE = st.secrets.get("general", {}).get("ENABLE_WRITE_ACCESS", "false").lower() == "true"
+def _secret_flag(section, key):
+    """读 Streamlit secrets 的布林开关；容忍字串 "true"、TOML 布林 true、缺省、secrets 档不存在。"""
+    try:
+        v = st.secrets.get(section, {}).get(key, False)
+    except Exception:
+        return False
+    return str(v).strip().lower() in ("true", "1", "yes")
+
+
+ENABLE_WRITE = _secret_flag("general", "ENABLE_WRITE_ACCESS")
 IS_CLOUD = (os.environ.get("STREAMLIT_CLOUD") == "1" or "streamlit" in os.environ.get("HOSTNAME", "")) and not ENABLE_WRITE
+CLOUD_DATA_ASOF = ""  # 云端数据同步时间；非云端/拷贝失败时保持空串（曾因缺此初始化导致 NameError）
 
 if IS_CLOUD:
     # 云端只读模式：复制 DB 到临时位置避免锁定问题
@@ -336,6 +346,36 @@ def _ap_state(key, decision, d, acct, s, sd):
         st.session_state[sk],
         f"{s} {sd} {d}：{_label} → {st.session_state[sk]}")
 
+def show_table(df, signed_cols=(), fmt=None, height=None):
+    """统一表格：可排序/可缩放/右对齐数字；signed_cols 按红涨绿跌着色；fmt={列: 格式串}。
+    兼容不同 Streamlit 版本的宽度参数；Styler 不可用时退回普通表。"""
+    obj = df
+    try:
+        sty = df.style
+        if signed_cols:
+            def _c(v):
+                if isinstance(v, (int, float)) and v == v:
+                    return (f"color:{THEME_UP}" if v > 0 else
+                            f"color:{THEME_DOWN}" if v < 0 else "")
+                return ""
+            sty = sty.map(_c, subset=list(signed_cols))
+        if fmt:
+            sty = sty.format(fmt, na_rep="--")
+        obj = sty
+    except Exception:
+        obj = df
+    kw = {"hide_index": True}
+    if height:
+        kw["height"] = height
+    try:
+        st.dataframe(obj, width="stretch", **kw)
+    except Exception:  # 旧版 Streamlit 不识别 width="stretch"
+        try:
+            st.dataframe(obj, use_container_width=True, **kw)
+        except Exception:
+            st.dataframe(df, **kw)
+
+
 def vs_badge(state):
     """验证四态徽标：pass/fail/insufficient/anomaly"""
     m = {"pass": '<span class="vs vs-pass">达标</span>',
@@ -353,13 +393,47 @@ def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=No
     ok = (value >= target) if higher_is_better else (value <= target)
     return "pass" if ok else "fail"
 
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_live(syms):
+    """实时行情（15 秒缓存，避免每次点击都打外部接口）。"""
+    from engine.realtime import fetch_all
+    return fetch_all(list(syms))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _tech_tags_cached(sym, last_date):
+    """技术信号标签（按标的+最新K线日期缓存，避免每次交互重算全量指标）。"""
+    from engine.indicators import rsi, macd, bollinger, adx, market_regime, ma_align
+    bars = q("SELECT close,high,low FROM market_data WHERE symbol=? ORDER BY date", (sym,))
+    if len(bars) < 30:
+        return "-"
+    closes = [r[0] for r in bars]
+    highs = [r[1] for r in bars]
+    lows = [r[2] for r in bars]
+    tags = []
+    rsi_v = rsi(closes)[-1]
+    if rsi_v and rsi_v > 70: tags.append("超买")
+    elif rsi_v and rsi_v < 30: tags.append("超卖")
+    _, _, hist = macd(closes)
+    tags.append("MACD多" if (hist[-1] and hist[-1] > 0) else "MACD空")
+    adx_v = adx(highs, lows, closes)[-1]
+    regime = market_regime(adx_v)
+    tags.append("趋势" if regime == "trend" else "震荡")
+    align = ma_align(closes)
+    if align > 0.5: tags.append("均线多")
+    elif align < -0.5: tags.append("均线空")
+    upper, _, lower = bollinger(closes)
+    if closes[-1] > upper[-1]: tags.append("破上轨")
+    if closes[-1] < lower[-1]: tags.append("破下轨")
+    return " ".join(tags)
+
+
 # ============ 滚动行情条（四态：实时/最近收盘/已过期/未知） ============
-def render_ticker():
+def _ticker_body():
     """作战大屏：代码 | 名称 | 现价 | 涨幅% | 技术信号 | 待建单，完整闭环"""
     try:
-        from engine.realtime import fetch_all
         syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data")]
-        live = fetch_all(syms)
+        live = _cached_live(tuple(syms))
     except Exception:
         live = {}
         syms = []
@@ -402,28 +476,8 @@ def render_ticker():
             pending[sym] = f"{side} {act} @{px:.2f}{hold_s}"
 
     def _tech_signals(sym):
-        bars = q("SELECT close,high,low FROM market_data WHERE symbol=? ORDER BY date", (sym,))
-        if len(bars) < 30:
-            return "-"
-        closes = [r[0] for r in bars]
-        highs = [r[1] for r in bars]
-        lows = [r[2] for r in bars]
-        tags = []
-        rsi_v = rsi(closes)[-1]
-        if rsi_v and rsi_v > 70: tags.append("超买")
-        elif rsi_v and rsi_v < 30: tags.append("超卖")
-        _, _, hist = macd(closes)
-        tags.append("MACD多" if (hist[-1] and hist[-1] > 0) else "MACD空")
-        adx_v = adx(highs, lows, closes)[-1]
-        regime = market_regime(adx_v)
-        tags.append("趋势" if regime == "trend" else "震荡")
-        align = ma_align(closes)
-        if align > 0.5: tags.append("均线多")
-        elif align < -0.5: tags.append("均线空")
-        upper, _, lower = bollinger(closes)
-        if closes[-1] > upper[-1]: tags.append("破上轨")
-        if closes[-1] < lower[-1]: tags.append("破下轨")
-        return " ".join(tags)
+        r = q("SELECT MAX(date) FROM market_data WHERE symbol=?", (sym,))
+        return _tech_tags_cached(sym, r[0][0] if r and r[0][0] else "")
 
     def _row(sym):
         d = live.get(sym, {})
@@ -444,12 +498,22 @@ def render_ticker():
         code_show = sym[2:] if sym.startswith("HK") else sym
         name_show = SYMBOL_CN.get(sym, "")
         tech = _tech_signals(sym)
+        # 行情状态：仅当实时接口时间戳在30分钟内才标“实时”；DB 快照永不标为实时
+        _lt = d.get("time", "") if price and sym in live else ""
+        _dbd = q("SELECT MAX(date) FROM market_data WHERE symbol=?", (sym,))
+        _dbd = _dbd[0][0] if _dbd and _dbd[0][0] else ""
+        if _lt == "Binance实时":
+            _qs = "live"
+        else:
+            _qs, _ = quote_state(sym, _lt, _dbd)
+        state_badge = QS_BADGE[_qs]
         order = pending.get(sym, "-")
         order_style = f'color:#f0b90b;font-weight:bold;' if order != "-" else 'color:#666;'
         return (f'<tr><td style="padding:8px;">{code_show}</td>'
                 f'<td style="padding:8px;color:#1890ff;">{name_show}</td>'
                 f'<td class="num" style="padding:8px;color:{color};text-align:right;">{price_s}</td>'
                 f'<td style="padding:8px;color:{color};text-align:right;">{sign}{chg:.2f}%</td>'
+                f'<td style="padding:8px;">{state_badge}</td>'
                 f'<td style="padding:8px;font-size:12px;color:#aaa;">{tech}</td>'
                 f'<td style="padding:8px;{order_style}">{order}</td></tr>')
 
@@ -476,6 +540,7 @@ def render_ticker():
                 f'<td style="padding:6px 8px;">代码</td><td style="padding:6px 8px;">名称</td>'
                 f'<td style="padding:6px 8px;text-align:right;">现价</td>'
                 f'<td style="padding:6px 8px;text-align:right;">涨幅%</td>'
+                f'<td style="padding:6px 8px;">状态</td>'
                 f'<td style="padding:6px 8px;">技术信号</td>'
                 f'<td style="padding:6px 8px;">待建单</td></tr>'
                 f'{rows}</table></div>')
@@ -522,7 +587,7 @@ if blocked:
     st.error("⛔ 系统阻断：" + "；".join(block_reasons[:5]))
 
 # ============ 导航（对标人工交易终端工作流） ============
-tab = st.sidebar.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"])
+tab = st.sidebar.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证", "⚙ 运维"])
 st.sidebar.markdown("---")
 
 # 侧边栏：控制（云端只读时整个隐藏，不占地方）
@@ -573,7 +638,10 @@ SYMBOL_CN = {
 def sym_name(code):
     """标的显示名：代码+中文名，如 '002446 盛路通信'"""
     return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
-render_ticker()
+_frag = getattr(st, "fragment", None)
+_ticker_view = _frag(run_every=30)(_ticker_body) if _frag else _ticker_body
+with st.expander("📊 行情与待建单（每 30 秒自动刷新）", expanded=(tab == "🏠 工作台")):
+    _ticker_view()
 # 标的代码→中文名（展示用，查不到时回退显示代码）
 
 # 账户选择：工作台为三账户统一视图，不再用全局下拉；
@@ -585,6 +653,7 @@ acct = "sim_a"  # 默认，页内可覆盖
 # ================================================================
 if tab == "🏠 工作台":
     st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
+    _top = st.container()  # 首屏置顶区：今日待办 + 风险警报（内容在下方计算后写入）
 
     # ---- 核心数据（验证终端优势沿用）：总资产/当日盈亏/持仓市值/可用资金 ----
     # 交易所标准：红涨绿跌，数字 vibrant
@@ -605,7 +674,7 @@ if tab == "🏠 工作台":
         rc = core.get("sim_crypto", {}).get("ret", 0)
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#ffffff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#e8ecf1;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
             <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">港股 </span>HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
             <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">加密货币 </span>${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
             <div style="font-size:12px;margin-top:4px;">
@@ -629,14 +698,14 @@ if tab == "🏠 工作台":
     with c3:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">持仓市值</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#e8ecf1;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
             </div>''', unsafe_allow_html=True)
     with c4:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">可用资金</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#e8ecf1;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
             </div>''', unsafe_allow_html=True)
@@ -658,14 +727,14 @@ if tab == "🏠 工作台":
           AND f.symbol=s.symbol AND f.side=s.side
         WHERE s.date>=date('now','-60 days') AND ap.date IS NULL AND f.date IS NULL""")[0][0] or 0
     if pending_orders > 0 or pending_signals > 0:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #f0b90b;border-radius:8px;
+        _top.markdown(f'''<div style="background:#1a1a2e;border:1px solid #f0b90b;border-radius:8px;
             padding:12px 16px;margin-bottom:16px;">
             <b>📋 今日待办</b><br>
             {"· " + str(pending_orders) + "个待建条件单 → 📝交易页<br>" if pending_orders else ""}
             {"· " + str(pending_signals) + "个待审批信号" if pending_signals else ""}
             </div>''', unsafe_allow_html=True)
     else:
-        st.markdown('''<div style="background:#1a1a2e;border:1px solid #2ebd85;border-radius:8px;
+        _top.markdown('''<div style="background:#1a1a2e;border:1px solid #2ebd85;border-radius:8px;
             padding:12px 16px;margin-bottom:16px;">✅ 今日无待办</div>''',
             unsafe_allow_html=True)
 
@@ -691,7 +760,7 @@ if tab == "🏠 工作台":
         except Exception:
             pass
     for _lvl, _msg in alerts:
-        st.markdown(f'<div class="alert-banner {_lvl}">{_msg}</div>', unsafe_allow_html=True)
+        _top.markdown(f'<div class="alert-banner {_lvl}">{_msg}</div>', unsafe_allow_html=True)
 
     # ---- 2. 系统状态 + 行情新鲜度（四态） ----
     latest_a = q("SELECT MAX(date) FROM market_data WHERE symbol NOT LIKE 'HK%' AND symbol NOT LIKE '%USDT'")
@@ -1042,7 +1111,11 @@ elif tab == "📝 交易":
             st.markdown(f'<span class="btn-state {badge_cls}">上次操作：{rs}</span>',
                         unsafe_allow_html=True)
         with st.form("receipt_form_exec"):
-            r_sym = st.text_input("代码（如 002446）", key="rx_sym")
+            _uni = (CFG.get("universe", {}) or {}).get(acct, [])
+            if _uni:
+                r_sym = st.selectbox("代码", _uni, format_func=sym_name, key="rx_sym_sel")
+            else:
+                r_sym = st.text_input("代码（如 002446）", key="rx_sym")
             r_side = st.selectbox("方向", ["买入", "卖出"], key="rx_side")
             r_price = st.number_input("成交价", min_value=0.0, format="%.4f", key="rx_price")
             if acct == "sim_crypto":  # 加密货币可小数，最小单位见 strategy.yaml lots
@@ -1093,9 +1166,12 @@ elif tab == "📝 交易":
     receipts = q("""SELECT date, symbol, side, price, qty FROM broker_receipts
                     WHERE account=? ORDER BY date DESC LIMIT 20""", (acct,))
     if receipts:
-        st.table([{"日期": d, "代码": sym_name(s), "方向": "买入" if sd == "BUY" else "卖出",
-                   "成交价": px, "数量": qty}
-                  for d, s, sd, px, qty in receipts])
+        import pandas as pd
+        show_table(pd.DataFrame([{"日期": d, "代码": sym_name(s),
+                                  "方向": "买入" if sd == "BUY" else "卖出",
+                                  "成交价": px, "数量": qty}
+                                 for d, s, sd, px, qty in receipts]),
+                   fmt={"成交价": "{:,.4f}", "数量": "{:,.6g}"})
     else:
         st.write("暂无回执记录")
 
@@ -1125,15 +1201,29 @@ elif tab == "💰 账户":
     st.subheader("当前持仓")
     pos = q("SELECT symbol,qty,avg_cost,last_price,market_value FROM positions WHERE account=? AND qty>0", (acct,))
     if pos:
-        # 持仓浮盈亏明细
-        rows = []
+        # 持仓明细：数值列（可排序）+ 红涨绿跌 + 占净值比例 + 距止损
+        import pandas as pd
+        _nav_r = q("SELECT nav FROM daily_report WHERE account=? AND symbol='TOTAL' "
+                   "ORDER BY date DESC LIMIT 1", (acct,))
+        _nav = _nav_r[0][0] if _nav_r and _nav_r[0][0] else 0
+        _is_bb = strategy_of(acct) == "buyback"
+        _rows = []
         for s, qty, avg, last, mv in pos:
             upl = (last - avg) * qty if last and avg else 0
             upl_pct = (last - avg) / avg * 100 if last and avg else 0
-            rows.append({"标的": sym_name(s), "数量": qty, "均价": f"{avg:.2f}", "现价": f"{last:.2f}",
-                         "市值": f"{mv:,.2f}",
-                         "浮盈亏": f"{upl:+,.0f} ({upl_pct:+.1f}%)"})
-        st.table(rows)
+            to_stop = ((last / (avg * (1 - BB_STOP_PCT)) - 1) * 100
+                       if (_is_bb and last and avg) else None)
+            _rows.append({"标的": sym_name(s), "数量": qty, "均价": avg, "现价": last,
+                          "市值": mv, "占净值%": (mv / _nav * 100 if _nav else None),
+                          "浮盈亏": upl, "浮盈亏%": upl_pct, "距止损%": to_stop})
+        _pdf = pd.DataFrame(_rows)
+        show_table(_pdf, signed_cols=("浮盈亏", "浮盈亏%"),
+                   fmt={"数量": "{:,.6g}",
+                        "均价": "{:,.4f}", "现价": "{:,.4f}", "市值": "{:,.2f}",
+                        "占净值%": "{:.1f}", "浮盈亏": "{:+,.2f}", "浮盈亏%": "{:+.2f}",
+                        "距止损%": "{:+.1f}"})
+        st.caption(f"合计：市值 {_pdf['市值'].sum():,.2f} · 浮盈亏 {_pdf['浮盈亏'].sum():+,.2f}"
+                   + (f" · 占净值 {_pdf['市值'].sum() / _nav * 100:.1f}%" if _nav else ""))
 
         # TradingView 级 K线（每个持仓标的）
         st.subheader("持仓K线")
@@ -1188,8 +1278,12 @@ elif tab == "💰 账户":
     st.subheader("近期成交")
     fl = q("SELECT date,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 20", (acct,))
     if fl:
-        st.table([{"日期": d, "标的": sym_name(s), "方向": sd, "数量": qty, "成交价": px, "费用": fee, "盈亏": pnl}
-                  for d, s, sd, qty, px, fee, pnl in fl])
+        import pandas as pd
+        _fdf = pd.DataFrame([{"日期": d, "标的": sym_name(s), "方向": "买入" if sd == "BUY" else "卖出",
+                              "数量": qty, "成交价": px, "费用": fee, "盈亏": pnl}
+                             for d, s, sd, qty, px, fee, pnl in fl])
+        show_table(_fdf, signed_cols=("盈亏",),
+                   fmt={"数量": "{:,.6g}", "成交价": "{:,.4f}", "费用": "{:,.2f}", "盈亏": "{:+,.2f}"})
     else:
         st.write("暂无成交")
 
@@ -1402,6 +1496,76 @@ elif tab == "🛡 验证":
                    f"回撤≤{tg['max_drawdown']*100:.0f}% · 期望值>0")
     except Exception as e:
         st.error(f"仪表盘读取失败：{e}")
+
+# ================================================================
+# ⚙ 运维：规则版本 / 控制状态 / 数据源与新鲜度 / 指令日志 / 数据完整性（只读）
+# ================================================================
+elif tab == "⚙ 运维":
+    import pandas as pd
+    st.markdown('<div class="section-head">⚙ 运维</div>', unsafe_allow_html=True)
+
+    st.subheader("规则与控制")
+    _meta = CFG.get("meta", {}) or {}
+    _ctl = q("SELECT status, mode, updated FROM control WHERE id=1")
+    _c = _ctl[0] if _ctl else ("running", "auto", "")
+    o1, o2, o3 = st.columns(3)
+    o1.markdown(f'<div class="kpi-card"><div class="kpi-label">规则版本</div>'
+                f'<div class="kpi-value" style="font-size:16px">{_meta.get("version", "unknown")}</div>'
+                f'<div class="kpi-label">生效 {_meta.get("effective_date", "--")}</div></div>',
+                unsafe_allow_html=True)
+    o2.markdown(f'<div class="kpi-card"><div class="kpi-label">运行状态 / 模式</div>'
+                f'<div class="kpi-value" style="font-size:16px">'
+                f'{"运行中" if _c[0] == "running" else "已暂停"} · {"自动" if _c[1] == "auto" else "手动"}</div>'
+                f'<div class="kpi-label">更新于 {_c[2] or "--"}</div></div>', unsafe_allow_html=True)
+    o3.markdown(f'<div class="kpi-card"><div class="kpi-label">运行环境</div>'
+                f'<div class="kpi-value" style="font-size:16px">{"云端只读" if IS_CLOUD else "本地可写"}</div>'
+                f'<div class="kpi-label">{("数据同步 " + CLOUD_DATA_ASOF) if CLOUD_DATA_ASOF else "本地数据库"}</div></div>',
+                unsafe_allow_html=True)
+    if _meta.get("note"):
+        st.caption(f"版本说明：{_meta['note']}")
+
+    st.subheader("标的行情新鲜度")
+    _fr = q("SELECT symbol, MAX(date), COUNT(*) FROM market_data GROUP BY symbol ORDER BY symbol")
+    _rows = []
+    for _s, _d, _n in _fr:
+        _qs, _ = quote_state(_s, "", _d or "")
+        _rows.append({"标的": sym_name(_s), "最新K线": _d, "K线根数": _n, "状态": QS_CN[_qs]})
+    if _rows:
+        show_table(pd.DataFrame(_rows))
+    else:
+        st.caption("暂无行情数据")
+
+    st.subheader("数据源")
+    for _k, _v in (CFG.get("data_sources", {}) or {}).items():
+        st.markdown(f"- **{_k}**：{_v}")
+
+    st.subheader("指令日志（最近 20 条）")
+    _cmds = q("SELECT id, applied_at FROM processed_commands ORDER BY applied_at DESC LIMIT 20")
+    if _cmds:
+        show_table(pd.DataFrame(_cmds, columns=["指令ID", "执行时间"]))
+    else:
+        st.caption("暂无指令记录")
+
+    st.subheader("数据完整性")
+    _blocked, _reasons = check_system_health()
+    if _blocked:
+        for _r in _reasons:
+            st.markdown(f'<div class="alert-banner danger">⛔ {_r}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="alert-banner success">✅ 未发现阻断性问题</div>', unsafe_allow_html=True)
+    _cnt = []
+    for _t in ["market_data", "signals", "fills", "positions", "daily_report",
+               "approvals", "broker_receipts"]:
+        try:
+            _cnt.append({"表": _t, "行数": q(f"SELECT COUNT(*) FROM {_t}")[0][0]})
+        except Exception:
+            _cnt.append({"表": _t, "行数": None})
+    show_table(pd.DataFrame(_cnt), fmt={"行数": "{:,.0f}"})
+    try:
+        _mt = datetime.fromtimestamp(os.path.getmtime(DB)).strftime("%Y-%m-%d %H:%M:%S")
+        st.caption(f"数据库：{os.path.basename(DB)} · {os.path.getsize(DB)/1024:,.0f} KB · 修改于 {_mt}")
+    except OSError:
+        pass
 
 # ================================================================
 # ⚙ 系统与审计：数据源 / 规则版本 / 指令日志

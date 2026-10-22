@@ -27,7 +27,7 @@ check("顶部导航有 6 个板块", len(navs) == 6)
 check("顶部导航不再占据侧边栏", 'st.radio("主导航", NAV_OPTIONS, horizontal=True' in src and 'st.sidebar.radio("板块"' not in src)
 for label in navs:
     check(f"导航有页面分支：{label}", f'tab == "{label}"' in src)
-check("行情条只在工作台渲染一次", src.count("render_ticker()") == 2 and src.index('elif tab == "🏠 工作台":') < src.index("render_ticker()", src.index('elif tab == "🏠 工作台":')))
+check("行情条只在工作台渲染一次", src.count("render_ticker()") == 2 and src.index('elif tab == "工作台":') < src.index("render_ticker()", src.index('elif tab == "工作台":')))
 check("决策台连接现有数据库和配置", "render_decision_desk(q, CFG, accts" in src)
 check("行情复核显示数据日期", "数据日期：" in module and "quote_state" in module)
 check("仓位计算有风险/现金/总仓位三重限制", all(k in module for k in ("risk_qty", "cash_qty", "exposure_qty")))

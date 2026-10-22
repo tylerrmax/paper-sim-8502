@@ -66,9 +66,6 @@ risk:
   max_stock_position_pct: 70
   max_crypto_position_pct: 100
   atr_stop_mult: 2.0
-  buyback_stop_pct: 5        # 接回策略止损（%），UI 与风控读取
-  buyback_take_pct: 15       # 接回策略止盈（%）
-  max_concentration_pct: 40  # 单标的集中度上限（%），UI 风控读取
 fees:
   a_buy: 0.00025
   a_sell: 0.00125

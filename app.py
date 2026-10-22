@@ -155,11 +155,11 @@ st.markdown("""
             padding: 14px 16px; margin-bottom: 10px; color: #e8ecf1; }
 .kpi-label { font-size: 12px; color: #8a8f9c; margin-bottom: 4px; }
 .kpi-value { font-size: 22px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, monospace; color: #e8ecf1; }
-.kpi-value.up { color: #2ebd85; } .kpi-value.down { color: #f6465d; }
+.kpi-value.up { color: #f6465d; } .kpi-value.down { color: #2ebd85; }
 .kpi-value.big { font-size: 28px; }
 /* 数字统一：等宽字体 */
 .num { font-family: ui-monospace, SFMono-Regular, monospace; font-variant-numeric: tabular-nums; }
-.pos { color: #2ebd85; } .neg { color: #f6465d; } .flat { color: #8a8f9c; }
+.pos { color: #f6465d; } .neg { color: #2ebd85; } .flat { color: #8a8f9c; }
 /* 策略徽标 */
 .strategy-badge { display: inline-block; padding: 3px 12px; border-radius: 12px;
                   font-size: 12px; font-weight: 600; }
@@ -207,6 +207,11 @@ table { color: #e8ecf1; }
   .kpi-value.big { font-size: 22px; }
   .status-card .sc-value { font-size: 20px; }
 }
+
+/* 顶部主导航：紧凑、可换行，侧边栏仅保留运维控制 */
+div[data-testid="stRadio"] [role="radiogroup"] { gap: 6px; flex-wrap: wrap; }
+div[data-testid="stRadio"] [role="radiogroup"] label { border: 1px solid #28303d; border-radius: 8px; padding: 5px 10px; }
+:root { --theme-up: #f6465d; --theme-down: #2ebd85; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -222,6 +227,9 @@ if CLOUD_DATA_ASOF:
         st.caption(f"数据日期 {data_date_str} · 同步于 {CLOUD_DATA_ASOF}")
     else:
         st.caption(f"数据截至 {CLOUD_DATA_ASOF}")
+
+NAV_OPTIONS = ["🧭 决策台", "🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"]
+tab = st.radio("主导航", NAV_OPTIONS, horizontal=True, label_visibility="collapsed", key="main_navigation")
 
 # ============ 行情状态四态判定 + 数字格式化助手 ============
 from datetime import datetime, timedelta
@@ -462,8 +470,8 @@ blocked, block_reasons = check_system_health()
 top1, top2, top3, top4 = st.columns(4)
 with top1:
     if blocked:
-        st.markdown(f'<div class="kpi-card" style="border:1px solid #ff4d4f;"><div class="kpi-label">系统状态</div>'
-                    f'<div class="kpi-value" style="color:#ff4d4f;">⛔ 阻断</div></div>',
+        st.markdown(f'<div class="kpi-card" style="border:1px solid #f6465d;"><div class="kpi-label">系统状态</div>'
+                    f'<div class="kpi-value" style="color:#f6465d;">⛔ 阻断</div></div>',
                     unsafe_allow_html=True)
     else:
         st.markdown(f'<div class="kpi-card"><div class="kpi-label">系统状态</div>'
@@ -492,7 +500,7 @@ if blocked:
     st.error("⛔ 系统阻断：" + "；".join(block_reasons[:5]))
 
 # ============ 导航（对标人工交易终端工作流） ============
-tab = st.sidebar.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"])
+# 主导航已前置至标题区。
 st.sidebar.markdown("---")
 
 # 侧边栏：控制（云端只读时整个隐藏，不占地方）
@@ -543,8 +551,7 @@ SYMBOL_CN = {
 def sym_name(code):
     """标的显示名：代码+中文名，如 '002446 盛路通信'"""
     return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
-render_ticker()
-# 标的代码→中文名（展示用，查不到时回退显示代码）
+# 行情总览只在工作台展示，避免在每个板块重复渲染。
 
 # 账户选择：工作台为三账户统一视图，不再用全局下拉；
 # 需要按账户筛选的页面（交易/账户）使用页内选择器
@@ -553,8 +560,14 @@ acct = "sim_a"  # 默认，页内可覆盖
 # ================================================================
 # 🏠 工作台：系统状态 + 今日信号 + 账户总览
 # ================================================================
-if tab == "🏠 工作台":
+if tab == "🧭 决策台":
+    from engine.decision_desk import render_decision_desk
+    render_decision_desk(q, CFG, accts, ACCT_CN, SYMBOL_CN,
+                         strategy_of, strategy_desc, quote_state, DB)
+
+elif tab == "🏠 工作台":
     st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
+    render_ticker()
 
     # ---- 核心数据（验证终端优势沿用）：总资产/当日盈亏/持仓市值/可用资金 ----
     # 交易所标准：红涨绿跌，数字 vibrant
@@ -566,8 +579,8 @@ if tab == "🏠 工作台":
             core[aid] = {"nav": r[0][0], "pnl": r[0][1] or 0, "cash": r[0][2] or 0, "pos": r[0][3] or 0, "ret": r[0][4] or 0}
     # 货币：A股CNY 港股HKD 加密USDT
     def _fmt(v): return f"{v:,.2f}"
-    # 交易所色：涨红 #ff4d4f，跌绿 #00c853
-    def _rg(v): return "#ff4d4f" if v >= 0 else "#00c853"
+    # 交易所色：涨红 #f6465d，跌绿 #2ebd85
+    def _rg(v): return "#f6465d" if v >= 0 else "#2ebd85"
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         ra = core.get("sim_a", {}).get("ret", 0)
@@ -575,7 +588,7 @@ if tab == "🏠 工作台":
         rc = core.get("sim_crypto", {}).get("ret", 0)
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#ffffff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#e8ecf1;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
             <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">港股 </span>HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
             <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">加密货币 </span>${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
             <div style="font-size:12px;margin-top:4px;">
@@ -599,14 +612,14 @@ if tab == "🏠 工作台":
     with c3:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">持仓市值</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#e8ecf1;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
             </div>''', unsafe_allow_html=True)
     with c4:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">可用资金</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#e8ecf1;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
             </div>''', unsafe_allow_html=True)
@@ -679,7 +692,7 @@ if tab == "🏠 工作台":
         for d, buy_amt, sell_amt, fees in rows:
             net = (sell_amt or 0) - (buy_amt or 0) - (fees or 0)
             net_wan = net / 10000
-            color = "#00c853" if net >= 0 else "#ff4d4f"
+            color = "#f6465d" if net >= 0 else "#2ebd85"
             arrow = "▲" if net >= 0 else "▼"
             st.markdown(f'<div style="padding:6px 0;font-size:15px;"><span style="color:#aaa;">{d}</span> '
                         f'<span style="color:{color};font-weight:bold;">{arrow} {net_wan:+.2f}{ccy}</span></div>',

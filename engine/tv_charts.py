@@ -35,7 +35,8 @@ def kline_html(symbol, bars, ma_periods=(5, 10, 20, 30, 60), price_lines=None, m
     # 成交量
     vols = [
         {"time": d, "value": v or 0,
-         "color": "rgba(46,189,133,0.5)" if c >= o else "rgba(246,70,93,0.5)"}
+         # 红涨绿跌，与下方 K 线配色一致（旧版此处相反）
+         "color": "rgba(246,70,93,0.5)" if c >= o else "rgba(46,189,133,0.5)"}
         for d, o, h, l, c, v in bars
     ]
     # 多均线
@@ -83,6 +84,7 @@ def kline_html(symbol, bars, ma_periods=(5, 10, 20, 30, 60), price_lines=None, m
                fontFamily: 'ui-monospace, monospace' }},
     grid: {{ vertLines: {{ color: 'rgba(30,37,50,0.5)' }},
              horzLines: {{ color: 'rgba(30,37,50,0.5)' }} }},
+    localization: {{ locale: 'zh-CN' }},
     crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
     rightPriceScale: {{ borderColor: '#1e2532' }},
     timeScale: {{ borderColor: '#1e2532', timeVisible: false }},

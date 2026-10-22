@@ -476,7 +476,7 @@ def write_report(db_path=DB, cfg=None, asof=None):
     if asof is None:
         r = con.execute("SELECT MAX(date) FROM daily_report").fetchone()
         asof = r[0] if r and r[0] else "nodata"
-    L = ["# 模拟日报 %s" % asof, ""]
+    L = ["# 日报 %s" % asof, ""]
     for acct in cfg["accounts"]:
         aid = acct["id"]
         row = con.execute(

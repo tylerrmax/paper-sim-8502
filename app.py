@@ -46,6 +46,70 @@ def _fetch_private_data():
         pass  # 拉取失败时保持现状，由后续逻辑报错
 
 _fetch_private_data()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _fetch_ns_flow():
+    """互联互通资金（东方财富 datacenter，单位：百万元）。
+    净买额自 2024-08 起停止披露，改用成交额 + 北向持股市值。
+    返回 {north_amt, north_date, north_prev, south_amt, south_date, south_prev, north_hold}，失败为 {}。"""
+    import json as _json
+    import urllib.request as _ur
+    try:
+        base = ("https://datacenter-web.eastmoney.com/api/data/v1/get"
+                "?reportName=RPT_MUTUAL_DEAL_HISTORY"
+                "&columns=TRADE_DATE,MUTUAL_TYPE,DEAL_AMT"
+                "&sortColumns=TRADE_DATE&sortTypes=-1&pageSize=6&pageNumber=1"
+                "&filter=(MUTUAL_TYPE%3D%22{mt}%22)&source=WEB&client=WEB")
+        per = {}
+        for mt in ("001", "002", "003", "004"):
+            req = _ur.Request(base.format(mt=mt),
+                              headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=12) as r:
+                data = _json.loads(r.read().decode("utf-8"))
+            per[mt] = {row["TRADE_DATE"][:10]: (row.get("DEAL_AMT") or 0)
+                       for row in (data.get("result") or {}).get("data") or []}
+
+        def _series(mts):
+            dates = sorted(set().union(*[set(per[m]) for m in mts]), reverse=True)
+            out = []
+            for d in dates:
+                if all(d in per[m] for m in mts):
+                    out.append((d, sum(per[m][d] for m in mts) / 100.0))  # 百万元→亿元
+                if len(out) >= 2:
+                    break
+            return out
+
+        north, south = _series(("001", "002")), _series(("003", "004"))
+        hold = None
+        try:
+            req = _ur.Request(
+                "https://push2his.eastmoney.com/api/qt/kamt.kline/get"
+                "?fields1=f1,f3,f5&fields2=f51,f52&klt=101&lmt=1"
+                "&ut=b2884a393a59ad64002292a3e90d46a5",
+                headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=12) as r:
+                kd = _json.loads(r.read().decode("utf-8")).get("data") or {}
+            s2n = (kd.get("s2n") or [None])[-1]
+            if s2n:
+                hold = float(str(s2n).split(",")[3]) / 1e8  # 万元→万亿元
+        except Exception:
+            hold = None
+        if not north and not south:
+            return {}
+        return {
+            "north_amt": north[0][1] if north else None,
+            "north_date": north[0][0] if north else "",
+            "north_prev": north[1][1] if len(north) > 1 else None,
+            "south_amt": south[0][1] if south else None,
+            "south_date": south[0][0] if south else "",
+            "south_prev": south[1][1] if len(south) > 1 else None,
+            "north_hold": hold,
+        }
+    except Exception:
+        return {}
+
+
 sys.path.insert(0, BASE)
 DB = os.path.join(BASE, "db", "sim.db")
 CFG_PATH = os.path.join(BASE, "config", "strategy.yaml")
@@ -82,6 +146,7 @@ CFG = load_cfg()
 STRATEGY_CN = {
     "buyback": "接回策略",
     "ma20": "MA20趋势",
+    "disabled": "已停用",
 }
 
 
@@ -94,6 +159,8 @@ def strategy_of(aid):
 def strategy_desc(s):
     if s == "buyback":
         return "20日高点回撤10%买入，+15%止盈 / -5%止损"
+    if s == "disabled":
+        return "已停用，不生成新信号"
     return "收盘站上20日线买入，跌破20日线卖出"
 
 
@@ -165,6 +232,9 @@ st.markdown("""
                   font-size: 12px; font-weight: 600; }
 .strategy-badge.buyback { background: rgba(46,189,133,.15); color: #2ebd85; }
 .strategy-badge.ma20 { background: rgba(240,185,11,.15); color: #f0b90b; }
+.strategy-badge.disabled { background: rgba(138,143,156,.15); color: #8a8f9c; }
+/* 左侧栏已移除：导航与控制移至顶部 */
+section[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none !important; }
 /* 分区标题 */
 .section-head { font-size: 18px; font-weight: 700; margin: 20px 0 12px 0;
                 padding-bottom: 8px; border-bottom: 2px solid #1e2532; color: #e8ecf1; }
@@ -241,7 +311,8 @@ def quote_state(symbol, live_time_str, db_date_str):
                 return "live", live_time_str.strip()
         except (ValueError, TypeError):
             pass
-    # DB 快照日期判定
+    # DB 快照日期判定（快照永不标为实时：DB 是日批快照，只标数据日期；
+    # “实时”仅指行情源直拉的盘中报价区，且须带 ●实时 标识）
     if db_date_str:
         try:
             dd = datetime.strptime(db_date_str, "%Y-%m-%d").date()
@@ -386,7 +457,7 @@ def render_ticker():
         tags.append("MACD多" if (hist[-1] and hist[-1] > 0) else "MACD空")
         adx_v = adx(highs, lows, closes)[-1]
         regime = market_regime(adx_v)
-        tags.append("趋势" if regime == "trend" else "震荡")
+        if regime == "trend": tags.append("趋势")
         align = ma_align(closes)
         if align > 0.5: tags.append("均线多")
         elif align < -0.5: tags.append("均线空")
@@ -474,7 +545,7 @@ with top2:
                 f'<div class="kpi-value">{"⚡ 自动" if mode == "auto" else "✋ 手动"}</div></div>',
                 unsafe_allow_html=True)
 with top3:
-    st.markdown(f'<div class="kpi-card"><div class="kpi-label">规则版本</div>'
+    st.markdown(f'<div class="kpi-card"><div class="kpi-label">策略版本</div>'
                 f'<div class="kpi-value" style="font-size:16px">{ver}</div></div>',
                 unsafe_allow_html=True)
 with top4:
@@ -483,7 +554,7 @@ with top4:
     badges = " ".join(
         f'<span class="strategy-badge {strategy_of(a["id"])}">{_ACCT.get(a["id"], a["id"])}：{STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
         for a in CFG["accounts"])
-    st.markdown(f'<div class="kpi-card"><div class="kpi-label">分账户策略（2026-10-16 选A）</div>'
+    st.markdown(f'<div class="kpi-card"><div class="kpi-label">账户策略</div>'
                 f'<div style="margin-top:6px">{badges}</div></div>',
                 unsafe_allow_html=True)
 
@@ -491,39 +562,39 @@ with top4:
 if blocked:
     st.error("⛔ 系统阻断：" + "；".join(block_reasons[:5]))
 
-# ============ 导航（对标人工交易终端工作流） ============
-tab = st.sidebar.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"])
-st.sidebar.markdown("---")
+# ============ 导航（顶部横排；左侧栏已移除） ============
+tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"],
+               horizontal=True, label_visibility="collapsed")
 
-# 侧边栏：控制（云端只读时整个隐藏，不占地方）
+# 控制（本地模式可用；云端只读时不渲染）
 if not IS_CLOUD:
-    st.sidebar.header("控制")
-    st.sidebar.write("状态：%s　模式：%s" % ("运行中" if status == "running" else "已暂停",
-                                            "自动" if mode == "auto" else "手动"))
-    c1, c2 = st.sidebar.columns(2)
-    if c1.button("暂停" if status == "running" else "开始"):
-        from engine.pipeline import run, write_report
-        set_control(status="paused" if status == "running" else "running")
-        cfg2 = load_cfg()
-        asof = run(DB, cfg2)
-        write_report(DB, cfg2, asof)
-        st.rerun()
-    if c2.button("切手动" if mode == "auto" else "切自动"):
-        from engine.pipeline import run, write_report
-        set_control(mode="manual" if mode == "auto" else "auto")
-        cfg2 = load_cfg()
-        asof = run(DB, cfg2)
-        write_report(DB, cfg2, asof)
-        st.rerun()
-    if st.sidebar.button("🔄 刷新数据（拉取+重算）"):
-        with st.spinner("拉取行情并重算…"):
-            r = subprocess.run([sys.executable, os.path.join(BASE, "run_daily.py")],
-                               capture_output=True, text=True, timeout=300)
-        if r.returncode == 0:
-            st.sidebar.success("刷新完成")
-        else:
-            st.sidebar.error(r.stderr[-500:] if r.stderr else "失败")
-        st.rerun()
+    with st.expander("⚙️ 控制", expanded=False):
+        st.write("状态：%s　模式：%s" % ("运行中" if status == "running" else "已暂停",
+                                                "自动" if mode == "auto" else "手动"))
+        c1, c2, c3 = st.columns(3)
+        if c1.button("暂停" if status == "running" else "开始"):
+            from engine.pipeline import run, write_report
+            set_control(status="paused" if status == "running" else "running")
+            cfg2 = load_cfg()
+            asof = run(DB, cfg2)
+            write_report(DB, cfg2, asof)
+            st.rerun()
+        if c2.button("切手动" if mode == "auto" else "切自动"):
+            from engine.pipeline import run, write_report
+            set_control(mode="manual" if mode == "auto" else "auto")
+            cfg2 = load_cfg()
+            asof = run(DB, cfg2)
+            write_report(DB, cfg2, asof)
+            st.rerun()
+        if c3.button("🔄 刷新数据（拉取+重算）"):
+            with st.spinner("拉取行情并重算…"):
+                r = subprocess.run([sys.executable, os.path.join(BASE, "run_daily.py")],
+                                   capture_output=True, text=True, timeout=300)
+            if r.returncode == 0:
+                st.success("刷新完成")
+            else:
+                st.error(r.stderr[-500:] if r.stderr else "失败")
+            st.rerun()
 
 accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY account")]
          or ["sim_a", "sim_hk", "sim_crypto"])
@@ -575,7 +646,7 @@ if tab == "🏠 工作台":
         rc = core.get("sim_crypto", {}).get("ret", 0)
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#ffffff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#e8eaf0;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
             <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">港股 </span>HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
             <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">加密货币 </span>${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
             <div style="font-size:12px;margin-top:4px;">
@@ -599,14 +670,14 @@ if tab == "🏠 工作台":
     with c3:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">持仓市值</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#e8eaf0;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
             </div>''', unsafe_allow_html=True)
     with c4:
         st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
             <div style="color:#888;font-size:13px;">可用资金</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#fff;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
+            <div class="num" style="font-size:22px;margin:8px 0;color:#e8eaf0;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
             <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
             </div>''', unsafe_allow_html=True)
@@ -685,6 +756,33 @@ if tab == "🏠 工作台":
                         f'<span style="color:{color};font-weight:bold;">{arrow} {net_wan:+.2f}{ccy}</span></div>',
                         unsafe_allow_html=True)
 
+    # 互联互通资金（北向/南向）：成交额 + 北向持股市值，净买额 2024-08 起停止披露
+    _ns = _fetch_ns_flow()
+    if _ns:
+        def _ns_delta(cur, prev):
+            if cur is None or not prev:
+                return ""
+            chg = (cur - prev) / prev * 100
+            arrow = "▲" if chg >= 0 else "▼"
+            return f'<span style="color:#8a8f9c;font-size:13px;">较前日 {arrow} {abs(chg):.1f}%</span>'
+        nc1, nc2 = st.columns(2)
+        with nc1:
+            amt = f"{_ns['north_amt']:,.0f} 亿" if _ns.get("north_amt") is not None else "—"
+            hold = f"持股市值 {_ns['north_hold']:.2f} 万亿" if _ns.get("north_hold") else ""
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">北向资金（沪股通+深股通）· 成交额 {_ns.get("north_date", "")}</div>'
+                f'<div class="kpi-value">{amt}</div>'
+                f'<div style="margin-top:4px;">{_ns_delta(_ns.get("north_amt"), _ns.get("north_prev"))}'
+                f'<span style="color:#8a8f9c;font-size:13px;">{hold}</span></div></div>',
+                unsafe_allow_html=True)
+        with nc2:
+            amt = f"{_ns['south_amt']:,.0f} 亿" if _ns.get("south_amt") is not None else "—"
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">南向资金（港股通）· 成交额 {_ns.get("south_date", "")}</div>'
+                f'<div class="kpi-value">{amt}</div>'
+                f'<div style="margin-top:4px;">{_ns_delta(_ns.get("south_amt"), _ns.get("south_prev"))}</div></div>',
+                unsafe_allow_html=True)
+
     # 主力资金（三账户并排）
     fc1, fc2, fc3 = st.columns(3)
     with fc1:
@@ -713,24 +811,37 @@ if tab == "🏠 工作台":
         st.line_chart(df["nav"])
 
     # 三账户并排（对标验证终端）
-    # 事件流（最近动态）- 折叠
-    with st.expander("📡 事件流", expanded=False):
-        events = []
-        for d, a, s, sd, qty, px in q(
-                "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 5"):
-            events.append((d, f"💰 {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
-        for d, a, s, sd in q(
-                "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 5"):
-            events.append((d, f"📶 {ACCT_CN.get(a,a)} {sym_name(s)} {sd}信号"))
-        for d, a, s, sd, dc in q(
-                "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 5"):
-            icon = "✅" if dc == "approved" else "⏭"
-            events.append((d, f"{icon} {ACCT_CN.get(a,a)} {sym_name(s)} {sd} {dc}"))
-        events.sort(reverse=True)
-        for d, txt in events[:10]:
-            st.write(f"`{d}` {txt}")
-        if not events:
-            st.write("暂无事件")
+    # 事件流：信号 / 审批 / 成交按时间倒序，复盘与对账用
+    st.subheader("事件流")
+    st.caption("信号、审批、成交的时间线——看系统最近做了什么、还欠什么。")
+    _EV_STYLE = {
+        "成交": ("#2ebd85", "成交"),
+        "信号": ("#f0b90b", "信号"),
+        "审批": ("#1890ff", "审批"),
+    }
+    events = []
+    for d, a, s, sd, qty, px in q(
+            "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 6"):
+        events.append((d, "成交", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} {qty}股 @ {px}"))
+    for d, a, s, sd in q(
+            "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 6"):
+        events.append((d, "信号", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd}"))
+    for d, a, s, sd, dc in q(
+            "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 6"):
+        dc_cn = "批准" if dc == "approved" else ("跳过" if dc == "skipped" else dc)
+        events.append((d, "审批", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} · {dc_cn}"))
+    events.sort(key=lambda e: e[0], reverse=True)
+    if events:
+        rows_html = "".join(
+            f'<div style="display:flex;gap:10px;align-items:baseline;padding:5px 0;'
+            f'border-bottom:1px solid #1e2532;">'
+            f'<span style="color:#8a8f9c;font-size:12px;min-width:86px;">{d}</span>'
+            f'<span style="color:{_EV_STYLE[k][0]};font-size:12px;font-weight:700;min-width:32px;">{k}</span>'
+            f'<span style="font-size:13px;">{txt}</span></div>'
+            for d, k, txt in events[:10])
+        st.markdown(rows_html, unsafe_allow_html=True)
+    else:
+        st.write("暂无事件")
 
 # ================================================================
 # 📈 行情与信号：实时行情 + 策略规则 + 触发线
@@ -860,16 +971,16 @@ elif tab == "🔍 选股":
         adx_v = calc_adx(highs, lows, closes)[-1]
         regime = market_regime(adx_v)
         align = ma_align(closes)
+        # 只保留关键提示：纯文字，无表情符号
         tags = []
-        if rsi_v and rsi_v > 70: tags.append("⚠️超买")
-        elif rsi_v and rsi_v < 30: tags.append("💡超卖")
-        tags.append("🟢MACD多" if (macd_h and macd_h > 0) else "🔴MACD空")
-        if regime == "trend": tags.append("📈趋势")
-        elif regime == "range": tags.append("📊震荡")
-        if align > 0.5: tags.append("✅均线多")
-        elif align < -0.5: tags.append("❌均线空")
-        if last_c and upper[-1] and last_c > upper[-1]: tags.append("🔥破上轨")
-        if last_c and lower[-1] and last_c < lower[-1]: tags.append("🧊破下轨")
+        if rsi_v and rsi_v > 70: tags.append("超买")
+        elif rsi_v and rsi_v < 30: tags.append("超卖")
+        tags.append("MACD多头" if (macd_h and macd_h > 0) else "MACD空头")
+        if regime == "trend": tags.append("趋势")
+        if align > 0.5: tags.append("均线多头")
+        elif align < -0.5: tags.append("均线空头")
+        if last_c and upper[-1] and last_c > upper[-1]: tags.append("破上轨")
+        if last_c and lower[-1] and last_c < lower[-1]: tags.append("破下轨")
         with st.expander(f"{sym_name(sym)} @ {last_c:.2f} | {' '.join(tags)}", expanded=False):
             # 专业K线（Lightweight Charts，多均线+成交量）
             from engine.tv_charts import kline_html
@@ -1138,8 +1249,12 @@ elif tab == "💰 账户":
 elif tab == "🛡 验证":
     st.markdown('<div class="section-head">🛡 验证与风控</div>', unsafe_allow_html=True)
 
-    # ---- 验证 KPI 卡片（四态徽标，阻断原因优先） ----
-    st.subheader("验证 KPI")
+    # 页内账户切换：上方为单账户详情，下方仪表盘为跨账户摘要
+    acct = st.radio("账户", accts, format_func=lambda x: ACCT_CN.get(x, x),
+                    horizontal=True, key="verify_acct")
+
+    # ---- 单账户详情：验证 KPI 卡片（四态徽标，阻断原因优先） ----
+    st.subheader(f"单账户详情 · {ACCT_CN.get(acct, acct)}")
     st.caption("毕业标准：期望值>0 · 盈亏比≥2.5（扣费后） · 最大回撤≤10% · 样本20-30笔 · 执行分≥90 · 零数据事故 · 股票与加密分开算")
 
     # 从 graduation 数据取 KPI（sync_snapshot.build_graduation 口径）
@@ -1272,18 +1387,18 @@ elif tab == "🛡 验证":
     if not found:
         st.success("✅ 无破止损持仓")
 
-    # ---- 审计 ----
-    st.subheader("审计")
+    # ---- 审计（隐藏式：默认折叠，表面只留验证仪表盘等关键信息） ----
     excl_r = q("SELECT date, account, symbol, side, reason FROM graduation_exclusions ORDER BY date DESC")
-    if excl_r:
-        st.write("**毕业样本剔除记录**（成交保留，仅不计入毕业指标）：")
-        for d, a, s, sd, reason in excl_r:
-            st.write(f"- {d} {ACCT_CN.get(a, a)} {s} {sd}: {reason}")
-    else:
-        st.write("无剔除记录")
+    with st.expander(f"审计 · 毕业样本剔除记录（{len(excl_r)} 条）", expanded=False):
+        if excl_r:
+            st.write("成交保留，仅不计入毕业指标：")
+            for d, a, s, sd, reason in excl_r:
+                st.write(f"- {d} {ACCT_CN.get(a, a)} {s} {sd}: {reason}")
+        else:
+            st.write("无剔除记录")
 
-    # ---- 底部验证仪表盘（5指标 × 3账户，对标验证终端） ----
-    st.subheader("📊 验证仪表盘")
+    # ---- 跨账户摘要（5指标 × 3账户） ----
+    st.subheader("跨账户摘要")
     try:
         from sync_snapshot import build_graduation
         con = sqlite3.connect(DB)

@@ -147,7 +147,7 @@ def main():
     os.makedirs(os.path.join(BASE, "reports"), exist_ok=True)
     L = ["# 后台批量测试报告 %s" % date.today(),
          "- 范围：%d 个标的 × 约 %d 天历史 × MA%s" % (len(TEST_UNIVERSE), DAYS, MA_SET),
-         "- 说明：稳健性检验，不做参数优选；执行假设与主模拟盘一致", ""]
+         "- 说明：稳健性检验，不做参数优选；执行假设与主系统一致", ""]
     all_rows = []
     for symbol, market, lot, ccy, principal in TEST_UNIVERSE:
         try:

@@ -19,6 +19,14 @@ CREATE TABLE IF NOT EXISTS signals (
     symbol  TEXT NOT NULL,
     side    TEXT NOT NULL,         -- BUY / SELL
     price   REAL NOT NULL,         -- 信号参考价（当日收盘）
+    action_type TEXT DEFAULT '开仓',  -- 开仓 / 止盈 / 止损 / 信号平仓（pipeline 写入）
+    status  TEXT DEFAULT '待执行',    -- 待执行 / 已成交 / 已过期
+    stop_price REAL,               -- 止损价（ATR 或策略止损）
+    strategy TEXT,                 -- 生成该信号的策略名（版本隔离用）
+    adx_value REAL,                -- 信号日 ADX 值
+    range_protected INTEGER DEFAULT 0,  -- 震荡保护标记
+    volume_confirmed INTEGER DEFAULT 0, -- 量能确认标记
+    atr_multiple REAL,             -- ATR 倍数
     PRIMARY KEY (date, account, symbol, side)
 );
 

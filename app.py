@@ -545,17 +545,31 @@ with top2:
                 f'<div class="kpi-value">{"⚡ 自动" if mode == "auto" else "✋ 手动"}</div></div>',
                 unsafe_allow_html=True)
 with top3:
+    # 版本号简化显示：主版本大字，生效日期小字（完整版本串仍用于毕业样本隔离）
+    _vmain, _, _vdate = str(ver).partition("-")
+    _vsub = f'<div class="kpi-label">{_vdate} 起生效</div>' if _vdate else ""
     st.markdown(f'<div class="kpi-card"><div class="kpi-label">策略版本</div>'
-                f'<div class="kpi-value" style="font-size:16px">{ver}</div></div>',
+                f'<div class="kpi-value" style="font-size:16px">{_vmain}</div>{_vsub}</div>',
                 unsafe_allow_html=True)
 with top4:
-    # 各账户策略徽标
+    # 各账户策略：名称 + 状态 + 一句人话说明
     _ACCT = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-    badges = " ".join(
-        f'<span class="strategy-badge {strategy_of(a["id"])}">{_ACCT.get(a["id"], a["id"])}：{STRATEGY_CN.get(strategy_of(a["id"]), strategy_of(a["id"]))}</span>'
-        for a in CFG["accounts"])
+    _rows = []
+    for a in CFG["accounts"]:
+        _sid = strategy_of(a["id"])
+        _sname = STRATEGY_CN.get(_sid, _sid)
+        if _sid == "disabled":
+            _badge = f'<span class="strategy-badge disabled">{_ACCT.get(a["id"], a["id"])} · 已停用</span>'
+            _desc = "不生成新信号 · 持仓与净值照常跟踪 · 策略待重做"
+        else:
+            _badge = (f'<span class="strategy-badge {_sid}">{_ACCT.get(a["id"], a["id"])} · '
+                      f'{_sname} · 运行中</span>')
+            _desc = strategy_desc(_sid)
+        _rows.append(
+            f'<div style="margin-top:6px;">{_badge}'
+            f'<div style="color:#8a8f9c;font-size:12px;margin-top:2px;">{_desc}</div></div>')
     st.markdown(f'<div class="kpi-card"><div class="kpi-label">账户策略</div>'
-                f'<div style="margin-top:6px">{badges}</div></div>',
+                f'{"".join(_rows)}</div>',
                 unsafe_allow_html=True)
 
 # 阻断原因展示（2026-10-18起：有阻断时必须清晰显示）
@@ -564,7 +578,7 @@ if blocked:
 
 # ============ 导航（顶部横排；左侧栏已移除） ============
 tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"],
-               horizontal=True, label_visibility="collapsed")
+               horizontal=True, label_visibility="collapsed", key="main_nav")
 
 # 控制（本地模式可用；云端只读时不渲染）
 if not IS_CLOUD:
@@ -696,12 +710,19 @@ if tab == "🏠 工作台":
           AND f.symbol=s.symbol AND f.side=s.side
         WHERE s.date>=date('now','-60 days') AND ap.date IS NULL AND f.date IS NULL""")[0][0] or 0
     if pending_orders > 0 or pending_signals > 0:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #f0b90b;border-radius:8px;
-            padding:12px 16px;margin-bottom:16px;">
-            <b>📋 今日待办</b><br>
-            {"· " + str(pending_orders) + "个待建条件单 → 📝交易页<br>" if pending_orders else ""}
-            {"· " + str(pending_signals) + "个待审批信号" if pending_signals else ""}
-            </div>''', unsafe_allow_html=True)
+        st.markdown('''<div style="background:#1a1a2e;border:1px solid #f0b90b;border-radius:8px;
+            padding:12px 16px 4px;margin-bottom:8px;"><b>📋 今日待办</b>（点击直接进入处理）</div>''',
+            unsafe_allow_html=True)
+
+        def _goto_trade():
+            st.session_state["main_nav"] = "📝 交易"
+        _tc = st.columns(2)
+        if pending_orders:
+            _tc[0].button(f"待建条件单 {pending_orders} 个 → 去处理",
+                          on_click=_goto_trade, key="todo_orders")
+        if pending_signals:
+            _tc[1].button(f"待审批信号 {pending_signals} 个 → 去处理",
+                          on_click=_goto_trade, key="todo_signals")
     else:
         st.markdown('''<div style="background:#1a1a2e;border:1px solid #2ebd85;border-radius:8px;
             padding:12px 16px;margin-bottom:16px;">✅ 今日无待办</div>''',
@@ -737,25 +758,6 @@ if tab == "🏠 工作台":
         val = ts if ts else "无数据"
         return (f'<div class="status-card"><div class="sc-label">{label} {badge}</div>'
                 f'<div class="sc-value nodata" style="font-size:18px">{val}</div></div>')
-    def _fund_flow_panel(aid):
-        """主力资金：近5日净流入/流出（单位：万）"""
-        ccy = {"sim_a": "万", "sim_hk": "万", "sim_crypto": "万"}.get(aid, "")
-        rows = q("SELECT date, SUM(CASE WHEN side='BUY' THEN qty*price ELSE 0 END) as buy_amt,"
-                 " SUM(CASE WHEN side='SELL' THEN qty*price ELSE 0 END) as sell_amt,"
-                 " SUM(fee) as fees FROM fills WHERE account=? GROUP BY date"
-                 " ORDER BY date DESC LIMIT 5", (aid,))
-        if not rows:
-            st.write("暂无")
-            return
-        for d, buy_amt, sell_amt, fees in rows:
-            net = (sell_amt or 0) - (buy_amt or 0) - (fees or 0)
-            net_wan = net / 10000
-            color = "#00c853" if net >= 0 else "#ff4d4f"
-            arrow = "▲" if net >= 0 else "▼"
-            st.markdown(f'<div style="padding:6px 0;font-size:15px;"><span style="color:#aaa;">{d}</span> '
-                        f'<span style="color:{color};font-weight:bold;">{arrow} {net_wan:+.2f}{ccy}</span></div>',
-                        unsafe_allow_html=True)
-
     # 互联互通资金（北向/南向）：成交额 + 北向持股市值，净买额 2024-08 起停止披露
     _ns = _fetch_ns_flow()
     if _ns:
@@ -782,18 +784,6 @@ if tab == "🏠 工作台":
                 f'<div class="kpi-value">{amt}</div>'
                 f'<div style="margin-top:4px;">{_ns_delta(_ns.get("south_amt"), _ns.get("south_prev"))}</div></div>',
                 unsafe_allow_html=True)
-
-    # 主力资金（三账户并排）
-    fc1, fc2, fc3 = st.columns(3)
-    with fc1:
-        with st.expander("💰 A股资金流", expanded=False):
-            _fund_flow_panel("sim_a")
-    with fc2:
-        with st.expander("💰 港股资金流", expanded=False):
-            _fund_flow_panel("sim_hk")
-    with fc3:
-        with st.expander("💰 加密资金流", expanded=False):
-            _fund_flow_panel("sim_crypto")
 
     # ---- 3. 三账户概览（并排） ----
     # ---- 4. 待处理信号（今日信号 + 待审批） ----

@@ -151,7 +151,37 @@ def build_fake_st(tab, rec):
     return st
 
 
-def run_tab(tab):
+class _FakeResp:
+    def __init__(self, body):
+        import json
+        self._b = json.dumps(body).encode("utf-8")
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _fake_flow_urlopen(req, timeout=None):
+    """合成的东方财富互联互通响应（仅验证解析与界面串接，不代表真实接口内容）。"""
+    import re
+    url = req.full_url if hasattr(req, "full_url") else str(req)
+    if "RPT_MUTUAL_DEAL_HISTORY" in url:
+        mt = re.search(r"MUTUAL_TYPE%3D%22(\d+)%22", url).group(1)
+        base = {"001": 90000, "002": 70000, "003": 60000, "004": 50000}[mt]
+        rows = [{"TRADE_DATE": f"2026-10-{d:02d} 00:00:00", "MUTUAL_TYPE": mt,
+                 "DEAL_AMT": base + d * 100} for d in range(22, 0, -1)]
+        return _FakeResp({"result": {"data": rows}})
+    if "kamt.kline" in url:
+        return _FakeResp({"data": {"s2n": ["2026-10-22,1,2,3000000,5"]}})
+    raise OSError("smoke: unexpected url " + url)
+
+
+def run_tab(tab, flow_fixture=False):
     tmp = tempfile.mkdtemp(prefix="smoke_")
     try:
         work = os.path.join(tmp, "repo")
@@ -168,6 +198,10 @@ def run_tab(tab):
         try:
             import engine.realtime as rt
             rt.fetch_all = lambda syms: {}          # 禁网络
+            import urllib.request as _ur             # 任何直接 urllib 访问（如东方财富接口）一律快速失败
+            def _no_net(*a, **k):
+                raise OSError("smoke: network disabled")
+            _ur.urlopen = _fake_flow_urlopen if flow_fixture else _no_net
             src = open(os.path.join(work, "app.py"), encoding="utf-8").read()
             g = {"__name__": "__main__", "__file__": os.path.join(work, "app.py")}
             exec(compile(src, os.path.join(work, "app.py"), "exec"), g)
@@ -185,18 +219,50 @@ def run_tab(tab):
 
 
 def _tabs_in_app():
+    """从 app.py 解析导航选项。找不到必须报错：返回空列表会让测试一个分页都不跑却显示通过。"""
     import re
     src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
-    m = re.search(r'NAV_OPTIONS\s*=\s*(\[[^\]]*\])', src)
-    if not m:
-        m = re.search(r'st\.sidebar\.radio\("板块",\s*(\[[^\]]*\])', src)
-    return eval(m.group(1)) if m else []
+    for pat in (r'NAV_OPTIONS\s*=\s*(\[[^\]]*\])',
+                r'st\.sidebar\.radio\("板块",\s*(\[[^\]]*\])',
+                r'st\.radio\("板块",\s*(\[[^\]]*\])'):
+        m = re.search(pat, src)
+        if m:
+            tabs = eval(m.group(1))
+            assert tabs, "导航选项为空"
+            return tabs
+    raise AssertionError("在 app.py 中找不到导航定义（NAV_OPTIONS / st.radio('板块',…)），请更新本测试")
 
 
 def test_every_tab_renders():
     for tab in _tabs_in_app():
         rec = run_tab(tab)
         assert rec, f"{tab} 没有任何输出"
+
+
+def _texts(rec):
+    out = []
+    for name, a, k in rec:
+        out.extend(str(x) for x in a)
+        out.extend(str(v) for v in k.values())
+    return "\n".join(out)
+
+
+def test_workbench_funds_without_flow_data():
+    """互联互通接口不可用：给出提示，整体资金仍显示，且不出现“该账户暂无数据”。"""
+    txt = _texts(run_tab("🏠 工作台", flow_fixture=False))
+    assert "互联互通资金暂时无法获取" in txt
+    assert "折合总资产" in txt
+    assert "该账户暂无数据" not in txt
+
+
+def test_workbench_funds_with_flow_data():
+    """接口可用（合成数据）：北向/南向卡片、口径说明、近 20 日走势、整体资金都在，且无孤立提示。"""
+    txt = _texts(run_tab("🏠 工作台", flow_fixture=True))
+    assert "北向资金（沪股通+深股通）" in txt and "南向资金（港股通）" in txt
+    assert "不等于净流入" in txt
+    assert "近 20 个交易日成交额走势" in txt
+    assert "折合总资产" in txt
+    assert "该账户暂无数据" not in txt
 
 
 def test_trade_tab_no_pending_after_approval_filter():
@@ -216,4 +282,13 @@ if __name__ == "__main__":
             import traceback
             print(f"❌ {tab}: {type(e).__name__}: {e}")
             traceback.print_exc()
+    # 其余 test_* 同样执行（无 pytest 环境也不会漏跑）
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and name != "test_every_tab_renders" and callable(fn):
+            try:
+                fn()
+                print(f"✅ {name}")
+            except Exception as e:
+                ok = False
+                print(f"❌ {name}: {type(e).__name__}: {e}")
     sys.exit(0 if ok else 1)

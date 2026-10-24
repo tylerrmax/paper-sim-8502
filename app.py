@@ -59,7 +59,7 @@ def _fetch_ns_flow():
         base = ("https://datacenter-web.eastmoney.com/api/data/v1/get"
                 "?reportName=RPT_MUTUAL_DEAL_HISTORY"
                 "&columns=TRADE_DATE,MUTUAL_TYPE,DEAL_AMT"
-                "&sortColumns=TRADE_DATE&sortTypes=-1&pageSize=6&pageNumber=1"
+                "&sortColumns=TRADE_DATE&sortTypes=-1&pageSize=25&pageNumber=1"
                 "&filter=(MUTUAL_TYPE%3D%22{mt}%22)&source=WEB&client=WEB")
         per = {}
         for mt in ("001", "002", "003", "004"):
@@ -81,6 +81,9 @@ def _fetch_ns_flow():
             return out
 
         north, south = _series(("001", "002")), _series(("003", "004"))
+        from engine.funds import merge_amt_series
+        north_hist = merge_amt_series(per, ("001", "002"), 20)
+        south_hist = merge_amt_series(per, ("003", "004"), 20)
         hold = None
         try:
             req = _ur.Request(
@@ -105,6 +108,8 @@ def _fetch_ns_flow():
             "south_date": south[0][0] if south else "",
             "south_prev": south[1][1] if len(south) > 1 else None,
             "north_hold": hold,
+            "north_hist": north_hist,
+            "south_hist": south_hist,
         }
     except Exception:
         return {}
@@ -785,10 +790,66 @@ if tab == "🏠 工作台":
                 f'<div style="margin-top:4px;">{_ns_delta(_ns.get("south_amt"), _ns.get("south_prev"))}</div></div>',
                 unsafe_allow_html=True)
 
-    # ---- 3. 三账户概览（并排） ----
-    # ---- 4. 待处理信号（今日信号 + 待审批） ----
-    # ---- 5. 当前账户总览 ----
-        st.info("该账户暂无数据")
+        st.caption("成交额反映市场活跃度，**不等于净流入**。北向净买额自 2024-08-19 起交易所不再披露；"
+                   "南向净买额暂无可核对的数据来源，故不展示。数据：东方财富，10 分钟缓存。")
+        _hist = {"北向成交额": dict(_ns.get("north_hist") or []),
+                 "南向成交额": dict(_ns.get("south_hist") or [])}
+        if _hist["北向成交额"] or _hist["南向成交额"]:
+            import pandas as pd
+            with st.expander("📈 近 20 个交易日成交额走势（亿元）", expanded=False):
+                st.bar_chart(pd.DataFrame(_hist).sort_index())
+    else:
+        st.caption("互联互通资金暂时无法获取（数据源不可用），不影响下方账户数据。")
+
+    # ---- 整体资金：三个独立币种账户折算人民币后的统一视图 ----
+    from engine.funds import compute_overall, fx_rates
+    _risk = CFG.get("risk", {}) or {}
+    _limits = {a: float(_risk.get("max_crypto_position_pct" if a == "sim_crypto"
+                                  else "max_stock_position_pct", 70 if a != "sim_crypto" else 100)) / 100
+               for a in ("sim_a", "sim_hk", "sim_crypto")}
+    _fxrow = q("SELECT hkdcny, usdcny_est, date FROM fx_rate ORDER BY date DESC LIMIT 1")
+    _ov = compute_overall(core, fx_rates(_fxrow[0] if _fxrow else None), _limits, ACCT_CN)
+    if _ov["accounts"]:
+        _t = _ov["total"]
+        _seg_color = {"cash": "#5a6270", "sim_a": "#1890ff", "sim_hk": "#f0b90b", "sim_crypto": "#c77ddb"}
+        st.markdown("**💼 整体资金（折合人民币）**")
+        g1, g2, g3, g4 = st.columns(4)
+        g1.markdown(f'<div class="kpi-card"><div class="kpi-label">折合总资产</div>'
+                    f'<div class="kpi-value num">¥{_t["nav_cny"]:,.0f}</div></div>', unsafe_allow_html=True)
+        g2.markdown(f'<div class="kpi-card"><div class="kpi-label">当日盈亏（折合）</div>'
+                    f'<div class="kpi-value num" style="color:{_rg(_t["pnl_cny"])};">'
+                    f'{_t["pnl_cny"]:+,.0f}<span style="font-size:13px;"> ({_t["pnl_pct"]*100:+.2f}%)</span></div></div>',
+                    unsafe_allow_html=True)
+        g3.markdown(f'<div class="kpi-card"><div class="kpi-label">总仓位</div>'
+                    f'<div class="kpi-value num">{_t["pos_ratio"]*100:.1f}%</div></div>', unsafe_allow_html=True)
+        g4.markdown(f'<div class="kpi-card"><div class="kpi-label">现金占比</div>'
+                    f'<div class="kpi-value num">{_t["cash_ratio"]*100:.1f}%</div></div>', unsafe_allow_html=True)
+        _bar = "".join(
+            f'<div title="{x["label"]} {x["pct"]*100:.1f}%" style="width:{max(x["pct"], 0)*100:.2f}%;'
+            f'background:{_seg_color.get(x["key"], "#8a8f9c")};"></div>' for x in _ov["segments"])
+        _legend = "".join(
+            f'<span style="margin-right:14px;"><span style="display:inline-block;width:10px;height:10px;'
+            f'border-radius:2px;background:{_seg_color.get(x["key"], "#8a8f9c")};margin-right:5px;"></span>'
+            f'{x["label"]} <span class="num">{x["pct"]*100:.1f}%</span></span>' for x in _ov["segments"])
+        st.markdown(f'<div style="display:flex;height:16px;border-radius:8px;overflow:hidden;'
+                    f'background:#1e2532;margin:4px 0 8px 0;">{_bar}</div>'
+                    f'<div style="font-size:13px;color:#8a8f9c;margin-bottom:10px;">{_legend}</div>',
+                    unsafe_allow_html=True)
+        import pandas as pd
+        _tbl = pd.DataFrame([{
+            "账户": a["name"], "币种": a["ccy"], "净值(原币)": a["nav"], "折合人民币": a["nav_cny"],
+            "仓位%": a["pos_ratio"] * 100,
+            "上限%": (a["limit"] * 100 if a["limit"] is not None else None),
+            "状态": ("⚠ 超上限" if a["over"] else "正常"),
+            "当日盈亏(折合)": a["pnl_cny"], "累计收益%": a["ret"] * 100} for a in _ov["accounts"]])
+        st.dataframe(_tbl.style.format({"净值(原币)": "{:,.2f}", "折合人民币": "{:,.0f}", "仓位%": "{:.1f}",
+                                        "上限%": "{:.0f}", "当日盈亏(折合)": "{:+,.0f}", "累计收益%": "{:+.2f}"},
+                                       na_rep="--"), hide_index=True)
+        _fx_note = (f"汇率（{_fxrow[0][2]}）：1 港元≈{_fxrow[0][0]:.4f} 元；1 USDT≈{_fxrow[0][1]:.4f} 元（联系汇率估算，非实时）"
+                    if _fxrow else "汇率缺失")
+        st.caption(f"{_fx_note}。三个账户本金与币种相互独立，折合仅用于总览；各账户取各自最新日报。"
+                   + (f" 未计入合计（缺汇率）：{'、'.join(ACCT_CN.get(a, a) for a in _ov['excluded'])}。"
+                      if _ov["excluded"] else ""))
 
     # 净值曲线
     hist = q("SELECT date,nav FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date", (acct,))

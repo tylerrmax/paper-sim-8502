@@ -171,6 +171,20 @@ def q(sql, args=()):
     return rows
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _screen_cached(db_path, day_str):
+    """多重校验选股评分（engine.screen，母板16只）；按日缓存。"""
+    from engine.screen import screen_all
+    return screen_all(db_path, day_str)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _sector_news_cached(day_str):
+    """板块新闻面（engine.news_sentiment 全部板块情绪）；按日缓存。"""
+    from engine.news_sentiment import all_sector_sentiments
+    return all_sector_sentiments(day_str)
+
+
 def get_control():
     r = q("SELECT status, mode FROM control WHERE id=1")
     return r[0] if r else ("running", "auto")
@@ -886,6 +900,56 @@ elif tab == "🔍 选股":
                                 unsafe_allow_html=True)
             else:
                 st.info("无符合条件的标的")
+    # ---- 多重校验·优质标的：技术面45 + 新闻面35 + 母板面20，硬闸门封顶，只列 S/A ----
+    st.subheader("🏆 多重校验·优质标的")
+    _today_str = datetime.now().strftime("%Y-%m-%d")
+    try:
+        _srows = _screen_cached(DB, _today_str)
+    except Exception as _e:  # 评分失败不拖垮整页
+        _srows = []
+        st.caption(f"评分暂不可用：{_e}")
+    _sa = [r for r in _srows if r["grade"] in ("S", "A")]
+    _GRADE_BG = {"S": "#f0b90b", "A": "#f6465d"}
+    if _sa:
+        for r in _sa:
+            _bg = _GRADE_BG[r["grade"]]
+            st.markdown(
+                f"<span style='background:{_bg};color:#111;border-radius:4px;"
+                f"padding:1px 7px;font-weight:700;'>{r['grade']}</span> "
+                f"**{r['symbol']} {r['name']}** · {r['total']:.1f} 分 "
+                f"（技 {r['tech']:.0f} / 讯 {r['news']:.0f} / 板 {r['board']:.0f}）"
+                f" · @{r['close']:.2f}", unsafe_allow_html=True)
+            st.caption(r["evidence"])
+    elif _srows:
+        _top = _srows[0]
+        st.info(f"当前无 S/A 级标的。最高 {_top['grade']} 级："
+                f"{_top['symbol']} {_top['name']} {_top['total']:.1f} 分"
+                + (f"（闸门：{'；'.join(_top['gates'])}）" if _top["gates"] else ""))
+    # ---- 板块新闻面：X 博主证据账折算的板块情绪 ----
+    st.subheader("📰 板块新闻面")
+    try:
+        from engine.screen import load_map as _load_wmap
+        _wmap = _load_wmap()
+        _label_by_key = {v.get("sector_key"): k for k, v in _wmap.get("sectors", {}).items()}
+        _label_by_key.update({"semi_equip": "半导体设备", "market": "市场整体"})
+        _chips = []
+        for s in _sector_news_cached(_today_str):
+            _label = _label_by_key.get(s["sector_key"], s["sector_key"])
+            _arrow = "▲" if s["raw"] > 0 else "▼"
+            _color = "#f6465d" if s["raw"] > 0 else "#2ebd85"
+            _latest = max(str(i["date"]) for i in s["items"])
+            _srcs = "/".join(sorted({i["source"] for i in s["items"]}))
+            _chips.append(
+                f"<span style='display:inline-block;background:#1a1a2e;"
+                f"border:1px solid #1e2532;border-radius:12px;padding:3px 10px;"
+                f"margin:2px 4px 2px 0;color:{_color};'>"
+                f"{_label} {_arrow} {s['raw']:+.1f} · {_srcs} {_latest[5:]}</span>")
+        if _chips:
+            st.markdown("".join(_chips), unsafe_allow_html=True)
+        else:
+            st.caption("近14天无未过期新闻证据")
+    except Exception as _e:
+        st.caption(f"板块新闻面暂不可用：{_e}")
     # ---- 全市场搜索：任意A股/港股代码，新浪实时K线 ----
     with st.expander("🔎 全市场搜索（任意代码）", expanded=False):
         s_code = st.text_input("输入代码，如 600519 / 002446 / 00700", key="mkt_search")

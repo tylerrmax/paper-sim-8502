@@ -1,0 +1,206 @@
+{
+  "source": "交易母版V8.2.1-Final.xlsx",
+  "symbols": {
+    "002446": {
+      "name": "盛路通信",
+      "sector_label": "卫星通信（商业航天）",
+      "sector_key": "optical_comm",
+      "resonance_flag": false,
+      "catalyst": false,
+      "breakout": 9.0,
+      "stop_ref": 7.7
+    },
+    "688305": {
+      "name": "科德数控",
+      "sector_label": "工业母机",
+      "sector_key": "machinery",
+      "resonance_flag": false,
+      "catalyst": false,
+      "breakout": 58.0,
+      "stop_ref": 52.5
+    },
+    "002472": {
+      "name": "双环传动",
+      "sector_label": "机器人",
+      "sector_key": "robotics",
+      "resonance_flag": false,
+      "catalyst": false,
+      "breakout": 38.0,
+      "stop_ref": 33.5
+    },
+    "HK9660": {
+      "name": "地平线机器人",
+      "sector_label": "智能驾驶",
+      "sector_key": "ai_chip",
+      "resonance_flag": false,
+      "catalyst": false,
+      "breakout": 4.8,
+      "stop_ref": 3.95
+    },
+    "HK0354": {
+      "name": "中软国际",
+      "sector_label": "信创(国产软件)",
+      "sector_key": "software",
+      "resonance_flag": false,
+      "catalyst": false,
+      "breakout": 4.0,
+      "stop_ref": 3.4
+    },
+    "600150": {
+      "name": "中国船舶",
+      "sector_label": "国防军工",
+      "sector_key": "defense",
+      "resonance_flag": false,
+      "catalyst": false,
+      "breakout": 41.2,
+      "stop_ref": 36.5
+    },
+    "002192": {
+      "name": "融捷股份",
+      "sector_label": "锂电池",
+      "sector_key": "battery",
+      "resonance_flag": false,
+      "catalyst": true,
+      "breakout": 67.5,
+      "stop_ref": 55.0
+    },
+    "002812": {
+      "name": "恩捷股份",
+      "sector_label": "锂电池",
+      "sector_key": "battery",
+      "resonance_flag": false,
+      "catalyst": false,
+      "breakout": 51.0,
+      "stop_ref": 45.5
+    },
+    "000938": {
+      "name": "紫光股份",
+      "sector_label": "Ai算力、基础设施",
+      "sector_key": "ai_infra",
+      "resonance_flag": false,
+      "catalyst": true,
+      "breakout": 35.03,
+      "stop_ref": 32.2
+    },
+    "002837": {
+      "name": "英维克",
+      "sector_label": "Ai算力、基础设施",
+      "sector_key": "ai_infra",
+      "resonance_flag": false,
+      "catalyst": true,
+      "breakout": 66.0,
+      "stop_ref": 60.2
+    },
+    "300499": {
+      "name": "高澜股份",
+      "sector_label": "Ai算力、基础设施",
+      "sector_key": "ai_infra",
+      "resonance_flag": false,
+      "catalyst": true,
+      "breakout": 39.8,
+      "stop_ref": 34.0
+    },
+    "002185": {
+      "name": "华天科技",
+      "sector_label": "半导体",
+      "sector_key": "semi",
+      "resonance_flag": false,
+      "catalyst": true,
+      "breakout": 18.6,
+      "stop_ref": 16.3
+    },
+    "002639": {
+      "name": "雪人集团",
+      "sector_label": "液冷",
+      "sector_key": "liquid_cooling",
+      "resonance_flag": true,
+      "catalyst": true,
+      "breakout": 14.9,
+      "stop_ref": 12.8
+    },
+    "300827": {
+      "name": "上能电气",
+      "sector_label": "储能、光伏",
+      "sector_key": "energy_storage",
+      "resonance_flag": false,
+      "catalyst": false,
+      "breakout": 26.2,
+      "stop_ref": 23.4
+    },
+    "002747": {
+      "name": "埃斯顿",
+      "sector_label": "机器人",
+      "sector_key": "robotics",
+      "resonance_flag": false,
+      "catalyst": false,
+      "breakout": 30.3,
+      "stop_ref": 27.8
+    },
+    "600522": {
+      "name": "中天科技",
+      "sector_label": "Ai算力、基础设施",
+      "sector_key": "ai_infra",
+      "resonance_flag": false,
+      "catalyst": true,
+      "breakout": 37.2,
+      "stop_ref": 33.6
+    }
+  },
+  "sectors": {
+    "工业母机": {
+      "sector_key": "machinery",
+      "resonance_score": 24.0,
+      "resonance_level": "弱共振"
+    },
+    "机器人": {
+      "sector_key": "robotics",
+      "resonance_score": 60.0,
+      "resonance_level": "强共振"
+    },
+    "智能驾驶": {
+      "sector_key": "ai_chip",
+      "resonance_score": 12.0,
+      "resonance_level": "弱共振"
+    },
+    "信创(国产软件)": {
+      "sector_key": "software",
+      "resonance_score": 2.0,
+      "resonance_level": "弱共振"
+    },
+    "国防军工": {
+      "sector_key": "defense",
+      "resonance_score": 12.0,
+      "resonance_level": "弱共振"
+    },
+    "锂电池": {
+      "sector_key": "battery",
+      "resonance_score": 10.0,
+      "resonance_level": "弱共振"
+    },
+    "半导体": {
+      "sector_key": "semi",
+      "resonance_score": 12.0,
+      "resonance_level": "弱共振"
+    },
+    "液冷": {
+      "sector_key": "liquid_cooling",
+      "resonance_score": 30.0,
+      "resonance_level": "中共振"
+    },
+    "储能、光伏": {
+      "sector_key": "energy_storage",
+      "resonance_score": 10.0,
+      "resonance_level": "弱共振"
+    },
+    "Ai算力、基础设施": {
+      "sector_key": "ai_infra",
+      "resonance_score": 10.0,
+      "resonance_level": "弱共振"
+    },
+    "卫星通信（商业航天）": {
+      "sector_key": "optical_comm",
+      "resonance_score": 12.0,
+      "resonance_level": "弱共振"
+    }
+  }
+}

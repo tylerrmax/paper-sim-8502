@@ -366,7 +366,7 @@ def _ap_state(key, decision, d, acct, s, sd):
     try:
         con = sqlite3.connect(DB)
         con.execute(
-            "INSERT INTO approvals(date,account,symbol,side,decision,updated)"
+            "INSERT OR REPLACE INTO approvals(date,account,symbol,side,decision,updated)"
             " VALUES(?,?,?,?,?,?)",
             (d, acct, s, sd, decision,
              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
@@ -530,7 +530,7 @@ status, mode = get_control()
 ver = CFG.get("meta", {}).get("version", "unknown")
 blocked, block_reasons = check_system_health()
 
-top1, top2, top3, top4 = st.columns(4)
+top1, top2, top3 = st.columns(3)
 with top1:
     if blocked:
         st.markdown(f'<div class="kpi-card" style="border:1px solid #ff4d4f;"><div class="kpi-label">系统状态</div>'
@@ -551,26 +551,24 @@ with top3:
     st.markdown(f'<div class="kpi-card"><div class="kpi-label">策略版本</div>'
                 f'<div class="kpi-value" style="font-size:16px">{_vmain}</div>{_vsub}</div>',
                 unsafe_allow_html=True)
-with top4:
-    # 各账户策略：名称 + 状态 + 一句人话说明
-    _ACCT = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-    _rows = []
-    for a in CFG["accounts"]:
-        _sid = strategy_of(a["id"])
-        _sname = STRATEGY_CN.get(_sid, _sid)
-        if _sid == "disabled":
-            _badge = f'<span class="strategy-badge disabled">{_ACCT.get(a["id"], a["id"])} · 已停用</span>'
-            _desc = "不生成新信号 · 持仓与净值照常跟踪 · 策略待重做"
-        else:
-            _badge = (f'<span class="strategy-badge {_sid}">{_ACCT.get(a["id"], a["id"])} · '
-                      f'{_sname} · 运行中</span>')
-            _desc = strategy_desc(_sid)
-        _rows.append(
-            f'<div style="margin-top:6px;">{_badge}'
-            f'<div style="color:#8a8f9c;font-size:12px;margin-top:2px;">{_desc}</div></div>')
-    st.markdown(f'<div class="kpi-card"><div class="kpi-label">账户策略</div>'
-                f'{"".join(_rows)}</div>',
-                unsafe_allow_html=True)
+# 账户策略：默认折叠隐藏（2026-10-25 用户要求），顶栏只留三张等高卡，保持简洁
+_ACCT = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
+_rows = []
+for a in CFG["accounts"]:
+    _sid = strategy_of(a["id"])
+    _sname = STRATEGY_CN.get(_sid, _sid)
+    if _sid == "disabled":
+        _badge = f'<span class="strategy-badge disabled">{_ACCT.get(a["id"], a["id"])} · 已停用</span>'
+        _desc = "不生成新信号 · 持仓与净值照常跟踪 · 策略待重做"
+    else:
+        _badge = (f'<span class="strategy-badge {_sid}">{_ACCT.get(a["id"], a["id"])} · '
+                  f'{_sname} · 运行中</span>')
+        _desc = strategy_desc(_sid)
+    _rows.append(
+        f'<div style="margin-top:6px;">{_badge}'
+        f'<div style="color:#8a8f9c;font-size:12px;margin-top:2px;">{_desc}</div></div>')
+with st.expander("账户策略", expanded=False):
+    st.markdown("".join(_rows), unsafe_allow_html=True)
 
 # 阻断原因展示（2026-10-18起：有阻断时必须清晰显示）
 if blocked:
@@ -701,7 +699,10 @@ if tab == "🏠 工作台":
     pending_orders = q("""SELECT COUNT(*) FROM signals s
         LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
           AND s.symbol=f.symbol AND s.side=f.side
-        WHERE f.id IS NULL AND s.date >= date('now','-7 days')""")[0][0] or 0
+        LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account
+          AND ap.symbol=s.symbol AND ap.side=s.side
+        WHERE f.id IS NULL AND s.date >= date('now','-7 days')
+          AND (ap.decision IS NULL OR ap.decision <> 'skipped')""")[0][0] or 0
     # 待审批信号
     pending_signals = q("""SELECT COUNT(*) FROM signals s
         LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account
@@ -988,8 +989,11 @@ elif tab == "📝 交易":
     sigs = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
                 LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
                   AND s.symbol=f.symbol AND s.side=f.side
+                LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account
+                  AND ap.symbol=s.symbol AND ap.side=s.side
                 WHERE s.account=? AND f.id IS NULL
                   AND s.date >= date('now','-7 days')
+                  AND (ap.decision IS NULL OR ap.decision <> 'skipped')
                 ORDER BY s.date DESC, s.symbol LIMIT 20""", (acct,))
     if not sigs:
         st.write("近7天无待执行信号")
@@ -1016,8 +1020,20 @@ elif tab == "📝 交易":
         failed = [v for v in validated if not v[4]]
         if failed:
             st.warning(f"⛔ {len(failed)} 条信号校验未通过，已拦截（不生成订单指引）")
+            st.caption("校验不通过无法建单。不再处理这条就点「跳过/隔离」：跳过后不再计入待办，模拟盘也不会成交。")
             for d, s, sd, px, ok, errs, warns in failed:
-                st.caption(f"{sym_name(s)} {sd} @{px} ({d}): {'; '.join(errs)}")
+                _fc1, _fc2 = st.columns([3, 1])
+                with _fc1:
+                    st.markdown(f"**{sym_name(s)}** {sd} @{px} "
+                                f'<span style="color:#666;font-size:12px;">{d}</span>',
+                                unsafe_allow_html=True)
+                    st.caption("; ".join(errs))
+                with _fc2:
+                    if st.button("⏭ 跳过/隔离", key=f"block_skip_{d}_{s}_{sd}"):
+                        _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
+                        if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
+                            st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
+                        st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
         valid_sigs = [v for v in validated if v[4]]
         if not valid_sigs:
             st.info("无可执行订单")
@@ -1069,6 +1085,8 @@ elif tab == "📝 交易":
                 with c3:
                     if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}"):
                         _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
+                        if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
+                            st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
                         st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
 
     # 券商回执录入（四态按钮反馈：已提交→执行中→已生效/失败）
@@ -1173,53 +1191,42 @@ elif tab == "💰 账户":
                          "浮盈亏": f"{upl:+,.0f} ({upl_pct:+.1f}%)"})
         st.table(rows)
 
-        # TradingView 级 K线（每个持仓标的）
-        st.subheader("持仓K线")
-        from engine.tv_charts import kline_html
-        # 取该账户的买卖信号用于标记
-        sig_marks = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "
-                      "ORDER BY date", (acct, "__none__"))  # 占位，下面按标的重查
-        for s, qty, avg, last, mv in pos:
-            bars = q("SELECT date,open,high,low,close,volume FROM market_data"
-                     " WHERE symbol=? ORDER BY date DESC LIMIT 120", (s,))
-            if len(bars) >= 20:
-                bars = bars[::-1]
-                # 关键位线：成本 / 止损 / 止盈
-                pls = [{"price": round(avg, 4), "title": f"成本 {avg:.2f}",
-                        "color": "#1890ff"}]
-                strat = strategy_of(acct)
-                if strat == "buyback":
-                    pls.append({"price": round(avg * 0.95, 4),
-                                "title": f"止损 {avg*0.95:.2f} (-5%)",
-                                "color": "#f6465d"})
-                    pls.append({"price": round(avg * 1.15, 4),
-                                "title": f"止盈 {avg*1.15:.2f} (+15%)",
-                                "color": "#2ebd85"})
-                # 信号标记
-                sm = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "
-                       "ORDER BY date DESC LIMIT 20", (acct, s))
-                marks = []
-                for d, sd in sm:
-                    if sd == "BUY":
-                        marks.append({"time": d, "position": "belowBar",
-                                      "shape": "arrowUp", "text": "买",
-                                      "color": "#2ebd85"})
-                    else:
-                        marks.append({"time": d, "position": "aboveBar",
-                                      "shape": "arrowDown", "text": "卖",
-                                      "color": "#f6465d"})
-                upl = (last - avg) * qty if last and avg else 0
-                upl_pct = (last - avg) / avg * 100 if last and avg else 0
-                st.write(f"**{sym_name(s)}** 成本 {avg:.2f} · 现价 {last:.2f} · "
-                         f"浮盈亏 {upl:+,.0f} ({upl_pct:+.1f}%)")
-                st.components.v1.html(
-                    kline_html(f"{acct}_{s}", bars, price_lines=pls,
-                               markers=marks, height=420),
-                    height=430)
-            else:
-                st.write(f"**{sym_name(s)}**：数据不足（{len(bars)}根）")
     else:
         st.write("空仓")
+
+    # 持仓K线：固定为实盘4只（2026-10-25用户指定：中国船舶换科德数控，加港股两只）
+    # 成本为用户2026-09-28确认的实盘成本，只作价格线与相对成本对照，不进模拟账
+    st.subheader("持仓K线")
+    from engine.tv_charts import kline_html
+    _KLINE_WATCH = [("002446", "sim_a", 11.2), ("688305", "sim_a", 64.0),
+                    ("HK9660", "sim_hk", 7.9), ("HK0354", "sim_hk", 5.2)]
+    for _sym, _sacct, _cost in _KLINE_WATCH:
+        _bars = q("SELECT date,open,high,low,close,volume FROM market_data"
+                  " WHERE symbol=? ORDER BY date DESC LIMIT 120", (_sym,))
+        if len(_bars) < 20:
+            st.write(f"**{sym_name(_sym)}**：数据不足（{len(_bars)}根）")
+            continue
+        _bars = _bars[::-1]
+        _last = _bars[-1][4]
+        _pct = (_last - _cost) / _cost * 100 if _cost else 0
+        _pls = [{"price": round(_cost, 4), "title": f"实盘成本 {_cost:.2f}",
+                 "color": "#1890ff"}]
+        _sm = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "
+                "ORDER BY date DESC LIMIT 20", (_sacct, _sym))
+        _marks = []
+        for _d, _sd in _sm:
+            if _sd == "BUY":
+                _marks.append({"time": _d, "position": "belowBar", "shape": "arrowUp",
+                               "text": "买", "color": "#2ebd85"})
+            else:
+                _marks.append({"time": _d, "position": "aboveBar", "shape": "arrowDown",
+                               "text": "卖", "color": "#f6465d"})
+        st.write(f"**{sym_name(_sym)}** 实盘成本 {_cost:.2f} · 现价 {_last:.2f} · "
+                 f"相对成本 {_pct:+.1f}%")
+        st.components.v1.html(
+            kline_html(f"watch_{_sym}", _bars, price_lines=_pls,
+                       markers=_marks, height=420),
+            height=430)
 
     # 近期成交
     st.subheader("近期成交")

@@ -22,32 +22,89 @@
 - 待突破 3：收盘距关键突破位 ≤5%（含已突破）→ 3，其余 0。
 
 硬闸门（任一触发 → 总评级封顶 B，并列明原因）：
-- 数据 <60 根，或最新数据距 asof >4 天；
+- 数据 <60 根，或最新数据落后同市场最新日期 >4 天（分市场日历，P1-7）；
+  同市场整体停更（市场最新日期距 asof >10 天）同样触发；
 - 收盘 < MA20 且均线空头排列（MA5<MA10<MA20）；
 - RSI ≥ 80（追高）；
 - 价格 < 母板止损参考；
-- 单日涨幅 > 7%。
+- 单日涨幅超限：A股 >7%，港股 >15%（港股无涨跌停，分市场阈值，P1-7）；
+- 新闻面断更（最新证据距 asof >7 天或新闻账缺失）：新闻分不可信（P0-4）。
+
+交易计划三价（P1-11，工作流纲领第 2 步）：每个候选输出 plan_trigger /
+plan_stop / plan_target —— 触发价=母板关键突破位（workbook_map.breakout）、
+止损位=母板 stop_ref、目标位=触发+(触发−止损)×2.5（按冻结毕业标准盈亏比
+2.5 计算，证据行标注口径）。母板缺突破位/止损位时对应字段为 None 并在
+证据行标注“母板未设”，绝不编造。
 
 评级：S ≥75、A ≥60、B ≥45、C <45（闸门触发时 S/A 降为 B）。
 
-用法: python3 -m engine.screen [--asof YYYY-MM-DD] [--db PATH]
-只读：只读 market_data 与 config，不写库、不产生任何账户信号。
+时点口径（P0-2，真 as-of）：行情只取 date<=asof 的 bars；新闻只计
+date<=asof 的证据（未来证据由 news_sentiment 拦截计 0）；母板映射的
+版本由 workbook_map.json 的 generated_at + source_sha256 标识。
+
+审计落库（P0-3）：screen_all 每次运行向 screen_runs 写一行
+（asof/rule_version/新闻账与映射的 sha256/results_json），同 asof
+重跑结果逐字一致；页面缓存命中不调用本函数、不会重复写。
+
+用法: python3 -m engine.screen [--asof YYYY-MM-DD] [--db PATH] [--no-record]
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
+import sys
 from datetime import date, datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_PATH = os.path.join(BASE, "config", "workbook_map.json")
 DEFAULT_DB = os.path.join(BASE, "db", "sim.db")
+RULE_VERSION = "screen-v1.2-2026-10-26"
 
 from engine.indicators import macd, rsi  # noqa: E402
-from engine.news_sentiment import sector_sentiment  # noqa: E402
+from engine.news_sentiment import news_freshness, sector_sentiment  # noqa: E402
 from engine.signals import moving_average  # noqa: E402
+
+
+def market_of(symbol):
+    """市场归属：HK 前缀=港股，USDT 后缀=加密，其余=A股。"""
+    if str(symbol).startswith("HK"):
+        return "hk"
+    if str(symbol).endswith("USDT"):
+        return "crypto"
+    return "a"
+
+
+# 单日涨幅追高闸门（分市场，P1-7）：A股有涨跌停 7%；港股无涨跌停 15%
+CHG_LIMIT = {"a": 7.0, "hk": 15.0, "crypto": 25.0}
+
+# 目标位盈亏比（P1-11）：与冻结毕业标准盈亏比硬线一致（≥2.5）
+RR_TARGET = 2.5
+
+
+def _trade_plan(meta):
+    """交易计划三价：触发=母板关键突破位、止损=母板 stop_ref、
+    目标=触发+(触发−止损)×2.5。任一母板值缺失 → 目标为 None，不编造。"""
+    trigger = meta.get("breakout")
+    stop = meta.get("stop_ref")
+    target = None
+    if trigger is not None and stop is not None:
+        target = round(trigger + (trigger - stop) * RR_TARGET, 4)
+    return trigger, stop, target
+
+
+def _plan_note(trigger, stop, target):
+    if trigger is not None and stop is not None:
+        return ("交易计划：触发 %.2f / 止损 %.2f / 目标 %.2f"
+                "（目标位按2.5倍盈亏比计算）" % (trigger, stop, target))
+    miss = []
+    if trigger is None:
+        miss.append("关键突破位")
+    if stop is None:
+        miss.append("止损位")
+    return "交易计划：母板未设（缺%s）" % "/".join(miss)
 
 
 def _to_date(v):
@@ -141,19 +198,29 @@ def _grade(total):
     return "C"
 
 
-def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None):
-    """单只评分。bars 升序 [(date,open,high,low,close,volume)]，date 为 str。"""
+def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None,
+                 market_last=None, extra_gates=None, evidence_note=None):
+    """单只评分。bars 升序 [(date,open,high,low,close,volume)]，date 为 str。
+
+    market_last: 同市场最新行情日期（分市场新鲜度用）；extra_gates:
+    调用方附加的闸门（如新闻面断更）；evidence_note: 证据行附加标注。
+    """
     name = meta.get("name") or symbol
     sector_label = meta.get("sector_label")
     sector_key = meta.get("sector_key")
-    gates = []
+    gates = list(extra_gates or [])
+    plan_trigger, plan_stop, plan_target = _trade_plan(meta)
+    plan_note = _plan_note(plan_trigger, plan_stop, plan_target)
 
     if not bars:
         return {"symbol": symbol, "name": name, "sector_label": sector_label,
                 "sector_key": sector_key, "close": None, "last_date": None,
                 "tech": 0.0, "news": 0.0, "board": 0.0, "total": 0.0,
-                "grade": "C", "capped": False, "gates": ["无行情数据"],
-                "evidence": "无行情数据"}
+                "grade": "C", "capped": False,
+                "plan_trigger": plan_trigger, "plan_stop": plan_stop,
+                "plan_target": plan_target,
+                "gates": gates + ["无行情数据"],
+                "evidence": "无行情数据；" + plan_note}
 
     dates = [b[0] for b in bars]
     closes = [b[4] for b in bars]
@@ -187,9 +254,23 @@ def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None):
     # 硬闸门
     if len(bars) < 60:
         gates.append("数据不足60根（%d根）" % len(bars))
-    stale = (asof - last_date).days
-    if stale > 4:
-        gates.append("最新数据 %s 距今%d天>4天" % (dates[-1], stale))
+    # 新鲜度（分市场日历，P1-7）：相对同市场最新日期滞后 >4 天触发；
+    # 同市场整体停更（市场最新距 asof >10 天，超出任何正常休市）全市场触发；
+    # 无市场参照时回退旧口径（相对 asof 自然日）。
+    if market_last is not None:
+        mkt_last = _to_date(market_last)
+        gap_mkt = (mkt_last - last_date).days
+        if gap_mkt > 4:
+            gates.append("最新数据 %s 落后同市场最新 %s 共%d天>4天"
+                         % (dates[-1], market_last, gap_mkt))
+        gap_mkt_asof = (asof - mkt_last).days
+        if gap_mkt_asof > 10:
+            gates.append("市场数据整体停更：同市场最新 %s 距 asof %d天"
+                         % (market_last, gap_mkt_asof))
+    else:
+        stale = (asof - last_date).days
+        if stale > 4:
+            gates.append("最新数据 %s 距今%d天>4天" % (dates[-1], stale))
     ma5, ma10, ma20 = td["ma5"], td["ma10"], td["ma20"]
     if ma20 is not None and close < ma20 and ma5 is not None and ma10 is not None \
             and ma5 < ma10 < ma20:
@@ -202,8 +283,9 @@ def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None):
     chg = None
     if len(closes) >= 2 and closes[-2]:
         chg = (close - closes[-2]) / closes[-2] * 100
-        if chg > 7:
-            gates.append("单日涨幅%.1f%%>7%%" % chg)
+        chg_limit = CHG_LIMIT.get(market_of(symbol), 7.0)
+        if chg > chg_limit:
+            gates.append("单日涨幅%.1f%%>%s%%" % (chg, "%g" % chg_limit))
 
     total = max(0.0, min(100.0, tech + news + return_board))
     grade = _grade(total)
@@ -224,6 +306,9 @@ def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None):
         ev_parts.append("共振：%s %.0f分" % (sector_label, res_score))
     if meta.get("catalyst"):
         ev_parts.append("催化已落地")
+    if evidence_note:
+        ev_parts.append(evidence_note)
+    ev_parts.append(plan_note)
 
     return {"symbol": symbol, "name": name, "sector_label": sector_label,
             "sector_key": sector_key, "close": close, "last_date": dates[-1],
@@ -232,28 +317,117 @@ def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None):
             "tech": round(tech, 2), "news": round(news, 2),
             "board": return_board, "total": round(total, 2),
             "grade": grade, "capped": capped, "gates": gates,
+            "plan_trigger": plan_trigger, "plan_stop": plan_stop,
+            "plan_target": plan_target,
             "news_raw": sent["raw"], "evidence": "；".join(ev_parts)}
 
 
-def screen_all(db_path=None, asof=None, map_path=None, entries=None):
-    """对 workbook_map 全部标的评分，按总分降序返回 list[dict]。只读。"""
+def _sha256_bytes(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def _sha256_obj(o):
+    return _sha256_bytes(json.dumps(o, ensure_ascii=False, sort_keys=True,
+                                    default=str).encode("utf-8"))
+
+
+def _file_sha256(path):
+    try:
+        with open(path, "rb") as f:
+            return _sha256_bytes(f.read())
+    except OSError:
+        return None
+
+
+def ensure_screen_runs(con):
+    con.execute("""CREATE TABLE IF NOT EXISTS screen_runs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_at TEXT NOT NULL,
+        asof TEXT NOT NULL,
+        rule_version TEXT NOT NULL,
+        news_sha256 TEXT,
+        map_sha256 TEXT,
+        results_json TEXT NOT NULL)""")
+
+
+def record_screen_run(con, asof, rows, news_sha, map_sha):
+    """筛选审计落库（P0-3）：一行 = 一次运行的完整输入版本与结果。"""
+    ensure_screen_runs(con)
+    con.execute(
+        "INSERT INTO screen_runs(run_at,asof,rule_version,news_sha256,"
+        "map_sha256,results_json) VALUES(?,?,?,?,?,?)",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), asof.isoformat(),
+         RULE_VERSION, news_sha, map_sha,
+         json.dumps(rows, ensure_ascii=False, sort_keys=True, default=str)))
+    con.commit()
+
+
+def screen_all(db_path=None, asof=None, map_path=None, entries=None,
+               record=True):
+    """对 workbook_map 全部标的评分，按总分降序返回 list[dict]。
+
+    真 as-of（P0-2）：行情只取 date<=asof；新闻只计 date<=asof 证据。
+    record=True 时把本次运行落库 screen_runs（P0-3）；页面缓存命中
+    不会调用本函数，因此不会重复写。
+    """
     asof = _to_date(asof) if asof else date.today()
     wmap = load_map(map_path)
     sectors = wmap.get("sectors", {})
     resonance_max = max((s.get("resonance_score") or 0 for s in sectors.values()),
                         default=0) or 60.0
+
+    # 新闻面新鲜度（P0-4）：断更/缺失时全员附加闸门并在证据行标注，
+    # 不再静默归零冒充“无新闻”。
+    from engine.news_sentiment import load_news
+    if entries is None:
+        try:
+            entries = load_news()
+        except Exception:
+            entries = []
+    fresh = news_freshness(asof, entries)
+    extra_gates, ev_note = [], None
+    if fresh["missing"]:
+        extra_gates = ["新闻面断更：新闻账缺失或无条目，新闻分不可信"]
+        ev_note = "⚠新闻面断更（新闻账缺失），新闻分不可信"
+    elif fresh["stale"]:
+        extra_gates = ["新闻面断更：最新证据 %s 距 asof %d 天>7天，新闻分不可信"
+                       % (fresh["latest"], fresh["age_days"])]
+        ev_note = "⚠新闻面断更（最新证据 %s），新闻分不可信" % fresh["latest"]
+
     con = sqlite3.connect(db_path or DEFAULT_DB)
+    # 先取全部 as-of 截断 bars，再算各市场最新日期（分市场日历）
+    bars_by_sym = {}
+    market_last = {}
+    for symbol in wmap["symbols"]:
+        bars = con.execute(
+            "SELECT date,open,high,low,close,volume FROM market_data"
+            " WHERE symbol=? AND date<=? ORDER BY date",
+            (symbol, asof.isoformat())).fetchall()
+        bars_by_sym[symbol] = bars
+        if bars:
+            m = market_of(symbol)
+            if m not in market_last or bars[-1][0] > market_last[m]:
+                market_last[m] = bars[-1][0]
     rows = []
     for symbol, meta in wmap["symbols"].items():
         meta = dict(meta)
         sec = sectors.get(meta.get("sector_label") or "", {})
         meta["_resonance_score"] = sec.get("resonance_score")
-        bars = con.execute(
-            "SELECT date,open,high,low,close,volume FROM market_data"
-            " WHERE symbol=? ORDER BY date", (symbol,)).fetchall()
-        rows.append(score_symbol(symbol, meta, bars, asof, resonance_max, entries))
-    con.close()
+        rows.append(score_symbol(
+            symbol, meta, bars_by_sym[symbol], asof, resonance_max, entries,
+            market_last=market_last.get(market_of(symbol)),
+            extra_gates=extra_gates, evidence_note=ev_note))
     rows.sort(key=lambda r: -r["total"])
+    if record and os.environ.get("PAPER_SIM_NO_SCREEN_RECORD"):
+        record = False  # 测试/回归环境显式豁免，避免污染审计表
+    if record:
+        try:
+            news_sha = _sha256_obj(entries)
+            map_sha = _file_sha256(map_path or MAP_PATH) or _sha256_obj(wmap)
+            record_screen_run(con, asof, rows, news_sha, map_sha)
+        except Exception as e:  # 落库失败不拖垮评分，但必须留痕
+            print("WARN screen_runs 落库失败: %s" % e, file=sys.stderr)
+    con.close()
     return rows
 
 
@@ -262,9 +436,11 @@ def main():
     ap.add_argument("--db", default=DEFAULT_DB)
     ap.add_argument("--asof", default=None, help="YYYY-MM-DD，默认今天")
     ap.add_argument("--format", choices=["md", "json"], default="md")
+    ap.add_argument("--no-record", action="store_true",
+                    help="不写 screen_runs 审计表")
     args = ap.parse_args()
     asof = _to_date(args.asof) if args.asof else date.today()
-    rows = screen_all(args.db, asof)
+    rows = screen_all(args.db, asof, record=not args.no_record)
     if args.format == "json":
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return

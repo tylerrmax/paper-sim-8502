@@ -187,16 +187,26 @@ def run_tab(tab):
 def _tabs_in_app():
     import re
     src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
-    m = re.search(r'NAV_OPTIONS\s*=\s*(\[[^\]]*\])', src)
-    if not m:
-        m = re.search(r'st\.sidebar\.radio\("板块",\s*(\[[^\]]*\])', src)
-    return eval(m.group(1)) if m else []
+    m = (re.search(r'NAV_OPTIONS\s*=\s*(\[[^\]]*\])', src)
+         or re.search(r'st\.sidebar\.radio\("板块",\s*(\[[^\]]*\])', src)
+         or re.search(r'st\.radio\("板块",\s*(\[[^\]]*\])', src))
+    tabs = eval(m.group(1)) if m else []
+    if not tabs:                      # 找不到导航 = 测试自身失效，必须报错而不是空跑通过
+        raise AssertionError("烟雾测试没找到导航选项，请更新 _tabs_in_app()")
+    return tabs
 
 
 def test_every_tab_renders():
     for tab in _tabs_in_app():
         rec = run_tab(tab)
         assert rec, f"{tab} 没有任何输出"
+
+
+def test_screen_tab_has_triple_screen():
+    rec = run_tab("🔍 选股")
+    texts = " ".join(str(a) for _, a, _ in rec)
+    assert "三重校验" in texts, "选股页缺少三重校验区块"
+    assert "今日无标的通过三重校验" in texts, "无输入时必须明确提示零通过"
 
 
 def test_trade_tab_no_pending_after_approval_filter():

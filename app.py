@@ -839,6 +839,10 @@ if tab == "🏠 工作台":
 # ================================================================
 elif tab == "🔍 选股":
     st.header("🔍 选股")
+    # ---- 三重校验：量化技术面 × X博主新闻市场面 × 母板板块共振（三层全过才输出，宁缺毋滥） ----
+    from engine.screener_view import render_triple_screen
+    render_triple_screen(st, DB, CFG, BASE, SYMBOL_CN)
+    st.divider()
     # ---- 筛选器（Unusual Whales式）：涨幅/量比/RSI/MACD/资金 ----
     with st.expander("🎯 条件筛选", expanded=False):
         f1, f2, f3 = st.columns(3)

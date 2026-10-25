@@ -91,6 +91,13 @@ def build_plan(cfg, start, today):
     for sym in cfg.get("display_only", []):
         plan.append((sym, "a",
                      lambda s=sym: fetch_kline(s, date.today() - timedelta(days=10))))
+    # 上证指数（市场环境闸数据，第12项）：display-only，永不进任何
+    # universe/信号；走 data.quotes 专用指数函数（腾讯同源），不经
+    # market_data 服务（其代码映射会把 IDX 误判为个股）。
+    from data.quotes import fetch_index_kline
+    from engine.regime import INDEX_SYMBOL
+    plan.append((INDEX_SYMBOL, "index",
+                 lambda: fetch_index_kline(start)))
     return plan
 
 

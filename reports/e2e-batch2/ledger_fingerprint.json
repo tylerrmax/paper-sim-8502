@@ -1,0 +1,64 @@
+{
+ "baseline_pre_batch2": {
+  "fills": {
+   "rows": 50,
+   "sha256": "008d60758acfb791588aad40b58350f1bb28b65b5cb418c1d44b09156c873094",
+   "sum_qty": 253102.52734,
+   "sum_amount": 1535894.41,
+   "sum_pnl": -4323.26,
+   "versions": [
+    "draft-2026-10-02",
+    "v1.0-2026-10-17"
+   ]
+  },
+  "positions": {
+   "rows": 2,
+   "sha256": "e59dd4480ab342bd7fa5e31d1e61bda1ce2dc0390c11a9da9e99f9cb776d120f",
+   "detail": [
+    [
+     "sim_a",
+     "002446",
+     7200.0,
+     6.94386
+    ],
+    [
+     "sim_a",
+     "600150",
+     700.0,
+     35.5209
+    ]
+   ]
+  }
+ },
+ "current_production": {
+  "fills": {
+   "rows": 50,
+   "sha256": "008d60758acfb791588aad40b58350f1bb28b65b5cb418c1d44b09156c873094",
+   "sum_qty": 253102.52734,
+   "sum_amount": 1535894.41,
+   "sum_pnl": -4323.26,
+   "versions": [
+    "draft-2026-10-02",
+    "v1.0-2026-10-17"
+   ]
+  },
+  "positions": {
+   "rows": 2,
+   "sha256": "e59dd4480ab342bd7fa5e31d1e61bda1ce2dc0390c11a9da9e99f9cb776d120f",
+   "detail": [
+    [
+     "sim_a",
+     "002446",
+     7200.0,
+     6.94386
+    ],
+    [
+     "sim_a",
+     "600150",
+     700.0,
+     35.5209
+    ]
+   ]
+  }
+ }
+}

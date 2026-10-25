@@ -28,7 +28,12 @@
 - RSI ≥ 80（追高）；
 - 价格 < 母板止损参考；
 - 单日涨幅超限：A股 >7%，港股 >15%（港股无涨跌停，分市场阈值，P1-7）；
-- 新闻面断更（最新证据距 asof >7 天或新闻账缺失）：新闻分不可信（P0-4）。
+- 新闻面断更（最新证据距 asof >7 天或新闻账缺失）：新闻分不可信（P0-4）；
+- 市场环境闸（模块A，母板真源）：workbook_map 母板字段判定为禁止
+  新开仓（B31=否，或未放行且 B79=否）或数据不可用降级 → 全池附加
+  环境闸（封顶 B、S/A 清空），证据行明示原因，不静默；谨慎交易
+  （B31=是、未放行、B79=是）不封顶但标注验证期参数。指数自算只作
+  交叉核对（regime_* 字段），不作判定源。
 
 交易计划三价（P1-11，工作流纲领第 2 步）：每个候选输出 plan_trigger /
 plan_stop / plan_target —— 触发价=母板关键突破位（workbook_map.breakout）、
@@ -61,7 +66,7 @@ from datetime import date, datetime
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_PATH = os.path.join(BASE, "config", "workbook_map.json")
 DEFAULT_DB = os.path.join(BASE, "db", "sim.db")
-RULE_VERSION = "screen-v1.2-2026-10-26"
+RULE_VERSION = "screen-v1.4-2026-10-26"
 
 from engine.indicators import macd, rsi  # noqa: E402
 from engine.news_sentiment import news_freshness, sector_sentiment  # noqa: E402
@@ -408,15 +413,75 @@ def screen_all(db_path=None, asof=None, map_path=None, entries=None,
             m = market_of(symbol)
             if m not in market_last or bars[-1][0] > market_last[m]:
                 market_last[m] = bars[-1][0]
+    # 市场环境闸（模块A：同口径自动计算 + 母板 B31 对账）：自动计算用
+    # ≤asof 的指数 bars（真 as-of），与 wmap 母板字段对账；不一致/
+    # 缺失/过期 → 降级禁开。screen 无账户语境，不做换仓概念：禁开/
+    # 降级态全池附加环境闸、S/A 清空，证据行写明指数值/MA20/B31
+    # 对账状态（不许只写“无候选”）；谨慎态不封顶但标注验证期参数。
+    from engine import regime as _regime_mod
+    _idx_rows = con.execute(
+        "SELECT date, close FROM market_data WHERE symbol=? AND date<=?"
+        " ORDER BY date", (_regime_mod.INDEX_SYMBOL, asof.isoformat())).fetchall()
+    _regime = _regime_mod.regime_from_closes([r[1] for r in _idx_rows])
+    _auto = dict(_regime)
+    _auto["last_date"] = _idx_rows[-1][0] if _idx_rows else None
+    _stock_last = max(market_last.values()) if market_last else None
+    _env = _regime_mod.env_from_map(wmap, auto=_auto,
+                                    stock_last_date=_stock_last)
+    _recon_s = {True: "对账一致", False: "对账不一致"}.get(
+        _env.get("reconciled"), "对账不可用")
+    _auto_s = ("上证 %.2f vs MA20 %.2f（指数日 %s）→ %s" % (
+        _regime["close"], _regime["ma20"], _auto["last_date"],
+        "站上" if _regime["on"] else "未站上")) if _regime.get("known") \
+        else "指数数据不足，自动计算不可用"
+    env_gates, env_note = [], None
+    if _env["state"] == _regime_mod.DEGRADED:
+        env_gates = ["市场环境数据不可用，已安全降级为禁止新开仓"
+                     "（%s；%s；B31=%s，%s）"
+                     % (_env.get("degraded_reason") or "", _auto_s,
+                        {True: "是", False: "否"}.get(_env.get("b31"), "读取失败"),
+                        _recon_s)]
+        env_note = ("⛔市场环境数据不可用，已安全降级：候选池只观察不开仓"
+                    "（%s；B31=%s，%s）"
+                    % (_auto_s,
+                       {True: "是", False: "否"}.get(_env.get("b31"), "读取失败"),
+                       _recon_s))
+    elif _env["state"] == _regime_mod.BLOCKED_NEW:
+        env_gates = ["市场环境闸·禁止新开仓（%s；%s；B31=%s，%s），候选池只观察"
+                     % (_env.get("reason") or "", _auto_s,
+                        {True: "是", False: "否"}.get(_env.get("b31"), "读取失败"),
+                        _recon_s)]
+        env_note = ("⛔市场环境闸：禁止新开仓，候选池只观察（%s；B31=%s，%s）"
+                    % (_auto_s,
+                       {True: "是", False: "否"}.get(_env.get("b31"), "读取失败"),
+                       _recon_s))
+    elif _env["state"] == _regime_mod.CAUTIOUS:
+        env_note = ("⚠谨慎交易（母板未放行·B79=是）：新建仓套验证期参数"
+                    "（仓位系数 %s、总仓位上限 %s）；%s；B31=是，%s"
+                    % (_env.get("buy_coef"), _env.get("total_cap"),
+                       _auto_s, _recon_s))
+    all_extra_gates = list(extra_gates) + env_gates
+    if ev_note and env_note:
+        all_ev_note = ev_note + "；" + env_note
+    else:
+        all_ev_note = ev_note or env_note
     rows = []
     for symbol, meta in wmap["symbols"].items():
         meta = dict(meta)
         sec = sectors.get(meta.get("sector_label") or "", {})
         meta["_resonance_score"] = sec.get("resonance_score")
-        rows.append(score_symbol(
+        row = score_symbol(
             symbol, meta, bars_by_sym[symbol], asof, resonance_max, entries,
             market_last=market_last.get(market_of(symbol)),
-            extra_gates=extra_gates, evidence_note=ev_note))
+            extra_gates=all_extra_gates, evidence_note=all_ev_note)
+        row["regime_on"] = _regime.get("on")
+        row["regime_close"] = _regime.get("close")
+        row["regime_ma20"] = _regime.get("ma20")
+        row["env_state"] = _env["state"]
+        row["env_label"] = _env["label"]
+        row["env_reconciled"] = _env.get("reconciled")
+        row["env_reason"] = _env.get("degraded_reason") or _env.get("reason")
+        rows.append(row)
     rows.sort(key=lambda r: -r["total"])
     if record and os.environ.get("PAPER_SIM_NO_SCREEN_RECORD"):
         record = False  # 测试/回归环境显式豁免，避免污染审计表

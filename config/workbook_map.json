@@ -1,7 +1,40 @@
 {
   "source": "交易母版V8.2.1-Final.xlsx",
-  "generated_at": "2026-10-25 15:53:25",
+  "generated_at": "2026-10-25 16:20:22",
   "source_sha256": "871073328c3f8e0382ab31a4f29b160a6ba8a9840cb25092849a67f3a8fc2e8d",
+  "b31_manual": {
+    "label": "大盘指数站上20日线",
+    "cell": "参数设置!B31",
+    "raw": "否",
+    "value": false
+  },
+  "gate_b79": {
+    "label": "未放行时允许新开/接回买入",
+    "cell": "参数设置!B79",
+    "raw": "否",
+    "value": false
+  },
+  "release": {
+    "label": "综合结论",
+    "cell": "实盘验证!E14",
+    "raw": "未放行:先整改",
+    "released": false,
+    "summary": "2/9 通过"
+  },
+  "v8_risk": {
+    "buy_coef": {
+      "label": "验证期买入仓位系数",
+      "cell": "参数设置!B78",
+      "raw": 0.5,
+      "value": 0.5
+    },
+    "total_pos_cap": {
+      "label": "有效总仓位上限",
+      "cell": "参数设置!B80",
+      "raw": 0.3,
+      "value": 0.3
+    }
+  },
   "symbols": {
     "002446": {
       "name": "盛路通信",

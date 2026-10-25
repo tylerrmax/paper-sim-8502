@@ -113,6 +113,77 @@ def main():
             "stop_ref": _num(row[6].value),       # G 止损参考
         }
 
+    # ---- 母板环境真源字段（模块A）：环境判定唯一真源 = 母板，不另算 ----
+    # 按标签定位（不写死行号），记录来源单元格供追溯；值“是”→True、“否”→False。
+    def _find_param(ws, label):
+        for row in ws.iter_rows():
+            a = row[0].value
+            if a and str(a).strip() == label:
+                return row[1].coordinate, row[1].value
+        return None, None
+
+    def _yesno(cell, raw):
+        return {"label": None, "cell": ("参数设置!%s" % cell) if cell else None,
+                "raw": (str(raw).strip() if raw is not None else None),
+                "value": (True if str(raw).strip() == "是"
+                          else False if str(raw).strip() == "否" else None)}
+
+    ws_p = wb["参数设置"]
+    # B31：大盘指数站上20日线（参数设置!B31）
+    _cell, _raw = _find_param(ws_p, "大盘指数站上20日线")
+    b31_manual = _yesno(_cell, _raw)
+    b31_manual["label"] = "大盘指数站上20日线"
+    if _cell is None:
+        print("WARN 参数设置未找到“大盘指数站上20日线”行，b31_manual 记空",
+              file=sys.stderr)
+    # B79：未放行时允许新开/接回买入（参数设置!B79）
+    _cell, _raw = _find_param(ws_p, "未放行时允许新开/接回买入")
+    gate_b79 = _yesno(_cell, _raw)
+    gate_b79["label"] = "未放行时允许新开/接回买入"
+    if _cell is None:
+        print("WARN 参数设置未找到“未放行时允许新开/接回买入”行，gate_b79 记空",
+              file=sys.stderr)
+    # V8 验证期风控参数（参数设置!B78 买入仓位系数 / B80 有效总仓位上限）
+    _c1, _v1 = _find_param(ws_p, "验证期买入仓位系数")
+    _c2, _v2 = None, None
+    for row in ws_p.iter_rows():
+        a = row[0].value
+        if a and str(a).strip().startswith("有效总仓位上限"):
+            _c2, _v2 = row[1].coordinate, row[1].value
+            break
+    v8_risk = {
+        "buy_coef": {"label": "验证期买入仓位系数",
+                     "cell": ("参数设置!%s" % _c1) if _c1 else None,
+                     "raw": _v1,
+                     "value": (float(_v1) if isinstance(_v1, (int, float))
+                               else None)},
+        "total_pos_cap": {"label": "有效总仓位上限",
+                          "cell": ("参数设置!%s" % _c2) if _c2 else None,
+                          "raw": _v2,
+                          "value": (float(_v2) if isinstance(_v2, (int, float))
+                                    else None)},
+    }
+    # 放行状态：实盘验证“综合结论”行 E 列（实盘验证!E14）
+    release = {"label": "综合结论", "cell": None, "raw": None,
+               "released": None, "summary": None}
+    ws_v = wb["实盘验证"]
+    for row in ws_v.iter_rows():
+        b = row[1].value if len(row) > 1 else None
+        if b and str(b).strip() == "综合结论":
+            e = row[4].value if len(row) > 4 else None
+            d = row[3].value if len(row) > 3 else None
+            release = {
+                "label": "综合结论",
+                "cell": "实盘验证!%s" % (row[4].coordinate if len(row) > 4 else "?"),
+                "raw": (str(e).strip() if e is not None else None),
+                "released": (str(e).strip().startswith("已放行")
+                             if e is not None else None),
+                "summary": (str(d).strip() if d is not None else None),
+            }
+            break
+    if release["cell"] is None:
+        print("WARN 实盘验证未找到“综合结论”行，release 记空", file=sys.stderr)
+
     unknown = [s["sector_label"] for s in symbols.values()
                if s["sector_label"] and s["sector_key"] is None]
     if unknown:
@@ -127,6 +198,10 @@ def main():
         "source": os.path.basename(args.xlsx),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source_sha256": xlsx_sha,
+        "b31_manual": b31_manual,
+        "gate_b79": gate_b79,
+        "release": release,
+        "v8_risk": v8_risk,
         "symbols": symbols,
         "sectors": sectors,
     }

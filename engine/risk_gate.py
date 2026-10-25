@@ -71,6 +71,52 @@ def check_buy(symbol, exec_price, sig_price=None, path=None):
     return False, "", sr
 
 
+def check_env_gate(env):
+    """市场环境闸（模块A，与 P0-1 同层）：环境态由 engine.regime 的
+    状态机给出（母板字段唯一真源）。返回 (blocked, reason)：
+    - attack/cautious → 不拦（谨慎态的系数/上限由 sizing 消费 env）；
+    - blocked_new → 拦，reason 注明母板依据；
+    - degraded → 拦（fail-closed 安全降级），reason 注明数据不可用。
+    换仓豁免不在本函数：额度由 pipeline 按账户回放维护，额度内 BUY
+    由 pipeline 在调用 sizing 前放行本闸。SELL 永不走本闸。"""
+    from engine import regime as _regime
+    state = (env or {}).get("state")
+    if state in (_regime.ATTACK, _regime.CAUTIOUS):
+        return False, ""
+    if state == _regime.DEGRADED:
+        return True, ("市场环境闸·安全降级：市场环境数据不可用（%s），"
+                      "已降级为禁止新开仓" % (env.get("degraded_reason") or "未知原因"))
+    return True, ("市场环境闸·禁止新开仓：%s（母板 B31=%s、放行=%s、B79=%s）"
+                  % (env.get("reason") or "母板口径禁开",
+                     "是" if env.get("b31") else "否",
+                     "已放行" if env.get("released") else "未放行",
+                     "是" if env.get("b79") else "否"))
+
+
+_meta_cache = {"path": None, "mtime": None, "symbols": {}}
+
+
+def load_symbol_meta(path=None):
+    """workbook_map 全量标的元数据 {symbol: meta}（含 sector_key/
+    stop_ref/breakout），带 mtime 缓存。供 sizing 的板块口径使用。"""
+    p = path or MAP_PATH
+    try:
+        mtime = os.path.getmtime(p)
+    except OSError:
+        return {}
+    if _meta_cache["path"] != p or _meta_cache["mtime"] != mtime:
+        with open(p, encoding="utf-8") as f:
+            wmap = json.load(f)
+        _meta_cache["symbols"] = wmap.get("symbols", {})
+        _meta_cache["path"], _meta_cache["mtime"] = p, mtime
+    return _meta_cache["symbols"]
+
+
+def sector_key_of(symbol, path=None):
+    meta = load_symbol_meta(path).get(symbol) or {}
+    return meta.get("sector_key")
+
+
 def check_fresh(symbol, last_bar_date, ref_date, limit_days=4):
     """数据新鲜度判定。返回 (blocked, reason)。
 

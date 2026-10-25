@@ -140,13 +140,13 @@ def validate_sectors(raw, tracked):
 
 
 def load_inputs(base_dir, tracked, asof):
-    """读取 data/screen_inputs/{briefs,sector_board}.json。
+    """读取 screen_inputs/{briefs,sector_board}.json。
     返回 {"briefs": {...}, "sectors": {...}}；status ∈ ok / missing / stale / invalid。"""
     res = {}
     spec = (("briefs", "briefs.json", validate_briefs, "items"),
             ("sectors", "sector_board.json", validate_sectors, "sectors"))
     for key, fname, validator, field in spec:
-        path = os.path.join(base_dir, "data", "screen_inputs", fname)
+        path = os.path.join(base_dir, "screen_inputs", fname)
         info = {"status": "missing", "asof": None, field: [], "errors": [], "path": fname}
         if os.path.exists(path):
             try:

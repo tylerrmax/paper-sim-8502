@@ -159,7 +159,7 @@ def test_load_inputs_states():
     tmp = tempfile.mkdtemp()
     try:
         assert S.load_inputs(tmp, TRACKED, ASOF)["briefs"]["status"] == "missing"
-        d = os.path.join(tmp, "data", "screen_inputs")
+        d = os.path.join(tmp, "screen_inputs")
         os.makedirs(d)
         open(os.path.join(d, "briefs.json"), "w").write("{坏")
         assert S.load_inputs(tmp, TRACKED, ASOF)["briefs"]["status"] == "invalid"

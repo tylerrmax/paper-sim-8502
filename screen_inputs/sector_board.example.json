@@ -1,0 +1,15 @@
+{
+  "_note": "【示例，非真实数据】由母板导出，复制为 sector_board.json 后替换。程序只读取 sector_board.json。字段含义见 docs/screening-spec.md。",
+  "asof": "2026-10-26",
+  "sectors": [
+    {
+      "name": "数控机床",
+      "aliases": ["高端制造"],
+      "members": ["688305", "002472"],
+      "rank_pct": 82,
+      "ret_5d": 3.2,
+      "ret_20d": 6.5,
+      "breadth": 0.64
+    }
+  ]
+}

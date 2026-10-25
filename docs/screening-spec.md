@@ -19,7 +19,7 @@
 技术：趋势(±1)+动量(±1)≥+1；RSI≤70；%B≤0.95；5日涨幅≤15%。
 
 ## 第二层 新闻/市场面（muse 每日简报）
-输入 `data/screen_inputs/briefs.json`：
+输入 `screen_inputs/briefs.json`：
 ```json
 {"asof":"2026-10-23","items":[{"date":"2026-10-23","source":"博主名","target":"002446 或 板块名",
   "direction":"利好|利空|中性","event_type":"公告","fact":"一句话事实","evidence":"公告/链接（可空）"}]}
@@ -28,7 +28,7 @@
 利好需「有佐证」或「≥2 个独立来源」；单源无佐证→不足以确认。主题/板块简报通过板块名/别名命中成分股。
 
 ## 第三层 母板板块共振
-输入 `data/screen_inputs/sector_board.json`：
+输入 `screen_inputs/sector_board.json`：
 ```json
 {"asof":"2026-10-23","sectors":[{"name":"商业航天","aliases":[],"members":["002446"],
   "rank_pct":85,"ret_5d":3.0,"ret_20d":6.0,"breadth":0.7}]}

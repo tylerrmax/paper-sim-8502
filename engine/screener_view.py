@@ -45,12 +45,12 @@ def render_triple_screen(st, db_path, cfg, base_dir, names=None):
     b = inp["briefs"]
     c2.markdown(f'<div class="kpi-card"><div class="kpi-label">新闻面（X 博主简报）</div>'
                 f'<div class="kpi-value" style="font-size:18px">{_INPUT_CN[b["status"]]}</div>'
-                f'<div class="kpi-label">{("截至 " + b["asof"] + "，" + str(len(b["items"])) + " 条") if b["asof"] else "缺少 data/screen_inputs/briefs.json"}</div></div>',
+                f'<div class="kpi-label">{("截至 " + b["asof"] + "，" + str(len(b["items"])) + " 条") if b["asof"] else "缺少 screen_inputs/briefs.json"}</div></div>',
                 unsafe_allow_html=True)
     s = inp["sectors"]
     c3.markdown(f'<div class="kpi-card"><div class="kpi-label">板块面（母板共振）</div>'
                 f'<div class="kpi-value" style="font-size:18px">{_INPUT_CN[s["status"]]}</div>'
-                f'<div class="kpi-label">{("截至 " + s["asof"] + "，" + str(len(s["sectors"])) + " 个板块") if s["asof"] else "缺少 data/screen_inputs/sector_board.json"}</div></div>',
+                f'<div class="kpi-label">{("截至 " + s["asof"] + "，" + str(len(s["sectors"])) + " 个板块") if s["asof"] else "缺少 screen_inputs/sector_board.json"}</div></div>',
                 unsafe_allow_html=True)
     for src in (b, s):
         for e in src.get("errors", [])[:3]:

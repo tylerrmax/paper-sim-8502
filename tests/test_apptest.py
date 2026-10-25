@@ -13,6 +13,13 @@ APP_PATH = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app.py"))
 
 
+@pytest.fixture(autouse=True)
+def _no_screen_record(monkeypatch):
+    """回归测试不污染 screen_runs 审计表（P0-3 落库只记真实运行）。
+    用 monkeypatch 作用域设置，避免进程级环境变量污染同跑的其他测试。"""
+    monkeypatch.setenv("PAPER_SIM_NO_SCREEN_RECORD", "1")
+
+
 def test_app_loads():
     """应用能正常加载，无异常。"""
     at = AppTest.from_file(APP_PATH, default_timeout=30)

@@ -30,11 +30,11 @@ universe:
   sim_crypto:
   - BTCUSDT
 display_only:
-- '300827'
-- '002639'
-- '600150'
-# 2026-10-25 多重校验选股 v1：母板 Watchlist 缺口 7 只，仅供选股评分展示，
-# 只进 market_data，不进任何账户 universe，绝不产生账户信号
+# 2026-10-25 P1-6 身份裁决：universe 与 display_only 必须互斥（pipeline
+# 启动自检 assert）。600150 留 sim_a universe、移出本名单（用户拍板）；
+# 002639/300827 同为 sim_a 在册交易标的，一并移出——本名单只保留
+# 母板 Watchlist 缺口 7 只：仅供选股评分展示，只进 market_data，
+# 不进任何账户 universe，绝不产生账户信号
 - '002192'
 - '000938'
 - '002837'
@@ -68,8 +68,12 @@ signals:
   - 5
   - 10
   - 20
-  entry: close > ma20
-  exit: close < ma20
+  # 口径实述（P2-10 纠偏）：sim_a 实际执行 per_account 的 buyback——
+  # 20 日高点回落 10% 生成 BUY、+15% 止盈 / -5% 止损（见 engine/signals.py
+  # gen_buyback_signals）；且 BUY 执行须过母板止损禁入闸（engine/risk_gate.py）。
+  # entry/exit 的 MA20 穿越仅为已停用策略（sim_hk/sim_crypto 的前身口径）：
+  entry: disabled 账户前身口径：close > ma20（现 sim_hk/sim_crypto 已 disabled，不再生效）
+  exit: disabled 账户前身口径：close < ma20（现 sim_hk/sim_crypto 已 disabled，不再生效）
 risk:
   single_trade_risk_pct: 2
   max_stock_position_pct: 70

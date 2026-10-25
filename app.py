@@ -158,7 +158,7 @@ def strategy_of(aid):
 
 def strategy_desc(s):
     if s == "buyback":
-        return "20日高点回撤10%买入，+15%止盈 / -5%止损"
+        return "20日高点回撤10%买入，+15%止盈 / 策略止损-5%"
     if s == "disabled":
         return "已停用，不生成新信号"
     return "收盘站上20日线买入，跌破20日线卖出"
@@ -192,7 +192,9 @@ def get_control():
 
 def check_system_health():
     """系统健康检查：返回 (blocked: bool, reasons: list[str])
-    2026-10-18起：发现阻断性问题时顶部状态必须显示阻断，不得显示"正常运行"。"""
+    2026-10-18起：发现阻断性问题时顶部状态必须显示阻断，不得显示"正常运行"。
+    2026-10-25（P0-4）：新增三项新鲜度硬检查——行情滞后、新闻面断更、
+    母板映射过期，任一触发即阻断，不再静默用旧数据冒充正常。"""
     reasons = []
     # 1. SELL信号无持仓
     rows = q("""SELECT s.date, s.account, s.symbol FROM signals s
@@ -206,6 +208,40 @@ def check_system_health():
     rows = q("SELECT COUNT(*) FROM signals WHERE status='已过期'")
     if rows and rows[0][0] > 0:
         reasons.append(f"{rows[0][0]}个信号已过期未处理")
+    # 3. 新鲜度硬检查（P0-4）：三重数据来源任一过期/缺失即阻断
+    from datetime import date as _date
+    _today = _date.today()
+    try:
+        # 3a. 行情：A/港股最新行情距今 >10 天（阈值取在最长正常休市
+        # ——春节/国庆连休含周末约 ≤10 天——之外，再久必是断更）
+        r = q("SELECT MAX(date) FROM market_data WHERE symbol NOT LIKE '%USDT'")
+        _md = r[0][0] if r and r[0][0] else None
+        if not _md:
+            reasons.append("行情数据缺失：market_data 为空")
+        elif (_today - _date.fromisoformat(str(_md)[:10])).days > 10:
+            reasons.append(f"行情滞后：最新行情 {_md} 距今超 10 天，疑似断更")
+        # 3b. 新闻面：sector_news 最新证据 >7 天或文件缺失 = 断更
+        from engine.news_sentiment import news_freshness
+        _nf = news_freshness(_today)
+        if _nf["missing"]:
+            reasons.append("新闻面断更：sector_news.json 缺失或无条目，新闻分不可信")
+        elif _nf["stale"]:
+            reasons.append(f"新闻面断更：最新证据 {_nf['latest']} 距今 {_nf['age_days']} 天>7 天，新闻分不可信")
+        # 3c. 母板映射：generated_at 早于母板 xlsx 的 mtime = 映射过期未重跑
+        import json as _json
+        _map_p = os.path.join(BASE, "config", "workbook_map.json")
+        _xlsx_p = os.path.expanduser("~/workspace/your_files/交易母版V8.2.1-Final.xlsx")
+        with open(_map_p, encoding="utf-8") as _f:
+            _gen = str(_json.load(_f).get("generated_at") or "")
+        if not _gen:
+            reasons.append("母板映射无版本信息（generated_at 缺失），请重跑 build_workbook_map")
+        elif os.path.exists(_xlsx_p):
+            _gen_d = _date.fromisoformat(_gen[:10])
+            _x_d = _date.fromtimestamp(os.path.getmtime(_xlsx_p))
+            if _gen_d < _x_d:
+                reasons.append(f"母板映射过期：映射生成于 {_gen[:10]}，母板文件已于 {_x_d} 更新，请重跑 build_workbook_map")
+    except Exception as _e:
+        reasons.append(f"新鲜度检查异常: {_e}")
     return (len(reasons) > 0, reasons)
 
 
@@ -433,8 +469,9 @@ def render_ticker():
         if not act:
             act = "开仓" if side == "BUY" else "信号平仓"
         if side == "BUY":
-            # BUY 开仓 @价格 | 止损 @价格
-            stop_s = f" | 止损 @{stop_px:.2f}" if stop_px else ""
+            # BUY 开仓 @价格 | 策略止损 @价格（signals.stop_price 为 ATR 策略
+            # 参数，P1-5 更名，与母板止损参考 stop_ref 区分，不得混称“止损”）
+            stop_s = f" | 策略止损 @{stop_px:.2f}" if stop_px else ""
             pending[sym] = f"{side} {act} @{px:.2f}{stop_s}"
         else:
             # SELL 止盈/止损/信号平仓 @价格 + 持仓上下文
@@ -625,18 +662,30 @@ if not IS_CLOUD:
 accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY account")]
          or ["sim_a", "sim_hk", "sim_crypto"])
 ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-SYMBOL_CN = {
-    "002446": "盛路通信",
-    "002472": "双环传动",
-    "002639": "雪人股份",
-    "002812": "恩捷股份",
-    "300827": "上能电气",
-    "600150": "中国船舶",
-    "688305": "科德数控",
-    "HK9660": "地平线机器人",
-    "HK0354": "中软国际",
-    "BTCUSDT": "比特币",
-}
+def _load_workbook_map():
+    """母板映射（单一基准）：板块/止损/突破/共振与标的名册同源于此。"""
+    try:
+        import json as _json
+        with open(os.path.join(BASE, "config", "workbook_map.json"),
+                  encoding="utf-8") as _f:
+            return _json.load(_f)
+    except Exception:
+        return {}
+
+
+WORKBOOK_MAP = _load_workbook_map()
+
+# 标的名册单一来源（P2-10）：从 workbook_map 派生，不再手写第二份名单；
+# BTC 不在母板 Watchlist 内，单独补入。
+SYMBOL_CN = {sym: (meta.get("name") or sym)
+             for sym, meta in WORKBOOK_MAP.get("symbols", {}).items()}
+SYMBOL_CN.setdefault("BTCUSDT", "比特币")
+
+
+def stop_ref_of(sym):
+    """母板止损参考（唯一口径）：无映射/无止损位时返回 None。"""
+    meta = WORKBOOK_MAP.get("symbols", {}).get(sym) or {}
+    return meta.get("stop_ref")
 def sym_name(code):
     """标的显示名：代码+中文名，如 '002446 盛路通信'"""
     return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
@@ -747,7 +796,8 @@ if tab == "🏠 工作台":
     alerts = []
     if status != "running":
         alerts.append(("warn", "⏸ 系统已暂停：新信号不会成交。已挂在券商的条件单请在券商端自行检查/撤销。"))
-    # 破止损持仓检查（buyback）
+    # 破止损持仓检查（P1-5：唯一口径 = 母板止损参考 stop_ref；
+    # 此前用成本-5%口径与母板冲突，同标的在不同页面结论相反）
     try:
         _bs = q("""SELECT p.symbol, p.qty, p.avg_cost, m.close FROM positions p
                    JOIN (SELECT symbol, MAX(date) md FROM market_data GROUP BY symbol) t
@@ -755,8 +805,9 @@ if tab == "🏠 工作台":
                    JOIN market_data m ON m.symbol=t.symbol AND m.date=t.md
                    WHERE p.account=? AND p.qty>0""", (acct,))
         for _s, _q, _avg, _last in _bs:
-            if _avg and _last and _last < _avg * 0.95 and strategy_of(acct) == "buyback":
-                alerts.append(("danger", f"🔴 破止损仍持仓：{_s} 现价{_last:.2f} < 成本{_avg:.2f}×0.95"))
+            _sr = stop_ref_of(_s)
+            if _sr and _last and _last < _sr:
+                alerts.append(("danger", f"🔴 破止损仍持仓：{_s} 现价{_last:.2f} < 母板止损参考 {_sr:.2f}"))
     except Exception:
         pass
     for _lvl, _msg in alerts:
@@ -919,6 +970,13 @@ elif tab == "🔍 选股":
                 f"**{r['symbol']} {r['name']}** · {r['total']:.1f} 分 "
                 f"（技 {r['tech']:.0f} / 讯 {r['news']:.0f} / 板 {r['board']:.0f}）"
                 f" · @{r['close']:.2f}", unsafe_allow_html=True)
+            if r.get("plan_trigger") is not None and r.get("plan_stop") is not None:
+                st.caption(
+                    f"交易计划：触发 {r['plan_trigger']:.2f} / "
+                    f"止损 {r['plan_stop']:.2f} / 目标 {r['plan_target']:.2f}"
+                    "（目标位按2.5倍盈亏比计算）")
+            else:
+                st.caption("交易计划：母板未设（缺关键突破位/止损位）")
             st.caption(r["evidence"])
     elif _srows:
         _top = _srows[0]
@@ -1434,19 +1492,24 @@ elif tab == "🛡 验证":
                         f'<div class="kpi-card"><div class="kpi-label">最近单笔投入</div>'
                         f'<div class="kpi-value">—</div></div>', unsafe_allow_html=True)
 
-    # 破止损仍持仓检查
+    # 破止损仍持仓检查（P1-5：唯一口径 = 母板止损参考 stop_ref，
+    # 与工作台/选股页一致；此前成本-5%口径已更名“浮亏提示”，见下方）
     st.subheader("破止损仍持仓")
     breached = q("""SELECT p.symbol, p.qty, p.avg_cost, p.last_price
                     FROM positions p WHERE p.account=? AND p.qty>0""", (acct,))
-    strat = strategy_of(acct)
     found = False
     for s, qty_, avg_, last_ in breached:
-        if strat == "buyback" and last_ and avg_:
-            if (last_ - avg_) / avg_ <= -0.05:
-                st.error(f"🔴 {s} 现价 {last_:.2f} 已跌破止损线（成本 {avg_:.2f}，-{abs((last_-avg_)/avg_*100):.1f}%），仍持有 {qty_} 股")
-                found = True
+        _sr = stop_ref_of(s)
+        if _sr and last_ and last_ < _sr:
+            st.error(f"🔴 {s} 现价 {last_:.2f} 已跌破母板止损参考 {_sr:.2f}，仍持有 {qty_} 股")
+            found = True
     if not found:
         st.success("✅ 无破止损持仓")
+    # 浮亏提示：成本 -5% 仅提示浮亏幅度，不再冒充止损判定（P1-5 更名）
+    for s, qty_, avg_, last_ in breached:
+        if avg_ and last_ and (last_ - avg_) / avg_ <= -0.05:
+            st.caption(f"浮亏提示：{s} 现价 {last_:.2f} 较成本 {avg_:.2f} "
+                       f"{(last_ - avg_) / avg_ * 100:.1f}%（仅提示浮亏，不作止损判定）")
 
     # ---- 审计（隐藏式：默认折叠，表面只留验证仪表盘等关键信息） ----
     excl_r = q("SELECT date, account, symbol, side, reason FROM graduation_exclusions ORDER BY date DESC")
@@ -1457,6 +1520,22 @@ elif tab == "🛡 验证":
                 st.write(f"- {d} {ACCT_CN.get(a, a)} {s} {sd}: {reason}")
         else:
             st.write("无剔除记录")
+
+    # ---- 多重校验绩效（P2-9）：screen_runs/screen_perf 样本外追踪 ----
+    try:
+        _sp = q("SELECT COUNT(*), SUM(CASE WHEN fwd5_ret IS NOT NULL THEN 1 ELSE 0 END),"
+                " AVG(fwd5_excess), SUM(CASE WHEN fwd5_excess>0 THEN 1 ELSE 0 END)"
+                " FROM screen_perf")
+        _n, _m5, _avg5, _hit5 = (_sp[0] if _sp else (0, None, None, None))
+    except Exception:
+        _n, _m5, _avg5, _hit5 = 0, None, None, None
+    if _n and _m5:
+        st.caption(f"多重校验绩效（样本外）：S/A 累计 {_n} 条，已满 5 日 {_m5} 条，"
+                   f"5 日平均相对收益 {_avg5 * 100:+.2f}%，命中率 {_hit5 / _m5 * 100:.0f}%"
+                   "（相对全池平均，tools/screen_perf.py 回填）")
+    else:
+        st.caption("多重校验绩效：样本积累中（S/A 名单自 screen_runs 落库起逐期追踪，"
+                   "5/20 日后收益由 tools/screen_perf.py 回填，暂无已到期样本）")
 
     # ---- 跨账户摘要（5指标 × 3账户） ----
     st.subheader("跨账户摘要")

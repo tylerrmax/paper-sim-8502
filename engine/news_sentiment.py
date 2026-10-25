@@ -40,7 +40,11 @@ def _to_date(v):
 
 
 def decay_factor(age_days):
-    """日期衰减：≤3天 1.0 / ≤7天 0.8 / ≤14天 0.5 / >14天 0。未来日期按0天计。"""
+    """日期衰减：≤3天 1.0 / ≤7天 0.8 / ≤14天 0.5 / >14天 0。
+
+    注意：本函数只负责 age>=0 的衰减档位；未来日期（age<0）的处理在
+    _contribution 里单独拦截（返回 0），不在此压成 0 天满权。
+    """
     age = max(0, int(age_days))
     if age <= 3:
         return 1.0
@@ -58,11 +62,41 @@ def load_news(path=None):
 
 def _contribution(entry, asof):
     age = (asof - _to_date(entry["date"])).days
+    if age < 0:
+        # 未来数据泄漏拦截（P0-2）：asof 之后发布的证据在该时点尚不存在，
+        # 一律不计分——不得按 0 天满权计入历史时点评分。
+        return 0.0
     dec = decay_factor(age)
     if dec == 0:
         return 0.0
     w = SOURCE_WEIGHT.get(entry.get("source"), 0.4)
     return entry["direction"] * entry["strength"] * w * dec
+
+
+STALE_DAYS = 7  # 最新证据距 asof 超过 7 天视为新闻面断更（P0-4）
+
+
+def news_freshness(asof, entries=None, path=None):
+    """新闻账新鲜度：{latest, age_days, stale, missing}。
+
+    missing=True 表示账文件缺失/损坏/无条目；stale=True 表示最新条目
+    距 asof > STALE_DAYS 天。供健康检查与评分证据标注使用，区分
+    “确实无新闻”与“简报断更”——后者不得静默归零（审计 §2 缺口2）。
+    """
+    asof = _to_date(asof)
+    if entries is None:
+        try:
+            entries = load_news(path)
+        except Exception:
+            return {"latest": None, "age_days": None, "stale": True,
+                    "missing": True}
+    if not entries:
+        return {"latest": None, "age_days": None, "stale": True,
+                "missing": True}
+    latest = max(_to_date(e["date"]) for e in entries)
+    age = (asof - latest).days
+    return {"latest": latest.isoformat(), "age_days": age,
+            "stale": age > STALE_DAYS, "missing": False}
 
 
 def sector_sentiment(sector_key, asof, entries=None):

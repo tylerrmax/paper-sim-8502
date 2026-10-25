@@ -15,9 +15,11 @@ Serenity 的“存储”指存储芯片（memory），只进 semi，绝不映射
 energy_storage（储能、光伏）。
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
+from datetime import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_XLSX = os.path.expanduser("~/workspace/your_files/交易母版V8.2.1-Final.xlsx")
@@ -117,8 +119,14 @@ def main():
         print("WARN 未映射 sector_key 的板块标签: %s" % sorted(set(unknown)),
               file=sys.stderr)
 
+    # 可复现元数据（P0-2）：生成时间 + 母板文件 sha256。
+    # 母板改动而生成器未重跑时，下游可比对哈希/时间发觉映射过期。
+    with open(args.xlsx, "rb") as f:
+        xlsx_sha = hashlib.sha256(f.read()).hexdigest()
     out = {
         "source": os.path.basename(args.xlsx),
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source_sha256": xlsx_sha,
         "symbols": symbols,
         "sectors": sectors,
     }

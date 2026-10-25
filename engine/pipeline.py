@@ -7,7 +7,10 @@ fills 追加制——历史成交一旦产生即为事实，切换暂停/手动�
 （2026-10-02 修复：此前 DELETE fills 会导致切手动模式时历史成交被清空。）
 
 执行假设（声明，见 config/strategy.yaml）：
-  - 信号日收盘价成交：BUY 按 close*(1+slippage)，SELL 按 close*(1-slippage)；
+  - T+1 开盘执行：信号日收盘生成信号，次一交易日开盘价成交
+    （BUY 按 open*(1+slippage)，SELL 按 open*(1-slippage)）；
+  - 风险禁入（P0-1，禁入优先）：BUY 信号价/执行价跌破母板止损参考
+    stop_ref 的一律不执行（buyback 不例外），拦截写入 blocked_signals；
   - BUY 用账户现金的 buy_frac，股票向下取整到 lot_size，加密到 min_qty；
   - SELL 全平可用仓位；A股 T+1（engine.sim 已处理）；
   - A股涨停日不执行 BUY、跌停日不执行 SELL（简化）；
@@ -20,7 +23,9 @@ import fcntl
 import math
 import os
 import sqlite3
+from datetime import datetime
 
+from engine import risk_gate
 from engine.sim import SimAccount, Lot, check_limit
 from engine.signals import gen_signals, gen_buyback_signals
 
@@ -36,11 +41,14 @@ VAL_START = {"sim_crypto": "2026-10-03",
 
 
 def _fee_for(account_id, side, cfg):
+    """费率与最低收费全部读 config/strategy.yaml fees（P1-8 与
+    order_validate 同源，禁止硬编码——此前港股 min_fee 硬编码 0 与
+    yaml 的 50 打架）。min_fee 只用于 BUY（sim.buy）；SELL 按费率计。"""
     f = cfg["fees"]
     if account_id == "sim_a":
-        return (f["a_buy"] if side == "BUY" else f["a_sell"]), 5.0
+        return (f["a_buy"] if side == "BUY" else f["a_sell"]), float(f.get("a_min_fee", 5))
     if account_id == "sim_hk":
-        return (f["hk_buy"] if side == "BUY" else f["hk_sell"]), 0.0
+        return (f["hk_buy"] if side == "BUY" else f["hk_sell"]), float(f.get("hk_min_fee", 50))
     return f["crypto"], 0.0
 
 
@@ -178,6 +186,15 @@ def _run_locked(db_path=DB, cfg=None):
     if cfg is None:
         import yaml
         cfg = yaml.safe_load(open(os.path.join(BASE, "config", "strategy.yaml"), encoding="utf-8"))
+    # 启动自检（P1-6）：universe（可交易）与 display_only（仅展示）必须互斥，
+    # 同一标的同时出现在两边 = 身份矛盾（如 600150 曾双栖），宁可停摆不带病跑批。
+    _disp = {str(x).strip() for x in (cfg.get("display_only") or [])}
+    _overlap = set()
+    for _acct in cfg.get("accounts", []):
+        _overlap |= {str(x).strip() for x in
+                     cfg.get("universe", {}).get(_acct["id"], [])} & _disp
+    assert not _overlap, ("strategy.yaml 配置矛盾：universe 与 display_only "
+                          "重叠 %s" % sorted(_overlap))
     con = sqlite3.connect(db_path)
     # signals/positions/daily_report 全量重算；fills 追加制：历史成交是事实，
     # 控制状态（暂停/手动）只决定新信号是否成交，不得删除历史成交。
@@ -203,6 +220,13 @@ def _run_locked(db_path=DB, cfg=None):
     # 该表跨轮持久，不随 signals 重算删除
     con.execute("""CREATE TABLE IF NOT EXISTS pause_skipped_signals(
         date TEXT, account TEXT, symbol TEXT, side TEXT,
+        PRIMARY KEY(date, account, symbol, side))""")
+    # 风险禁入拦截记录（P0-1）：跨轮持久，不随 signals 重算删除；
+    # date=执行日，signal_date=信号日，reason 含判定价与 stop_ref。
+    con.execute("""CREATE TABLE IF NOT EXISTS blocked_signals(
+        date TEXT, signal_date TEXT, account TEXT, symbol TEXT, side TEXT,
+        signal_price REAL, exec_price REAL, stop_ref REAL, reason TEXT,
+        created_at TEXT,
         PRIMARY KEY(date, account, symbol, side))""")
     pause_blacklist = set(
         r[:4] for r in con.execute(
@@ -255,7 +279,7 @@ def _run_locked(db_path=DB, cfg=None):
             dates = [r[0] for r in blist]
             closes = [r[4] for r in blist]
             closes_by_sym[s] = dict(zip(dates, closes))
-            # ATR 预计算（所有策略强制止损用）
+            # ATR 预计算（所有策略的策略止损用）
             highs = [r[2] for r in blist]
             lows = [r[3] for r in blist]
             atr_vals = calc_atr(highs, lows, closes, 14)
@@ -292,10 +316,10 @@ def _run_locked(db_path=DB, cfg=None):
         prev_nav = float(acct["principal"])
         last_px = {}  # 标的 -> 上个已知收盘价；缺 bar 的日期沿用（不归零、不编造）
         pending = []  # T+1 待执行：[(sig_date, symbol, side, sig_px)]
-        atr_stops = {}  # symbol -> stop_price（ATR 止损价，持仓期间有效）
+        atr_stops = {}  # symbol -> stop_price（策略止损（ATR）价，持仓期间有效）
         for d in dates:
             seen = set()
-            # ===== ATR 止损检查：持仓标的若跌破 ATR 止损，强制平仓 =====
+            # ===== 策略止损（ATR）检查：持仓标的若跌破 ATR 止损，强制平仓 =====
             # 在 Phase 1 之前检查，确保止损优先于普通信号执行
             for s in list(sim.positions.keys()):
                 if s not in atr_stops or sim.position_qty(s, d) <= 0:
@@ -307,7 +331,7 @@ def _run_locked(db_path=DB, cfg=None):
                         low = blist[3]
                         break
                 if low is not None and low < atr_stops[s]:
-                    # 触发 ATR 止损：按当日开盘价（T+1 已过，直接执行）或收盘价成交
+                    # 触发策略止损（ATR）：按当日开盘价（T+1 已过，直接执行）或收盘价成交
                     # 为简化，按收盘价+滑点成交（止损单为市价单）
                     close_px = closes_by_sym[s][d]
                     px = close_px * (1 - slippage)
@@ -358,6 +382,23 @@ def _run_locked(db_path=DB, cfg=None):
                 ap = ap[0] if ap else None
                 if ap == "skipped":
                     continue
+                # 风险禁入闸（P0-1，用户拍板“禁入优先”）：信号照常生成，
+                # 但 BUY 的信号价/执行价任一跌破母板止损参考 stop_ref 时
+                # 执行层一律不成交（buyback 回落买入不例外，人工批准也不
+                # 放行）；拦截写入 blocked_signals 并在日报列明原因。
+                # 历史成交在上方 existing_fills 分支已重放，不受本闸追溯。
+                if side == "BUY":
+                    _blk, _breason, _sr = risk_gate.check_buy(s, px, sig_px)
+                    if _blk:
+                        con.execute(
+                            "INSERT OR IGNORE INTO blocked_signals"
+                            "(date,signal_date,account,symbol,side,"
+                            "signal_price,exec_price,stop_ref,reason,created_at)"
+                            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                            (d, sig_d, aid, s, side, sig_px, round(px, 6), _sr,
+                             _breason,
+                             datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                        continue
                 if key_old in pause_blacklist:
                     continue  # 暂停期积压信号：恢复后不补成交
                 if status == "paused":
@@ -378,7 +419,7 @@ def _run_locked(db_path=DB, cfg=None):
                             continue
                         fee = sim.buy(s, qty, px, d, fee_rate, min_fee)
                         pnl = 0.0
-                        # 设置 ATR 止损：entry - atr_mult * ATR(信号日)
+                        # 设置策略止损（ATR）：entry - atr_mult * ATR(信号日)
                         atr_v = atr_by_sym.get(s, {}).get(sig_d)
                         if atr_v:
                             atr_stops[s] = px - atr_mult * atr_v
@@ -405,7 +446,7 @@ def _run_locked(db_path=DB, cfg=None):
                 act = "开仓" if side == "BUY" else "信号平仓"
                 stop_px = None
                 if side == "BUY":
-                    # ATR止损：entry - 2*ATR
+                    # 策略止损（ATR）：entry - 2*ATR
                     atr_v = atr_by_sym.get(s, {}).get(d)
                     if atr_v:
                         stop_px = round(sig_px - 2 * atr_v, 2)
@@ -528,10 +569,24 @@ def write_report(db_path=DB, cfg=None, asof=None):
         if n == 0:
             L.append("- 无")
         L.append("")
+    # 风险禁入拦截（P0-1）：当日被禁入闸拦截的 BUY，逐条列明原因
+    try:
+        blk = con.execute(
+            "SELECT account,symbol,signal_date,signal_price,stop_ref,reason"
+            " FROM blocked_signals WHERE date=? ORDER BY account,symbol",
+            (asof,)).fetchall()
+    except Exception:
+        blk = []
+    if blk:
+        L += ["## 风险禁入拦截（禁入优先）", ""]
+        for a_, s_, sd_, sp_, sr_, rs_ in blk:
+            L.append("- %s %s BUY（信号日 %s，信号价 %s，母板止损 %s）：%s"
+                     % (a_, s_, sd_, sp_, sr_, rs_))
+        L.append("")
     L += ["---", "口径声明：",
           "- 数据：%s；%s；%s" % (cfg["data_sources"]["a_hk"],
                                  cfg["data_sources"]["crypto"], cfg["data_sources"]["fx"]),
-          "- 执行：信号日收盘价成交，滑点 %s%%；BUY 用现金 %s%%，SELL 全平；费用见配置" % (
+          "- 执行：T+1 开盘执行，滑点 %s%%；BUY 用现金 %s%%，SELL 全平；费用见配置" % (
               cfg["fees"]["slippage"] * 100, cfg.get("sizing", {}).get("buy_frac", 0.5) * 100),
           "- 规则版本：%s（DRAFT）" % cfg["meta"]["version"]]
     path = os.path.join(report_dir, "日报-%s.md" % asof)

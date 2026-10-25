@@ -392,31 +392,6 @@ QS_BADGE = {
 }
 QS_CN = {"live": "实时", "close": "最近收盘", "stale": "已过期", "unknown": "未知"}
 
-def fmt_money(v, ccy=""):
-    """统一货币格式：千分位，2位小数"""
-    try:
-        s = f"{float(v):,.2f}"
-    except (ValueError, TypeError):
-        s = "--"
-    return f"{s} {ccy}".strip() if ccy else s
-
-def fmt_pct(v):
-    """统一涨跌幅格式：+x.xx% / -x.xx%，着色"""
-    try:
-        f = float(v)
-        cls = "pos" if f > 0 else ("neg" if f < 0 else "flat")
-        arrow = "▲" if f > 0 else ("▼" if f < 0 else "")
-        return f'<span class="num {cls}">{arrow}{abs(f):.2f}%</span>'
-    except (ValueError, TypeError):
-        return '<span class="num flat">--</span>'
-
-def fmt_num(v, dec=2):
-    """统一数字格式"""
-    try:
-        return f'<span class="num">{float(v):,.{dec}f}</span>'
-    except (ValueError, TypeError):
-        return '<span class="num flat">--</span>'
-
 def _ap_state(key, decision, d, acct, s, sd):
     """审批按钮四态：已提交→执行中→已生效/失败，写入后校验"""
     sk = f"apstate_{key}"
@@ -954,53 +929,14 @@ if tab == "🏠 工作台":
 # ================================================================
 elif tab == "🔍 选股":
     st.header("🔍 选股")
-    # ---- 筛选器（Unusual Whales式）：涨幅/量比/RSI/MACD/资金 ----
-    with st.expander("🎯 条件筛选", expanded=False):
-        f1, f2, f3 = st.columns(3)
-        with f1:
-            chg_min = st.number_input("涨幅% ≥", value=-10.0, step=1.0, key="f_chg_min")
-            chg_max = st.number_input("涨幅% ≤", value=10.0, step=1.0, key="f_chg_max")
-        with f2:
-            rsi_min = st.number_input("RSI ≥", value=0, step=5, key="f_rsi_min")
-            rsi_max = st.number_input("RSI ≤", value=100, step=5, key="f_rsi_max")
-        with f3:
-            macd_f = st.selectbox("MACD", ["不限", "多头", "空头"], key="f_macd")
-        if st.button("🔍 筛选", key="do_screen"):
-            from engine.indicators import rsi, macd
-            results = []
-            for sym in SYMBOL_CN.keys():
-                bars = q("SELECT date,open,high,low,close,volume FROM market_data WHERE symbol=? ORDER BY date", (sym,))
-                if len(bars) < 30:
-                    continue
-                closes = [r[4] for r in bars]
-                # 涨幅
-                if len(closes) >= 2 and closes[-2]:
-                    chg = (closes[-1] - closes[-2]) / closes[-2] * 100
-                else:
-                    continue
-                if not (chg_min <= chg <= chg_max):
-                    continue
-                # RSI
-                rsi_v = rsi(closes)[-1]
-                if rsi_v is None or not (rsi_min <= rsi_v <= rsi_max):
-                    continue
-                # MACD
-                _, _, hist = macd(closes)
-                is_bull = hist[-1] and hist[-1] > 0
-                if macd_f == "多头" and not is_bull:
-                    continue
-                if macd_f == "空头" and is_bull:
-                    continue
-                results.append((sym, chg, rsi_v, "多" if is_bull else "空", closes[-1]))
-            if results:
-                st.write(f"命中 {len(results)} 只：")
-                for sym, chg, rsi_v, macd_s, px in sorted(results, key=lambda x: -abs(x[1])):
-                    color = "#f6465d" if chg >= 0 else "#2ebd85"
-                    st.markdown(f"<span style='color:{color};'>{sym} {SYMBOL_CN.get(sym,'')} "
-                                f"{chg:+.2f}%</span> RSI {rsi_v:.0f} MACD{macd_s} @{px:.2f}",
-                                unsafe_allow_html=True)
-            else:
-                st.info("无符合条件的标的")
+    # 模块D（2026-10-26）：原「🎯 条件筛选」手动面板（2026-10-17 试验版，
+    # 涨幅/RSI/MACD 手动条件 + 独立出结果）已删除——它是与三重校验并存的
+    # 第二个决策入口，违反唯一入口原则。本页只呈现每日自动筛选结果：
+    # 顶部市场环境状态（模块A三态+对账）→ 候选名单与全池结果。
+    from engine.screen import RULE_VERSION as _SCREEN_RV
+    st.caption("自动筛选 · 运行时点（asof）：%s · 规则版本 %s · 结果与 "
+               "screen_runs 落库一致（页面不提供手动筛选入口）"
+               % (datetime.now().strftime("%Y-%m-%d"), _SCREEN_RV))
     # ---- 多重校验·优质标的：技术面45 + 新闻面35 + 母板面20，硬闸门封顶，只列 S/A ----
     st.subheader("🏆 多重校验·优质标的")
     _today_str = datetime.now().strftime("%Y-%m-%d")

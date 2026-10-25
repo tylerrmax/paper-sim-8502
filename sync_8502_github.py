@@ -34,7 +34,6 @@ FILES = [
     "engine/signals.py",
     "engine/sim.py",
     "engine/execution.py",
-    "engine/batch_test.py",
     "engine/realtime.py",
     "engine/indicators.py",
     "engine/tv_charts.py",

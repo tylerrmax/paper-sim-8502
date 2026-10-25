@@ -1,0 +1,13 @@
+{
+ "input": "70 根上升 bars；同一序列后续接 10 根暴跌",
+ "expected": "同输入两跑逐字一致；截断时点证据 != 全量时点证据",
+ "actual": {
+  "run1_eq_run2": true,
+  "old_flags": [
+   "channel_near_breakout"
+  ],
+  "new_flags": [
+   "fib_breakdown"
+  ]
+ }
+}

@@ -35,6 +35,20 @@ DDL = """CREATE TABLE IF NOT EXISTS screen_perf(
     updated_at TEXT,
     PRIMARY KEY(run_id, symbol))"""
 
+# 模块D（2026-10-26）：按因子追踪——S/A 候选命中的每个形态因子
+# （含负标记）单独一行，承接同一标的的 5/20 日相对收益，供窗口
+# 成熟后逐因子评判去留。全部因子为「待验证因子」，本表只记录
+# 样本外表现，不构成有效性结论。
+FACTOR_DDL = """CREATE TABLE IF NOT EXISTS screen_perf_factors(
+    run_id INTEGER NOT NULL,
+    asof TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    factor TEXT NOT NULL,
+    fwd5_excess REAL,
+    fwd20_excess REAL,
+    updated_at TEXT,
+    PRIMARY KEY(run_id, symbol, factor))"""
+
 
 def _fwd(bars, asof, n):
     """bars: [(date, close)] 升序（全量）。返回 asof 后第 n 根的 (date, ret)。"""
@@ -57,6 +71,7 @@ def main():
     args = ap.parse_args()
     con = sqlite3.connect(args.db)
     con.execute(DDL)
+    con.execute(FACTOR_DDL)
     # 全池 bars（相对基准与个股 fwd 共用）
     symbols = [r[0] for r in con.execute(
         "SELECT DISTINCT symbol FROM market_data")]
@@ -105,6 +120,18 @@ def main():
                 n_new += 1
             elif cur[0] is None or cur[1] is None:
                 n_upd += 1
+            # 按因子落行（模块D）：命中因子（含负标记）逐个承接同标的
+            # 的相对收益；旧版本 results_json 无 factors 字段时跳过。
+            _ex5 = (ret5 - avg5) if ret5 is not None and avg5 is not None \
+                else None
+            _ex20 = (ret20 - avg20) if ret20 is not None and avg20 is not None \
+                else None
+            for _f in (r.get("factors") or {}).get("flags") or []:
+                con.execute(
+                    "INSERT OR REPLACE INTO screen_perf_factors"
+                    "(run_id,asof,symbol,factor,fwd5_excess,fwd20_excess,"
+                    "updated_at) VALUES(?,?,?,?,?,?,?)",
+                    (run_id, asof, sym, _f, _ex5, _ex20, now))
     con.commit()
     tot = con.execute("SELECT COUNT(*) FROM screen_perf").fetchone()[0]
     m5 = con.execute(

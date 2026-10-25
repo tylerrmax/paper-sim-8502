@@ -1,0 +1,132 @@
+{
+ "input": "注入一：workbook_map 删除 gate_b79 字段；注入二：generated_at 改为 2020 年（映射过期）",
+ "expected": "env 降级 degraded；health 顶部 blocked 文案存在；pipeline BUY 安全拦截且原因注明安全降级",
+ "actual": {
+  "env_missing_field": {
+   "state": "degraded",
+   "label": "禁止新开仓（数据不可用·安全降级）",
+   "b31": null,
+   "b79": null,
+   "released": null,
+   "buy_coef": null,
+   "total_cap": null,
+   "degraded_reason": "母板 B79（未放行时允许新开/接回买入）读取失败",
+   "problems": [
+    "母板 B79（未放行时允许新开/接回买入）读取失败"
+   ],
+   "fields": {
+    "b31": {
+     "label": "大盘指数站上20日线",
+     "cell": "参数设置!B31",
+     "raw": "否",
+     "value": false
+    },
+    "b79": {},
+    "release": {
+     "label": "综合结论",
+     "cell": "实盘验证!E14",
+     "raw": "未放行:先整改",
+     "released": false,
+     "summary": "2/9 通过"
+    },
+    "v8_risk": {
+     "buy_coef": {
+      "label": "验证期买入仓位系数",
+      "cell": "参数设置!B78",
+      "raw": 0.5,
+      "value": 0.5
+     },
+     "total_pos_cap": {
+      "label": "有效总仓位上限",
+      "cell": "参数设置!B80",
+      "raw": 0.3,
+      "value": 0.3
+     }
+    },
+    "generated_at": "2026-10-25 16:20:22",
+    "source": "交易母版V8.2.1-Final.xlsx",
+    "source_sha256": "871073328c3f8e0382ab31a4f29b160a6ba8a9840cb25092849a67f3a8fc2e8d"
+   },
+   "auto": null,
+   "reconciled": null,
+   "stock_last_date": null
+  },
+  "env_stale_map": {
+   "state": "degraded",
+   "label": "禁止新开仓（数据不可用·安全降级）",
+   "b31": null,
+   "b79": null,
+   "released": null,
+   "buy_coef": null,
+   "total_cap": null,
+   "degraded_reason": "母板映射已过期：母板文件更新于 2026-10-23 17:07:01，映射生成于 2020-01-01 00:00:00",
+   "problems": [
+    "母板映射已过期：母板文件更新于 2026-10-23 17:07:01，映射生成于 2020-01-01 00:00:00"
+   ],
+   "fields": {
+    "b31": {
+     "label": "大盘指数站上20日线",
+     "cell": "参数设置!B31",
+     "raw": "否",
+     "value": false
+    },
+    "b79": {
+     "label": "未放行时允许新开/接回买入",
+     "cell": "参数设置!B79",
+     "raw": "否",
+     "value": false
+    },
+    "release": {
+     "label": "综合结论",
+     "cell": "实盘验证!E14",
+     "raw": "未放行:先整改",
+     "released": false,
+     "summary": "2/9 通过"
+    },
+    "v8_risk": {
+     "buy_coef": {
+      "label": "验证期买入仓位系数",
+      "cell": "参数设置!B78",
+      "raw": 0.5,
+      "value": 0.5
+     },
+     "total_pos_cap": {
+      "label": "有效总仓位上限",
+      "cell": "参数设置!B80",
+      "raw": 0.3,
+      "value": 0.3
+     }
+    },
+    "generated_at": "2020-01-01 00:00:00",
+    "source": "交易母版V8.2.1-Final.xlsx",
+    "source_sha256": "871073328c3f8e0382ab31a4f29b160a6ba8a9840cb25092849a67f3a8fc2e8d"
+   },
+   "auto": null,
+   "reconciled": null,
+   "stock_last_date": null
+  },
+  "buy_fills": [],
+  "blocked": [
+   [
+    "2026-10-27",
+    "sim_a",
+    "002446",
+    "BUY",
+    "2026-10-26",
+    "市场环境闸·安全降级：市场环境数据不可用（母板 B79（未放行时允许新开/接回买入）读取失败；环境口径不一致：自动计算（上证收盘 115.60 vs MA20 109.90 → 站上20日线，指数日 2026-10-27）vs 母板B31（否）），已降级为禁止新开仓；无换仓额度（未先卖后买）"
+   ]
+  ],
+  "health_banner_text_present": true
+ },
+ "fills": [],
+ "blocked": [
+  [
+   "2026-10-27",
+   "sim_a",
+   "002446",
+   "BUY",
+   "2026-10-26",
+   "市场环境闸·安全降级：市场环境数据不可用（母板 B79（未放行时允许新开/接回买入）读取失败；环境口径不一致：自动计算（上证收盘 115.60 vs MA20 109.90 → 站上20日线，指数日 2026-10-27）vs 母板B31（否）），已降级为禁止新开仓；无换仓额度（未先卖后买）"
+  ]
+ ]
+}

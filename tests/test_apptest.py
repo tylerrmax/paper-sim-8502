@@ -42,6 +42,34 @@ def test_nav_options_exist():
     assert nav_found, "未找到导航选项（应有含“工作台”的 radio）"
 
 
+def test_screen_page_auto_only():
+    """模块D：选股页全自动——无手动筛选决策控件（无条件筛选面板的
+    输入框/下拉/筛选按钮），且自动结果区（多重校验）存在。"""
+    at = AppTest.from_file(APP_PATH, default_timeout=60)
+    at.run()
+    assert not at.exception
+    for widget in at.radio:
+        if any("选股" in str(o) for o in widget.options):
+            widget.set_value([o for o in widget.options
+                              if "选股" in str(o)][0])
+            break
+    at.run()
+    assert not at.exception, f"选股页异常: {at.exception}"
+    labels = ([str(w.label) for w in at.number_input] +
+              [str(w.label) for w in at.selectbox] +
+              [str(b.label) for b in at.button])
+    bad = [x for x in labels if "筛选" in x or x.startswith("涨幅")
+           or x.startswith("RSI") or x == "MACD"]
+    assert not bad, "选股页仍有手动筛选控件：%r" % bad
+    full_text = " ".join([str(m.value) for m in at.markdown] +
+                         [str(s.value) for s in at.subheader] +
+                         [str(h.value) for h in at.header])
+    assert "条件筛选" not in full_text, "选股页仍有手动条件筛选面板残留"
+    assert "多重校验" in full_text, "选股页自动筛选结果区缺失"
+    assert "screen-v1.5" in " ".join(str(c.value) for c in at.caption), \
+        "选股页未标注 RULE_VERSION/asof（模块D页面要求）"
+
+
 def test_no_password_leak():
     """页面输出不包含敏感信息（token/密码）。"""
     at = AppTest.from_file(APP_PATH, default_timeout=30)

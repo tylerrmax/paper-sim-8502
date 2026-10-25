@@ -1,0 +1,66 @@
+{
+ "input": "同一标的/同一止损距离，账户净值 100000 vs 200000（本金注入）",
+ "expected": "股数比 ≈ 净值比 2（±1手）；两笔终局实际风险 ≤ 各自预算",
+ "actual": {
+  "qty": {
+   "nav100k": 1500.0,
+   "nav200k": 3100.0
+  },
+  "final_check": {
+   "nav100k": {
+    "symbol": "002446",
+    "signal_date": "2026-10-26",
+    "nav_at_signal": 100000.0,
+    "budget": 2000.0,
+    "stop_ref": 7.7,
+    "atr_stop": 8.6614,
+    "chosen_stop": 7.7,
+    "per_share_risk": 1.2735,
+    "qty": 1500.0,
+    "actual_risk": 1910.27,
+    "within_budget": true
+   },
+   "nav200k": {
+    "symbol": "002446",
+    "signal_date": "2026-10-26",
+    "nav_at_signal": 200000.0,
+    "budget": 4000.0,
+    "stop_ref": 7.7,
+    "atr_stop": 8.6614,
+    "chosen_stop": 7.7,
+    "per_share_risk": 1.2701,
+    "qty": 3100.0,
+    "actual_risk": 3937.23,
+    "within_budget": true
+   }
+  }
+ },
+ "fills": {
+  "nav100k": {
+   "symbol": "002446",
+   "signal_date": "2026-10-26",
+   "nav_at_signal": 100000.0,
+   "budget": 2000.0,
+   "stop_ref": 7.7,
+   "atr_stop": 8.6614,
+   "chosen_stop": 7.7,
+   "per_share_risk": 1.2735,
+   "qty": 1500.0,
+   "actual_risk": 1910.27,
+   "within_budget": true
+  },
+  "nav200k": {
+   "symbol": "002446",
+   "signal_date": "2026-10-26",
+   "nav_at_signal": 200000.0,
+   "budget": 4000.0,
+   "stop_ref": 7.7,
+   "atr_stop": 8.6614,
+   "chosen_stop": 7.7,
+   "per_share_risk": 1.2701,
+   "qty": 3100.0,
+   "actual_risk": 3937.23,
+   "within_budget": true
+  }
+ }
+}

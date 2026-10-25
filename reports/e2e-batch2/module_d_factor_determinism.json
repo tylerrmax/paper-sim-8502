@@ -1,0 +1,11 @@
+{
+ "input": "130 根合成 bars 两次独立调用",
+ "expected": "结果完全一致；points≤15；标注待验证因子",
+ "actual": {
+  "points": 4.0,
+  "flags": [
+   "channel_near_breakout"
+  ],
+  "status": "待验证因子"
+ }
+}

@@ -362,6 +362,26 @@ def test_6_ashare_dryrun():
 
 
 # ---------------------------------------------------------------- test 7
+def _earliest_executable_buy():
+    """最早的“可执行”BUY 信号：未被母板止损禁入闸拦截者。
+    修订（2026-10-26）：原逻辑取最早 BUY（002446 2026-10-15 @6.93），
+    该信号价已跌破母板 stop_ref 7.70——按 P0-1 禁入优先（2026-10-25
+    用户拍板：buyback 不例外、人工批准也不放行），审批后永不成交，
+    原“审批必成交”前提已不成立。新逻辑：跳过被禁入闸拦截的 BUY，
+    取最早可执行者（当前数据为 002639 2026-10-19 @14.51 > 止损 12.8）。"""
+    from engine import risk_gate
+    con = sqlite3.connect(TEST_DB)
+    rows = con.execute(
+        "SELECT date,account,symbol,side,price FROM signals"
+        " WHERE side='BUY' ORDER BY date").fetchall()
+    con.close()
+    for d, a, s, side, px in rows:
+        blk, _, _ = risk_gate.check_buy(s, px, px)
+        if not blk:
+            return d, a, s, side
+    return None
+
+
 def _apply_concurrent(cmds):
     """真并发：两个 apply_commands 进程同时处理同一批指令。
     用线程同时 communicate，保证两进程的 stdin 几乎同时送达、
@@ -413,12 +433,8 @@ def test_7_concurrent_apply():
         con.commit()
         con.close()
         pipe_run(TEST_DB, CFG)  # 生成 signals；manual 无审批 → 零成交
-        con = sqlite3.connect(TEST_DB)
-        buy = con.execute(
-            "SELECT date,account,symbol,side FROM signals WHERE side='BUY'"
-            " ORDER BY date LIMIT 1").fetchone()
-        con.close()
-        assert buy, "无 BUY 信号可审批"
+        buy = _earliest_executable_buy()
+        assert buy, "无可执行 BUY 信号可审批（全部被禁入闸拦截时测试前提不成立）"
         d, a, s, side = buy
         cmds = [{"id": "stress7-approve-%d" % attempt, "kind": "approve",
                  "payload_json": json.dumps(
@@ -434,8 +450,14 @@ def test_7_concurrent_apply():
             dup_evidence = (attempt, dups[:3], len(fills))
             break
         # 至少应真实产生这笔成交（否则测试空转，竞态无从观察）
-        hit = [k for k in keys if k == (d, a, s, side)]
-        assert len(hit) == 1, "第 %d 轮：批准的 BUY 未成交或重复（%d 笔）" % (attempt, len(hit))
+        # 修订（2026-10-26）：按 signal_date 计数——fills.date 是执行日
+        # （T+1），原断言用信号日匹配成交日键，在现行 fills 口径下必误报。
+        con = sqlite3.connect(TEST_DB)
+        hit = con.execute(
+            "SELECT COUNT(*) FROM fills WHERE signal_date=? AND account=?"
+            " AND symbol=? AND side=?", (d, a, s, side)).fetchone()[0]
+        con.close()
+        assert hit == 1, "第 %d 轮：批准的 BUY 未成交或重复（%d 笔）" % (attempt, hit)
         con = sqlite3.connect(TEST_DB)
         over = con.execute(
             "SELECT id, COUNT(*) c FROM processed_commands GROUP BY id HAVING c>1"
@@ -510,16 +532,22 @@ def test_8_control_state_machine():
     nf, ns = _run_fresh("paused", "manual")
     assert nf == 0 and ns > 0, "paused+manual：信号照记、零成交"
 
-    # manual + 审批 → 被批准的信号成交（取最早的 BUY，保证现金充足可成交）
+    # manual + 审批 → 被批准的信号成交
+    # 修订（2026-10-26）：原断言取最早 BUY（002446@6.93，已破母板止损，
+    # 禁入闸拦截、审批不放行）且在生产 fills 未清空时按成交日计数——
+    # 双重前提均已失效。新断言：清空 fills 的确定性世界里，取最早
+    # “可执行”BUY（_earliest_executable_buy，跳过禁入闸拦截者），
+    # 审批后按 signal_date 断言恰好成交 1 笔。规则依据：P0-1 禁入优先。
     fresh_db()
     _set_control("running", "manual")
-    pipe_run(TEST_DB, CFG)
     con = sqlite3.connect(TEST_DB)
-    buy = con.execute(
-        "SELECT date,account,symbol,side FROM signals WHERE side='BUY'"
-        " ORDER BY date LIMIT 1").fetchone()
+    con.execute("DELETE FROM fills")
+    con.execute("DELETE FROM approvals")
+    con.commit()
     con.close()
-    assert buy, "无 BUY 信号可审批"
+    pipe_run(TEST_DB, CFG)
+    buy = _earliest_executable_buy()
+    assert buy, "无可执行 BUY 信号可审批"
     d, a, s, side = buy
     con = sqlite3.connect(TEST_DB)
     con.execute("INSERT OR REPLACE INTO approvals(date,account,symbol,side,decision,updated)"
@@ -530,17 +558,23 @@ def test_8_control_state_machine():
     pipe_run(TEST_DB, CFG)
     con = sqlite3.connect(TEST_DB)
     hit = con.execute(
-        "SELECT COUNT(*) FROM fills WHERE date=? AND account=? AND symbol=? AND side=?",
+        "SELECT COUNT(*) FROM fills WHERE signal_date=? AND account=? AND symbol=? AND side=?",
         (d, a, s, side)).fetchone()[0]
     con.close()
     assert hit == 1, "审批后应恰好成交 1 笔，实际 %d" % hit
 
-    # paused 下审批 → 不成交；恢复 running → 审批生效成交（转移正确）
-    # 注：先清空 fills，否则历史成交会污染“零成交”断言
+    # paused 下审批 → 不成交，且信号进暂停黑名单；恢复 running 后
+    # 仍不补成交（黑名单语义）。
+    # 修订（2026-10-26）：原断言期望“恢复后补成交”，与现行规则相反——
+    # 暂停期生成的信号一律进 pause_skipped_signals、恢复后永不补成交
+    # （2026-10-02 起 fills 追加制配套规则，test_pause_resume 同口径），
+    # 恢复后只执行新数据产生的新信号。新断言按现行规则验证转移：
+    # paused 审批→0 成交且黑名单有记录；resume→该信号仍 0 成交。
     fresh_db()
     _set_control("paused", "manual")
     con = sqlite3.connect(TEST_DB)
     con.execute("DELETE FROM fills")
+    con.execute("DELETE FROM approvals")
     con.execute("INSERT OR REPLACE INTO approvals(date,account,symbol,side,decision,updated)"
                 " VALUES(?,?,?,?,?,?)",
                 (d, a, s, side, "approved", "2026-10-06 00:00:00"))
@@ -549,16 +583,20 @@ def test_8_control_state_machine():
     pipe_run(TEST_DB, CFG)
     con = sqlite3.connect(TEST_DB)
     nf1 = con.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
+    bl = con.execute(
+        "SELECT COUNT(*) FROM pause_skipped_signals WHERE date=? AND account=?"
+        " AND symbol=? AND side=?", (d, a, s, side)).fetchone()[0]
     con.close()
     assert nf1 == 0, "paused 下审批也不应成交，实际 %d" % nf1
+    assert bl == 1, "暂停期信号应进黑名单，实际 %d" % bl
     _set_control("running", "manual")
     pipe_run(TEST_DB, CFG)
     con = sqlite3.connect(TEST_DB)
     nf2 = con.execute(
-        "SELECT COUNT(*) FROM fills WHERE date=? AND account=? AND symbol=? AND side=?",
+        "SELECT COUNT(*) FROM fills WHERE signal_date=? AND account=? AND symbol=? AND side=?",
         (d, a, s, side)).fetchone()[0]
     con.close()
-    assert nf2 == 1, "恢复 running 后审批应成交，实际 %d" % nf2
+    assert nf2 == 0, "黑名单信号恢复后不得补成交，实际 %d" % nf2
 
     # 非法值 fail-safe：未知 status/mode 不得 fail-open 当 running/auto 用
     nf, _ = _run_fresh("bogus", "auto")

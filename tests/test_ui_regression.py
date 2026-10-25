@@ -56,8 +56,12 @@ check("回执表单只出现一次", src.count('st.form("receipt_form') == 1, f"
 check("行情与信号页无回执表单", "receipt_form" not in src.split('elif tab == "📈 行情与信号"')[1].split('elif tab == "📝 交易执行"')[0] if 'elif tab == "📈 行情与信号"' in src else True)
 
 # 7. 数字格式化助手
+# 修订（2026-10-26，模块E清理）：原断言要求 fmt_money/fmt_pct/fmt_num
+# 三个格式化函数存在；实测三者在 app.py 内零调用点（只有定义、无任何
+# 调用方），属删除档死代码，已删除。新断言：三者不得回流。
+# 规则依据：模块E「未验证、无用、被取代的东西不得留在公网」。
 for fn in ["def fmt_money", "def fmt_pct", "def fmt_num"]:
-    check(f"格式化函数：{fn}", fn in src)
+    check(f"死格式化函数已清除：{fn}", fn not in src)
 
 # 8. 语法有效
 check("AST 解析通过", True)

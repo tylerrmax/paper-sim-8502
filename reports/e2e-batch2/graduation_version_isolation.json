@@ -1,0 +1,31 @@
+{
+ "input": "生产库副本 build_graduation（FIFO 配对 + 买入日口径 + 版本严格隔离）",
+ "expected": "by_version 含 v1.0-2026-10-17 的独立样本与指标；当前版本 v1.1 尚无 round-trip 时 total=0，旧样本不混入",
+ "actual": {
+  "by_version": {
+   "v1.0-2026-10-17": {
+    "round_trips": 1,
+    "expectancy": -2000.42,
+    "win_rate": 0.0,
+    "win_loss_ratio": null,
+    "profit_factor": 0.0
+   }
+  },
+  "total_round_trips_current_version": 0,
+  "accounts": {
+   "sim_a": {
+    "round_trips": 0,
+    "version_mismatch": 1
+   },
+   "sim_hk": {
+    "round_trips": 0,
+    "version_mismatch": 1
+   },
+   "sim_crypto": {
+    "round_trips": 0,
+    "version_mismatch": 0
+   }
+  }
+ },
+ "fills": []
+}

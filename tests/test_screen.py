@@ -97,7 +97,11 @@ def test_no_gate_clean_uptrend():
     closes = [20.0 + i * 0.1 for i in range(70)]
     r = score_symbol("000001", dict(META), _bars(closes), ASOF, 60.0, entries=[])
     assert r["gates"] == []
-    assert r["tech"] > 30
+    # 修订（2026-10-26，模块D）：原断言 tech>30 按旧基础项 45 分标定；
+    # 新计分结构技术面 45 = 基础项 30 + 形态因子层 ≤15，匀速上行无
+    # 形态命中时 tech≈26 为正确值。规则依据：模块D计分纪律（形态层
+    # 封顶技术面 45 中的 15 分，RULE_VERSION screen-v1.5）。
+    assert r["tech"] > 24
 
 
 def test_grade_boundaries():

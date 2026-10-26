@@ -5,13 +5,23 @@
 
 总分 100 = 技术面 45 + 新闻面 35 + 母板面 20。
 
-技术面 45：
-- 趋势/均线 15：收盘>MA20 +6；MA5>MA10 +3；MA10>MA20 +3；MA20 较5根前上行 +3。
-- MACD 10：柱>0 +5；柱较前一根放大 +3；DIF>0 +2。
-- RSI 健康区间 10：45–65→10；40–45/65–70→7；35–40/70–75→4；
-  30–35/75–80→2；<30→3（超卖待修复）；≥80→0。
-- 量能/接近突破 10：量比（量/20日均量）≥1.5→5、≥1.2→4、≥1.0→3、≥0.8→2、其余→1；
-  收盘距20日高点：≥高点→5、≥97%→4、≥94%→3、≥90%→1、其余→0。
+技术面 45 = 基础项 30 + 形态因子层 ≤15（模块D，2026-10-26）：
+- 趋势/均线 10：收盘>MA20 +5；MA5>MA10 +2；MA10>MA20 +2；MA20 较5根前上行 +1。
+- MACD 7：柱>0 +3；柱较前一根放大 +2；DIF>0 +2。
+- RSI 健康区间 7：按旧 10 分制映射（10→7、7→5、4→3、2→1、3→2、0→0）：
+  45–65 最佳；≥80→0。
+- 量能/接近突破 6：量比≥1.5→3、≥1.2→2.5、≥1.0→2、≥0.8→1、其余→0.5；
+  收盘距20日高点：≥高点→3、≥97%→2.5、≥94%→2、≥90%→1、其余→0。
+- 形态因子层 ≤15（全部为「待验证因子」，只调分与证据、不单独放行；
+  逐项证据写入 results_json 的 factors 字段，screen_perf 按因子追踪）：
+  斐波那契支撑 +4（近120日摆动高低点 0.5/0.618 回撤位 ±1.5% 内回踩
+  且未跌破 0.618；收盘跌破 0.618 位 -1.5% → 负标记 fib_breakdown）；
+  上升通道近突破 +4（90 日对数回归通道斜率>0 且距上轨 ≤3%；与母板
+  面“待突破”重复时计分取母板面、本项只列证据不计分，避免双计）；
+  箱体突破 +4（60 日箱体宽度 ≤均价 12% 后收盘站上箱顶且量 ≥1.5×
+  20 日均量；突破后 3 日内收回箱内 → 负标记 box_false_breakout）；
+  相对强度 +3（20/60 日涨幅减上证同期涨幅双正且 60 日居池内前 1/3）；
+  回踩确认 +3（近 2–10 日有 ≥3% 上涨段后回踩 MA20 ±3% 不破且缩量）。
 
 新闻面 35：engine/news_sentiment 板块情绪折算（Serenity 为主，Danny 封顶；
 市场级风险条目不进个股分）。
@@ -28,7 +38,12 @@
 - RSI ≥ 80（追高）；
 - 价格 < 母板止损参考；
 - 单日涨幅超限：A股 >7%，港股 >15%（港股无涨跌停，分市场阈值，P1-7）；
-- 新闻面断更（最新证据距 asof >7 天或新闻账缺失）：新闻分不可信（P0-4）。
+- 新闻面断更（最新证据距 asof >7 天或新闻账缺失）：新闻分不可信（P0-4）；
+- 市场环境闸（模块A，母板真源）：workbook_map 母板字段判定为禁止
+  新开仓（B31=否，或未放行且 B79=否）或数据不可用降级 → 全池附加
+  环境闸（封顶 B、S/A 清空），证据行明示原因，不静默；谨慎交易
+  （B31=是、未放行、B79=是）不封顶但标注验证期参数。指数自算只作
+  交叉核对（regime_* 字段），不作判定源。
 
 交易计划三价（P1-11，工作流纲领第 2 步）：每个候选输出 plan_trigger /
 plan_stop / plan_target —— 触发价=母板关键突破位（workbook_map.breakout）、
@@ -61,7 +76,7 @@ from datetime import date, datetime
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_PATH = os.path.join(BASE, "config", "workbook_map.json")
 DEFAULT_DB = os.path.join(BASE, "db", "sim.db")
-RULE_VERSION = "screen-v1.2-2026-10-26"
+RULE_VERSION = "screen-v1.5-2026-10-26"
 
 from engine.indicators import macd, rsi  # noqa: E402
 from engine.news_sentiment import news_freshness, sector_sentiment  # noqa: E402
@@ -134,8 +149,15 @@ def _rsi_points(v):
     return 0.0  # >=80
 
 
+_RSI10_TO_7 = {10.0: 7.0, 7.0: 5.0, 4.0: 3.0, 2.0: 1.0, 3.0: 2.0, 0.0: 0.0}
+
+
 def _tech_score(bars):
-    """bars: [(date,open,high,low,close,volume)] 升序。返回 (tech45, detail dict)。"""
+    """bars: [(date,open,high,low,close,volume)] 升序。
+
+    返回 (基础项分 ≤30, detail dict)。模块D 起技术面 45 = 基础 30 +
+    形态因子层 ≤15（pattern_factors 单独计算后在 score_symbol 合并）。
+    """
     closes = [b[4] for b in bars]
     vols = [b[5] for b in bars]
     close = closes[-1]
@@ -145,47 +167,217 @@ def _tech_score(bars):
 
     trend = 0.0
     if ma20[-1] is not None and close > ma20[-1]:
-        trend += 6
+        trend += 5
     if ma5[-1] is not None and ma10[-1] is not None and ma5[-1] > ma10[-1]:
-        trend += 3
+        trend += 2
     if ma10[-1] is not None and ma20[-1] is not None and ma10[-1] > ma20[-1]:
-        trend += 3
+        trend += 2
     if len(closes) >= 25 and ma20[-1] is not None and ma20[-6] is not None \
             and ma20[-1] > ma20[-6]:
-        trend += 3
+        trend += 1
 
     dif, dea, hist = macd(closes)
     macd_pts = 0.0
     if hist[-1] is not None and hist[-1] > 0:
-        macd_pts += 5
+        macd_pts += 3
     if len(hist) >= 2 and hist[-1] is not None and hist[-2] is not None \
             and hist[-1] > hist[-2]:
-        macd_pts += 3
+        macd_pts += 2
     if dif[-1] is not None and dif[-1] > 0:
         macd_pts += 2
 
     rsi_v = rsi(closes)[-1]
-    rsi_pts = _rsi_points(rsi_v)
+    rsi_pts = _RSI10_TO_7.get(_rsi_points(rsi_v), 0.0)
 
-    vol_pts = 1.0
+    vol_pts = 0.5
     if len(vols) >= 20:
         vma = sum(vols[-20:]) / 20
         if vma > 0:
             vr = vols[-1] / vma
-            vol_pts = 5.0 if vr >= 1.5 else 4.0 if vr >= 1.2 else \
-                3.0 if vr >= 1.0 else 2.0 if vr >= 0.8 else 1.0
+            vol_pts = 3.0 if vr >= 1.5 else 2.5 if vr >= 1.2 else \
+                2.0 if vr >= 1.0 else 1.0 if vr >= 0.8 else 0.5
     prox_pts = 0.0
     if len(closes) >= 20:
         high20 = max(closes[-20:])
         if high20 > 0:
             ratio = close / high20
-            prox_pts = 5.0 if ratio >= 1.0 else 4.0 if ratio >= 0.97 else \
-                3.0 if ratio >= 0.94 else 1.0 if ratio >= 0.90 else 0.0
+            prox_pts = 3.0 if ratio >= 1.0 else 2.5 if ratio >= 0.97 else \
+                2.0 if ratio >= 0.94 else 1.0 if ratio >= 0.90 else 0.0
     detail = {"trend": trend, "macd": macd_pts, "rsi": rsi_pts,
               "volume_proximity": vol_pts + prox_pts,
               "ma5": ma5[-1], "ma10": ma10[-1], "ma20": ma20[-1],
               "rsi_v": rsi_v, "macd_hist": hist[-1]}
     return trend + macd_pts + rsi_pts + vol_pts + prox_pts, detail
+
+
+def _rs_excess(bars, idx_bars, n):
+    """标的近 n 日涨幅 − 上证同期涨幅（日期对齐优先，缺日回退根数对齐）。
+
+    bars/idx_bars 均为 ≤asof 截断后的升序序列。数据不足返回 None。
+    """
+    if len(bars) <= n or not idx_bars or len(idx_bars) <= n:
+        return None
+    closes = [b[4] for b in bars]
+    if not closes[-1 - n]:
+        return None
+    sym_ret = closes[-1] / closes[-1 - n] - 1.0
+    idx_by_date = {d: c for d, c in idx_bars}
+    d_end, d_start = bars[-1][0], bars[-1 - n][0]
+    if d_end in idx_by_date and d_start in idx_by_date \
+            and idx_by_date[d_start]:
+        idx_ret = idx_by_date[d_end] / idx_by_date[d_start] - 1.0
+    else:
+        ic = [c for _, c in idx_bars]
+        if not ic[-1 - n]:
+            return None
+        idx_ret = ic[-1] / ic[-1 - n] - 1.0
+    return sym_ret - idx_ret
+
+
+def pattern_factors(bars, idx_bars=None, rs_top=False, board_near_breakout=False):
+    """形态因子层（模块D，全部「待验证因子」）：纯函数、同输入同输出、
+    只用传入的 ≤asof bars（as-of 安全由调用方截断保证）。
+
+    返回 (points≤15, evidence dict)。因子只调分不单独放行；负标记
+    （fib_breakdown / box_false_breakout）只进证据与绩效追踪、不扣分。
+    board_near_breakout=True 时通道因子与母板面“待突破”重复，计分
+    取母板面、本项 points 计 0（证据照常列示，dedup 标注）。
+    """
+    import math
+    closes = [b[4] for b in bars]
+    highs = [b[2] for b in bars]
+    lows = [b[3] for b in bars]
+    vols = [b[5] for b in bars]
+    close = closes[-1]
+    ev = {"status": "待验证因子"}
+    flags = []
+    points = 0.0
+
+    # ---- 斐波那契回撤（近 120 日摆动高低点） ----
+    fib = {"available": False}
+    if len(bars) >= 30:
+        w = bars[-120:]
+        swing_hi = max(b[2] for b in w)
+        swing_lo = min(b[3] for b in w)
+        if swing_hi > swing_lo > 0:
+            rng = swing_hi - swing_lo
+            lv = {f: round(swing_hi - f * rng, 4) for f in (0.382, 0.5, 0.618)}
+            fib = {"available": True, "swing_high": swing_hi,
+                   "swing_low": swing_lo, "levels": lv}
+            if close < lv[0.618] * 0.985:
+                fib["mark"] = "fib_breakdown"
+                flags.append("fib_breakdown")
+            else:
+                for f in (0.5, 0.618):
+                    if abs(close - lv[f]) / lv[f] <= 0.015:
+                        fib["mark"] = "fib_support"
+                        fib["support_level"] = f
+                        flags.append("fib_support")
+                        points += 4.0
+                        break
+    ev["fib"] = fib
+
+    # ---- 上升通道近突破（90 日对数价格回归通道） ----
+    chan = {"available": False}
+    if len(closes) >= 30:
+        ys = [math.log(c) for c in closes[-90:] if c > 0]
+        n = len(ys)
+        if n >= 30:
+            xs = list(range(n))
+            mx = sum(xs) / n
+            my = sum(ys) / n
+            sxx = sum((x - mx) ** 2 for x in xs)
+            sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+            slope = sxy / sxx if sxx else 0.0
+            intercept = my - slope * mx
+            resid = [y - (intercept + slope * x) for x, y in zip(xs, ys)]
+            upper = math.exp(intercept + slope * (n - 1) + max(resid))
+            dist = (upper - close) / close if close else None
+            chan = {"available": True, "slope_per_bar": round(slope, 6),
+                    "upper": round(upper, 4),
+                    "dist_to_upper_pct": round(dist * 100, 2)
+                    if dist is not None else None}
+            if slope > 0 and dist is not None and -0.005 <= dist <= 0.03:
+                chan["mark"] = "channel_near_breakout"
+                flags.append("channel_near_breakout")
+                if board_near_breakout:
+                    chan["scored"] = False
+                    chan["dedup"] = "与母板面待突破重复，计分取母板面"
+                else:
+                    chan["scored"] = True
+                    points += 4.0
+    ev["channel"] = chan
+
+    # ---- 箱体突破（60 日收敛后放量站上箱顶）/ 假突破标记 ----
+    box = {"available": False}
+    if len(bars) >= 62:
+        win = bars[-61:-1]
+        box_hi = max(b[2] for b in win)
+        box_lo = min(b[3] for b in win)
+        mean_c = sum(b[4] for b in win) / len(win)
+        width = (box_hi - box_lo) / mean_c if mean_c else None
+        vma20 = sum(vols[-20:]) / 20 if len(vols) >= 20 else None
+        vr = vols[-1] / vma20 if vma20 else None
+        box = {"available": True, "box_high": box_hi, "box_low": box_lo,
+               "width_pct": round(width * 100, 2) if width is not None else None,
+               "vol_ratio": round(vr, 2) if vr is not None else None}
+        if width is not None and width <= 0.12 and close > box_hi \
+                and vr is not None and vr >= 1.5:
+            box["mark"] = "box_breakout"
+            flags.append("box_breakout")
+            points += 4.0
+        elif len(bars) >= 66:
+            old = bars[-64:-4]
+            old_hi = max(b[2] for b in old)
+            if any(c > old_hi for c in closes[-3:]) and close <= old_hi:
+                box["mark"] = "box_false_breakout"
+                flags.append("box_false_breakout")
+    ev["box"] = box
+
+    # ---- 相对强度（20/60 日相对上证超额，60 日须居池内前 1/3） ----
+    rs20 = _rs_excess(bars, idx_bars, 20)
+    rs60 = _rs_excess(bars, idx_bars, 60)
+    rs_ev = {"available": rs20 is not None and rs60 is not None,
+             "excess20_pct": round(rs20 * 100, 2) if rs20 is not None else None,
+             "excess60_pct": round(rs60 * 100, 2) if rs60 is not None else None,
+             "pool_top_third_60": bool(rs_top)}
+    if rs20 is not None and rs60 is not None and rs20 > 0 and rs60 > 0 \
+            and rs_top:
+        rs_ev["mark"] = "relative_strength"
+        flags.append("relative_strength")
+        points += 3.0
+    ev["relative_strength"] = rs_ev
+
+    # ---- 回踩确认（上涨段后回踩 MA20 不破且缩量） ----
+    pb = {"available": False}
+    ma20 = moving_average(closes, 20)
+    if len(closes) >= 25 and ma20[-1] is not None:
+        seg = closes[-10:-2]
+        high_i = max(range(len(seg)), key=lambda i: seg[i])
+        high_close = seg[high_i]
+        rise = high_close / close - 1.0 if close else None
+        up_vol = vols[-10 + high_i - 4:-10 + high_i + 1]
+        up_avg = sum(up_vol) / len(up_vol) if up_vol else None
+        pb_avg = sum(vols[-3:]) / 3
+        near_ma = ma20[-1] * 0.99 <= close <= ma20[-1] * 1.03
+        pb = {"available": True,
+              "rise_from_high_pct": round(rise * 100, 2)
+              if rise is not None else None,
+              "ma20": ma20[-1], "near_ma20": bool(near_ma),
+              "pullback_vol_ratio": round(pb_avg / up_avg, 2)
+              if up_avg else None}
+        if rise is not None and rise >= 0.03 and near_ma \
+                and up_avg and pb_avg < up_avg:
+            pb["mark"] = "pullback_confirm"
+            flags.append("pullback_confirm")
+            points += 3.0
+    ev["pullback"] = pb
+
+    ev["flags"] = flags
+    ev["points_raw"] = round(points, 2)
+    points = min(15.0, points)
+    ev["points"] = round(points, 2)
+    return points, ev
 
 
 def _grade(total):
@@ -199,7 +391,8 @@ def _grade(total):
 
 
 def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None,
-                 market_last=None, extra_gates=None, evidence_note=None):
+                 market_last=None, extra_gates=None, evidence_note=None,
+                 idx_bars=None, rs_top=False):
     """单只评分。bars 升序 [(date,open,high,low,close,volume)]，date 为 str。
 
     market_last: 同市场最新行情日期（分市场新鲜度用）；extra_gates:
@@ -219,6 +412,8 @@ def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None,
                 "grade": "C", "capped": False,
                 "plan_trigger": plan_trigger, "plan_stop": plan_stop,
                 "plan_target": plan_target,
+                "factors": {"status": "待验证因子", "flags": [],
+                            "points": 0.0},
                 "gates": gates + ["无行情数据"],
                 "evidence": "无行情数据；" + plan_note}
 
@@ -227,7 +422,15 @@ def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None,
     close = closes[-1]
     last_date = _to_date(dates[-1])
 
-    tech, td = _tech_score(bars)
+    tech_base, td = _tech_score(bars)
+    # 形态因子层（模块D）：与母板面“待突破”同源重复时通道项不计分
+    _bk = meta.get("breakout")
+    _board_near = bool(_bk) and bool(close) and \
+        (_bk - close) / close * 100 <= 5.0
+    pattern_pts, pattern_ev = pattern_factors(
+        bars, idx_bars=idx_bars, rs_top=rs_top,
+        board_near_breakout=_board_near)
+    tech = tech_base + pattern_pts
 
     sent = sector_sentiment(sector_key, asof, entries) if sector_key else \
         {"raw": 0.0, "score35": 0.0, "items": []}
@@ -306,6 +509,9 @@ def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None,
         ev_parts.append("共振：%s %.0f分" % (sector_label, res_score))
     if meta.get("catalyst"):
         ev_parts.append("催化已落地")
+    if pattern_ev.get("flags"):
+        ev_parts.append("待验证因子：%s（形态层 +%.1f 分）"
+                        % ("、".join(pattern_ev["flags"]), pattern_pts))
     if evidence_note:
         ev_parts.append(evidence_note)
     ev_parts.append(plan_note)
@@ -315,6 +521,7 @@ def score_symbol(symbol, meta, bars, asof, resonance_max, entries=None,
             "chg_pct": round(chg, 2) if chg is not None else None,
             "rsi": round(td["rsi_v"], 1) if td["rsi_v"] is not None else None,
             "tech": round(tech, 2), "news": round(news, 2),
+            "factors": pattern_ev, "pattern_points": pattern_pts,
             "board": return_board, "total": round(total, 2),
             "grade": grade, "capped": capped, "gates": gates,
             "plan_trigger": plan_trigger, "plan_stop": plan_stop,
@@ -408,15 +615,85 @@ def screen_all(db_path=None, asof=None, map_path=None, entries=None,
             m = market_of(symbol)
             if m not in market_last or bars[-1][0] > market_last[m]:
                 market_last[m] = bars[-1][0]
+    # 市场环境闸（模块A：同口径自动计算 + 母板 B31 对账）：自动计算用
+    # ≤asof 的指数 bars（真 as-of），与 wmap 母板字段对账；不一致/
+    # 缺失/过期 → 降级禁开。screen 无账户语境，不做换仓概念：禁开/
+    # 降级态全池附加环境闸、S/A 清空，证据行写明指数值/MA20/B31
+    # 对账状态（不许只写“无候选”）；谨慎态不封顶但标注验证期参数。
+    from engine import regime as _regime_mod
+    _idx_rows = con.execute(
+        "SELECT date, close FROM market_data WHERE symbol=? AND date<=?"
+        " ORDER BY date", (_regime_mod.INDEX_SYMBOL, asof.isoformat())).fetchall()
+    _regime = _regime_mod.regime_from_closes([r[1] for r in _idx_rows])
+    _auto = dict(_regime)
+    _auto["last_date"] = _idx_rows[-1][0] if _idx_rows else None
+    _stock_last = max(market_last.values()) if market_last else None
+    _env = _regime_mod.env_from_map(wmap, auto=_auto,
+                                    stock_last_date=_stock_last)
+    _recon_s = {True: "对账一致", False: "对账不一致"}.get(
+        _env.get("reconciled"), "对账不可用")
+    _auto_s = ("上证 %.2f vs MA20 %.2f（指数日 %s）→ %s" % (
+        _regime["close"], _regime["ma20"], _auto["last_date"],
+        "站上" if _regime["on"] else "未站上")) if _regime.get("known") \
+        else "指数数据不足，自动计算不可用"
+    env_gates, env_note = [], None
+    if _env["state"] == _regime_mod.DEGRADED:
+        env_gates = ["市场环境数据不可用，已安全降级为禁止新开仓"
+                     "（%s；%s；B31=%s，%s）"
+                     % (_env.get("degraded_reason") or "", _auto_s,
+                        {True: "是", False: "否"}.get(_env.get("b31"), "读取失败"),
+                        _recon_s)]
+        env_note = ("⛔市场环境数据不可用，已安全降级：候选池只观察不开仓"
+                    "（%s；B31=%s，%s）"
+                    % (_auto_s,
+                       {True: "是", False: "否"}.get(_env.get("b31"), "读取失败"),
+                       _recon_s))
+    elif _env["state"] == _regime_mod.BLOCKED_NEW:
+        env_gates = ["市场环境闸·禁止新开仓（%s；%s；B31=%s，%s），候选池只观察"
+                     % (_env.get("reason") or "", _auto_s,
+                        {True: "是", False: "否"}.get(_env.get("b31"), "读取失败"),
+                        _recon_s)]
+        env_note = ("⛔市场环境闸：禁止新开仓，候选池只观察（%s；B31=%s，%s）"
+                    % (_auto_s,
+                       {True: "是", False: "否"}.get(_env.get("b31"), "读取失败"),
+                       _recon_s))
+    elif _env["state"] == _regime_mod.CAUTIOUS:
+        env_note = ("⚠谨慎交易（母板未放行·B79=是）：新建仓套验证期参数"
+                    "（仓位系数 %s、总仓位上限 %s）；%s；B31=是，%s"
+                    % (_env.get("buy_coef"), _env.get("total_cap"),
+                       _auto_s, _recon_s))
+    all_extra_gates = list(extra_gates) + env_gates
+    if ev_note and env_note:
+        all_ev_note = ev_note + "；" + env_note
+    else:
+        all_ev_note = ev_note or env_note
+    # 相对强度池内排名（模块D）：60 日相对上证超额居池内前 1/3 才计分
+    _idx_bars = [(r[0], r[1]) for r in _idx_rows]
+    _rs60 = {}
+    for _sym in wmap["symbols"]:
+        _v = _rs_excess(bars_by_sym[_sym], _idx_bars, 60)
+        if _v is not None:
+            _rs60[_sym] = _v
+    _ranked = sorted(_rs60.items(), key=lambda kv: (-kv[1], kv[0]))
+    _rs_top = {s for s, _ in _ranked[:(len(_ranked) + 2) // 3]}
     rows = []
     for symbol, meta in wmap["symbols"].items():
         meta = dict(meta)
         sec = sectors.get(meta.get("sector_label") or "", {})
         meta["_resonance_score"] = sec.get("resonance_score")
-        rows.append(score_symbol(
+        row = score_symbol(
             symbol, meta, bars_by_sym[symbol], asof, resonance_max, entries,
             market_last=market_last.get(market_of(symbol)),
-            extra_gates=extra_gates, evidence_note=ev_note))
+            extra_gates=all_extra_gates, evidence_note=all_ev_note,
+            idx_bars=_idx_bars, rs_top=symbol in _rs_top)
+        row["regime_on"] = _regime.get("on")
+        row["regime_close"] = _regime.get("close")
+        row["regime_ma20"] = _regime.get("ma20")
+        row["env_state"] = _env["state"]
+        row["env_label"] = _env["label"]
+        row["env_reconciled"] = _env.get("reconciled")
+        row["env_reason"] = _env.get("degraded_reason") or _env.get("reason")
+        rows.append(row)
     rows.sort(key=lambda r: -r["total"])
     if record and os.environ.get("PAPER_SIM_NO_SCREEN_RECORD"):
         record = False  # 测试/回归环境显式豁免，避免污染审计表

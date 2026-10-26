@@ -1593,7 +1593,10 @@ elif tab == "🛡 验证":
     try:
         _sp = q("SELECT COUNT(*), SUM(CASE WHEN fwd5_ret IS NOT NULL THEN 1 ELSE 0 END),"
                 " AVG(fwd5_excess), SUM(CASE WHEN fwd5_excess>0 THEN 1 ELSE 0 END)"
-                " FROM screen_perf")
+                " FROM screen_perf"
+                " WHERE grp='sa'"
+                "    OR (COALESCE(grp,'')='' AND COALESCE(capped,0)=0"
+                "        AND grade IN ('S','A'))")
         _n, _m5, _avg5, _hit5 = (_sp[0] if _sp else (0, None, None, None))
     except Exception:
         _n, _m5, _avg5, _hit5 = 0, None, None, None

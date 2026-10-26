@@ -99,3 +99,68 @@ def test_topboard_validation_counts_sa_only(tmp_path):
     assert perf["CCC"]["avg5"] is None
     # DDD sa 但未到期：n=0
     assert perf["DDD"]["n"] == 0
+
+
+# ---- 第二处同类聚合：选股页"多重校验绩效"汇总（S/A 累计/已满5日/
+# 平均相对收益/命中率，P2-9 段）必须与验证列同一 grp 口径 ----
+# 该段是页面内联代码（_sp = q(...)），无法整页 exec，故从源码 AST
+# 抽出这条 SQL 原文对 fixture 库执行——测的就是上线代码原文，
+# 口径若被改动/删除过滤，本测试响亮失败。
+
+def _load_perf_summary_sql():
+    with open(APP_PATH, encoding="utf-8") as f:
+        src = f.read()
+    tree = ast.parse(src)
+
+    def _const_str(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return _const_str(node.left) + _const_str(node.right)
+        raise AssertionError("多重校验绩效 SQL 不是纯字符串常量拼接")
+
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "_sp"
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "q"
+                and node.value.args):
+            return _const_str(node.value.args[0])
+    raise AssertionError("app.py 中未找到 _sp = q(...) 多重校验绩效聚合")
+
+
+def _summary_fixture_db(tmp_path):
+    db = str(tmp_path / "sim.db")
+    con = sqlite3.connect(db)
+    con.execute(_PERF_DDL)
+    ins = ("INSERT INTO screen_perf(run_id,asof,symbol,grade,capped,grp,"
+           "fwd5_ret,fwd5_excess) VALUES(?,'2026-10-20',?,?,?,?,?,?)")
+    # sa 组：一条 5 日已到期（excess +0.03，命中）、一条未到期
+    con.execute(ins, (1, "AAA", "A", 0, "sa", 0.04, 0.03))
+    con.execute(ins, (1, "BBB", "S", 0, "sa", None, None))
+    # shadow 组已到期（不得计）
+    con.execute(ins, (1, "CCC", "B", 1, "shadow", -0.10, -0.20))
+    # other 组已到期（不得计）
+    con.execute(ins, (1, "DDD", "B", 0, "other", 0.40, 0.50))
+    # 历史行 grp 为空、未封顶 A 级 → 推导为 sa（应计；excess +0.01，命中）
+    con.execute(ins, (1, "EEE", "A", 0, None, 0.02, 0.01))
+    # 历史行 grp 为空但已封顶 → 推导为 shadow（不得计）
+    con.execute(ins, (1, "FFF", "B", 1, None, 0.90, 0.99))
+    con.commit()
+    con.close()
+    return db
+
+
+def test_perf_summary_counts_sa_only(tmp_path):
+    sql = _load_perf_summary_sql()
+    con = sqlite3.connect(_summary_fixture_db(tmp_path))
+    n, m5, avg5, hit5 = con.execute(sql).fetchone()
+    con.close()
+    # 只计 sa 两条 + 历史推导 sa 一条：累计 3、已满 5 日 2
+    assert n == 3
+    assert m5 == 2
+    # 平均相对收益 = (+0.03 + 0.01) / 2，命中 2 条
+    assert abs(avg5 - 0.02) < 1e-9
+    assert hit5 == 2

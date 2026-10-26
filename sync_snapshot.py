@@ -306,7 +306,39 @@ def build_graduation(con):
             "val_return": val_return,
         }
         total_rt += n
+    # 分版本样本（清单C-4，2026-10-26）：新旧版本样本分开出数，禁止
+    # 混合计算绩效；口径与上方一致（FIFO 配对、买入日 ≥ 该账户验证期
+    # 起点、未被剔除），只收 versions 恰为单一版本的 round-trip，
+    # version_mismatch 的不计入任一版本（已在各账户单独标注）。
+    _by_ver = {}
+    for a in CFG["accounts"]:
+        aid = a["id"]
+        vs = VAL_START.get(aid, "2026-10-08")
+        for t in _paired_round_trips(con, aid):
+            if t["excluded"] or t["pnl"] is None or t["open_date"] is None \
+                    or t["open_date"] < vs or len(t["versions"]) != 1:
+                continue
+            ver = next(iter(t["versions"]))
+            if ver is None:
+                continue  # IS NULL 旧成交排除（2026-10-18 严格口径，不回退）
+            _by_ver.setdefault(ver, []).append(float(t["pnl"]))
+    by_version = {}
+    for ver, pnls in sorted(_by_ver.items()):
+        n = len(pnls)
+        wins = [p for p in pnls if p > 0]
+        losses = [-p for p in pnls if p < 0]
+        by_version[ver] = {
+            "round_trips": n,
+            "expectancy": round(sum(pnls) / n, 2) if n else None,
+            "win_rate": round(len(wins) / n, 4) if n else None,
+            "win_loss_ratio": round((sum(wins) / len(wins)) /
+                                    (sum(losses) / len(losses)), 2)
+            if wins and losses else None,
+            "profit_factor": round(sum(wins) / sum(losses), 2)
+            if losses and sum(losses) > 0 else None,
+        }
     return {
+        "by_version": by_version,
         "period": {"start": VAL_START, "end": VAL_END},
         "targets": {"win_loss_ratio": 2.5, "max_drawdown": 0.10,
                     "sample_min": 20, "sample_max": 30, "execution_min": 90},

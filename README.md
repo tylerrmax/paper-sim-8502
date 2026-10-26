@@ -22,7 +22,7 @@
 ```bash
 cd ~/workspace/paper-trading-sim
 python3 run_daily.py                    # 每日管线：拉数据→信号→模拟成交→日报
-python3 engine/batch_test.py            # 后台批量测试：多标的×长历史×多参数稳健性检验
+（engine/batch_test.py 已于 2026-10-26 模块E清理删除：DRAFT 策略稳健性脚本，策略已废弃、无调用方）
 .venv/bin/streamlit run app.py          # 网页版（http://localhost:8501）
 ```
 

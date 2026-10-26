@@ -1,0 +1,12 @@
+[Unit]
+Description=Paper sim 8502 public tunnel (Pinggy free, URL in tunnel_url.txt)
+After=paper-sim-8502.service network.target
+Requires=paper-sim-8502.service
+
+[Service]
+ExecStart=/home/hatch/workspace/paper-trading-sim/tools/tunnel_loop.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

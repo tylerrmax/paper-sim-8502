@@ -70,6 +70,31 @@ def test_screen_page_auto_only():
         "选股页未标注 RULE_VERSION/asof（模块D页面要求）"
 
 
+def test_screen_topboard_present():
+    """TOP标的榜：选股页顶部有 TOP 榜区块（数据来自最近一期
+    screen_runs 落库；验证列样本不足时须如实标注积累中）。"""
+    at = AppTest.from_file(APP_PATH, default_timeout=60)
+    at.run()
+    assert not at.exception
+    for widget in at.radio:
+        if any("选股" in str(o) for o in widget.options):
+            widget.set_value([o for o in widget.options
+                              if "选股" in str(o)][0])
+            break
+    at.run()
+    assert not at.exception, f"选股页异常: {at.exception}"
+    full_text = " ".join([str(m.value) for m in at.markdown] +
+                         [str(s.value) for s in at.subheader] +
+                         [str(h.value) for h in at.header] +
+                         [str(c.value) for c in at.caption])
+    assert "TOP标的榜" in full_text, "选股页 TOP 标的榜区块缺失"
+    # 有落库评分时榜单必出表或积累中标注（screen_perf 尚无成熟样本）
+    tbl_text = " ".join(str(c) for t in at.table for c in t.value) \
+        if hasattr(at, "table") else ""
+    assert ("积累中" in (full_text + tbl_text)) or at.table, \
+        "TOP 榜既无表格也无积累中标注"
+
+
 def test_no_password_leak():
     """页面输出不包含敏感信息（token/密码）。"""
     at = AppTest.from_file(APP_PATH, default_timeout=30)

@@ -189,8 +189,12 @@ def _topboard_data(db_path):
     """TOP标的榜数据：最近一次 screen_runs 的 results_json（评分全集，
     母板观察池口径）按总分降序取 TOP8，合并 screen_perf 样本外验证聚合。
 
-    验证列口径（按 symbol 聚合 screen_perf，如实统计、不插值）：
-    n = 该标的 fwd5_ret 非空条数（已满 5 日的 S/A 样本数）；
+    验证列口径（按 symbol 聚合 screen_perf 的 sa 组，如实统计、不插值）：
+    只计正常入选样本（grp='sa'）——影子组（被硬闸门封顶）与 other 组
+    不混入本列，各组分开统计（补齐②b，2026-10-27）。历史行 grp 为空时
+    按 tools/screen_perf.py 的 _group_of 口径推导组别（未封顶且评级
+    S/A → sa；封顶 → shadow），与现行登记逻辑一致。
+    n = 该标的 fwd5_ret 非空条数（已满 5 日的 sa 样本数）；
     5日平均前向收益 = AVG(fwd5_ret)，20日平均 = AVG(fwd20_ret 非空部分)，
     5日胜率 = fwd5_ret>0 的样本占比。表缺失/无样本 → 聚合为空，
     页面对 n<5 一律标注「未验证·积累中」，不呈现任何估算数字。
@@ -208,7 +212,11 @@ def _topboard_data(db_path):
                     " AVG(fwd20_ret),"
                     " AVG(CASE WHEN fwd5_ret IS NULL THEN NULL"
                     "          WHEN fwd5_ret > 0 THEN 1.0 ELSE 0.0 END)"
-                    " FROM screen_perf GROUP BY symbol"):
+                    " FROM screen_perf"
+                    " WHERE grp='sa'"
+                    "    OR (COALESCE(grp,'')='' AND COALESCE(capped,0)=0"
+                    "        AND grade IN ('S','A'))"
+                    " GROUP BY symbol"):
                 perf[sym] = {"n": n5 or 0, "avg5": a5, "avg20": a20,
                              "win5": win5}
         except sqlite3.OperationalError:

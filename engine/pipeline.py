@@ -11,7 +11,19 @@ fills 追加制——历史成交一旦产生即为事实，切换暂停/手动�
     （BUY 按 open*(1+slippage)，SELL 按 open*(1-slippage)）；
   - 风险禁入（P0-1，禁入优先）：BUY 信号价/执行价跌破母板止损参考
     stop_ref 的一律不执行（buyback 不例外），拦截写入 blocked_signals；
-  - BUY 用账户现金的 buy_frac，股票向下取整到 lot_size，加密到 min_qty；
+  - 市场环境闸（模块A，母板真源三态，engine.regime）：判定只读母板
+    字段（B31/实盘验证E14放行/B79，经 workbook_map 抽取）——允许进攻/
+    谨慎交易（套母板验证期系数 0.5 与总仓位上限 0.3）/禁止新开仓；
+    数据缺失或映射过期 fail-closed 降级为禁止新开仓。禁开态下换仓
+    豁免：按账户回放累计卖出金额为额度，BUY 额度内放行并扣减、超出
+    拦截（均写入 blocked_signals 留痕）；SELL 永不受环境闸；
+  - BUY 仓位：信号日 ≥2026-10-26 用风险定仓 v2（数量=风险预算÷每股
+    风险；每股风险=止损距离+每股往返成本（费率+滑点+最低收费摊算），
+    止损距离=max(入场−母板stop_ref, 2×ATR)；再受总仓位/现金（含费）/
+    风险簇预算 4%（同板块∪corr>0.8）/换仓额度封顶；止损无效、风险
+    数据缺失、缩量后不足一手一律禁单留痕）；此前信号沿用旧口径
+    （账户现金的 buy_frac，股票向下取整到 lot_size，加密到 min_qty）
+    ——历史不可改写；
   - SELL 全平可用仓位；A股 T+1（engine.sim 已处理）；
   - A股涨停日不执行 BUY、跌停日不执行 SELL（简化）；
   - 同一日多标的信号按 symbol 字母序执行；
@@ -125,10 +137,304 @@ def position_sizer(sim, aid, symbol, px, cfg, strategy, buy_frac, lots):
     return qty, ""
 
 
+# 仓位计算 v2 生效日（第 13 项）：按信号日期分流——此前信号保持旧
+# 算法逐笔不变（历史不可改写），此后信号一律风险定仓。
+SIZING_EFFECTIVE_DATE = "2026-10-26"
+
+
+def _round_trip_cost_ps(px, buy_rate, buy_min, sell_rate, sell_min,
+                        slippage, prelim_qty):
+    """每股往返成本（模块B-2）：比例费（买入+卖出，yaml 费率）+ 双边滑点
+    （yaml slippage 单边，往返 2×；与毕业标准“往返约 0.55%”同口径）
+    + 最低收费按预估数量摊算到每股。prelim_qty<=0 时最低收费项记 0，
+    由调用方先以纯比例成本估预数量再代入重算（一次迭代）。"""
+    rate_ps = px * (buy_rate + sell_rate + 2 * slippage)
+    min_ps = ((buy_min + sell_min) / prelim_qty) if prelim_qty and prelim_qty > 0 else 0.0
+    return rate_ps + min_ps
+
+
+def position_sizer_v2(ctx):
+    """仓位计算 v2（模块B）：数量 = 单笔风险预算 ÷ 每股风险，再依次受
+    总仓位上限 / 可用现金（含费）/ 风险簇预算 / 换仓额度 封顶，按 lot 取整。
+
+    - 风险预算 = 净值 × risk_pct（yaml single_trade_risk_pct，R-02 2%）；
+      谨慎态系数 env_buy_coef 由模块A状态机给出，此处只消费（乘预算）。
+    - 每股风险 = 止损距离 + 每股往返成本（见 _round_trip_cost_ps）：
+      预算约束的是“打到止损时含费用的真实亏损”，不是名义价差。
+    - 止损距离 = max(入场 − 母板 stop_ref, atr_stop_mult × ATR)，由 ctx
+      构造方按 as-of（信号日）数据算好传入（stop_dist/stop_price）。
+    - 风险簇：与候选同 sector_key 或近 60 日收益相关系数 >0.8 的已有
+      持仓（取并集），其存量未实现风险由构造方汇总为
+      cluster_existing_risk；簇存量 + 本笔 ≤ 净值 × cluster_budget_pct
+      （yaml sector_risk_budget_pct，4%），超出按比例缩量。
+    - fail-closed 硬禁单（返回 qty=0 且 reason 注明类别）：风险数据
+      缺失（data_ok=False / 净值缺失）、止损无效（止损价 ≥ 入场价，
+      或 stop_ref 与 ATR 皆缺）、风险簇预算已满、缩量后不足最小交易
+      单位（<1 手）——绝不为凑单强行下最小单位。
+    ctx 字段：nav/cash/entry_px/lot/risk_pct/buy_fee_rate/buy_min_fee/
+    sell_fee_rate/sell_min_fee/slippage/stop_dist/stop_price/max_pos_pct/
+    pos_value/cluster_existing_risk/cluster_budget_pct/cluster_label/
+    env_buy_coef/env_total_cap/amount_cap/data_ok/data_missing_reason。
+    返回 (qty, block_reason)。"""
+    if not ctx.get("data_ok", True):
+        return 0, "风险数据缺失：%s" % ctx.get("data_missing_reason", "未知")
+    nav = ctx.get("nav") or 0.0
+    if nav <= 0:
+        return 0, "风险数据缺失：账户净值缺失或为零"
+    px = ctx["entry_px"]
+    stop_price = ctx.get("stop_price")
+    if stop_price is not None and stop_price >= px:
+        return 0, "止损无效：止损价 %.4f ≥ 入场价 %.4f" % (stop_price, px)
+    stop_dist = ctx.get("stop_dist")
+    if not stop_dist or stop_dist <= 0:
+        return 0, ("止损无效：母板止损与 ATR 止损均无效或缺失"
+                   "（stop_ref=%s，ATR止损=%s），拒绝建单"
+                   % (ctx.get("stop_ref_raw"), ctx.get("atr_stop_raw")))
+    lot = float(ctx.get("lot") or 1)
+
+    def _floor(q):
+        return math.floor(q / lot) * lot if lot > 0 else q
+
+    # 风险预算（谨慎态系数来自模块A，只消费）
+    risk_budget = nav * float(ctx.get("risk_pct", 0.02))
+    if ctx.get("env_buy_coef"):
+        risk_budget *= float(ctx["env_buy_coef"])
+    buy_rate = float(ctx.get("buy_fee_rate", 0.0))
+    buy_min = float(ctx.get("buy_min_fee", 0.0))
+    sell_rate = float(ctx.get("sell_fee_rate", 0.0))
+    sell_min = float(ctx.get("sell_min_fee", 0.0))
+    slippage = float(ctx.get("slippage", 0.0))
+    # 每股风险：先以纯比例成本估预数量，再摊最低收费重算（一次迭代）
+    psr = stop_dist + _round_trip_cost_ps(px, buy_rate, buy_min, sell_rate,
+                                          sell_min, slippage, None)
+    prelim = risk_budget / psr if psr > 0 else 0.0
+    psr = stop_dist + _round_trip_cost_ps(px, buy_rate, buy_min, sell_rate,
+                                          sell_min, slippage, prelim)
+    qty = _floor(risk_budget / psr)
+    binding = "风险预算"
+    # 封顶 1：总仓位上限（市值口径；谨慎态上限由 A 给出，取更严者）
+    max_pos_pct = float(ctx.get("max_pos_pct", 0.70))
+    if ctx.get("env_total_cap") is not None:
+        max_pos_pct = min(max_pos_pct, float(ctx["env_total_cap"]))
+    room_val = max_pos_pct * nav - float(ctx.get("pos_value", 0.0))
+    q_pos = _floor(room_val / px) if room_val > 0 else 0.0
+    if q_pos < qty:
+        qty, binding = q_pos, "总仓位上限"
+    # 封顶 2：可用现金（含费用）：名义额 + 预估买入费（比例/最低取大）≤ 现金
+    cash = float(ctx.get("cash", 0.0))
+    q_cash_rate = cash / (px * (1 + buy_rate)) if px > 0 else 0.0
+    q_cash_min = (cash - buy_min) / px if px > 0 else 0.0
+    q_cash = _floor(min(q_cash_rate, q_cash_min))
+    if q_cash < qty:
+        qty, binding = q_cash, "可用现金（含费用）"
+    # 封顶 3：风险簇预算（存量 + 本笔 ≤ 净值 4%）
+    cluster_budget = nav * float(ctx.get("cluster_budget_pct", 0.04))
+    cluster_existing = float(ctx.get("cluster_existing_risk", 0.0))
+    room_risk = cluster_budget - cluster_existing
+    if room_risk <= 0:
+        return 0, ("风险簇预算已满：%s 存量未实现风险 %.2f ≥ 预算 %.2f"
+                   "（净值 %.0f%%），本笔不再开仓"
+                   % (ctx.get("cluster_label") or "同簇持仓", cluster_existing,
+                      cluster_budget,
+                      float(ctx.get("cluster_budget_pct", 0.04)) * 100))
+    q_clu = _floor(room_risk / psr)
+    if q_clu < qty:
+        qty, binding = q_clu, "风险簇预算"
+    # 封顶 4：换仓额度（模块A禁开态放行上限，金额口径）
+    if ctx.get("amount_cap") is not None:
+        q_amt = _floor(float(ctx["amount_cap"]) / px)
+        if q_amt < qty:
+            qty, binding = q_amt, "换仓额度"
+    qty = _floor(qty)
+    if qty <= 0 or qty < lot:
+        if binding == "换仓额度":
+            return 0, ("环境闸·禁止新开仓：换仓额度不足（剩余额度 %.2f 元，"
+                       "不足一手）" % float(ctx.get("amount_cap") or 0.0))
+        return 0, ("缩量后不足最小交易单位（绑定约束：%s，缩量结果 %s < 1 手 %s），"
+                   "不强行下单" % (binding, qty, lot))
+    # 终局校验（模块B-6，事后断言）：对最终成交数量逐项验限——数量
+    # 算完不是终点。任一不通过 → 拒绝建单（不许向上凑手超预算）。
+    final_risk = qty * psr
+    if final_risk > risk_budget + 1e-6:
+        return 0, ("终局校验不通过：最终风险 %.2f > 风险预算 %.2f"
+                   % (final_risk, risk_budget))
+    if float(ctx.get("pos_value", 0.0)) + qty * px > max_pos_pct * nav + 1e-6:
+        return 0, "终局校验不通过：成交后总仓位超上限"
+    if cluster_existing + final_risk > cluster_budget + 1e-6:
+        return 0, "终局校验不通过：成交后风险簇风险超预算"
+    if qty * px + max(qty * px * buy_rate, buy_min) > cash + 1e-6:
+        return 0, "终局校验不通过：名义额+费用超可用现金"
+    if ctx.get("amount_cap") is not None and \
+            qty * px > float(ctx["amount_cap"]) + 1e-6:
+        return 0, "终局校验不通过：成交额超换仓额度"
+    return qty, ""
+
+
+def _atr_at(atr_by_sym, symbol, on_date):
+    """atr_by_sym[symbol] 中 ≤on_date 的最近一个 ATR 值（无则 None）。"""
+    m = atr_by_sym.get(symbol) or {}
+    if on_date in m:
+        return m[on_date]
+    earlier = [k for k in m if k <= on_date]
+    return m[max(earlier)] if earlier else None
+
+
+def _stop_dist_and_sector(aid, symbol, px, atr_v, cfg):
+    """目标止损距离与板块键：止损距离 = max(入场 − 母板 stop_ref,
+    atr_stop_mult × ATR)；stop_ref 缺失只用 ATR 项，两者皆缺 → None。"""
+    atr_mult = cfg.get("risk", {}).get("atr_stop_mult", 2.0)
+    dists = []
+    sr = risk_gate.stop_ref_of(symbol)
+    if sr is not None:
+        dists.append(px - sr)
+    if atr_v:
+        dists.append(atr_mult * atr_v)
+    stop_dist = max(dists) if dists else None
+    return stop_dist, risk_gate.sector_key_of(symbol), sr
+
+
+def _pearson(xs, ys):
+    n = len(xs)
+    if n < 30:
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / math.sqrt(sxx * syy)
+
+
+def _corr_asof(closes_a, closes_b, asof, n=60):
+    """近 n 日收益相关系数（as-of：只用 ≤asof 的共同交易日收盘）。
+    共同日 <31（收益 <30）→ None（数据不足，不臆测相关性）。"""
+    dates = sorted(d for d in set(closes_a) & set(closes_b) if d <= asof)
+    if len(dates) < 31:
+        return None
+    sel = dates[-(n + 1):]
+    ra = [closes_a[sel[i]] / closes_a[sel[i - 1]] - 1 for i in range(1, len(sel))]
+    rb = [closes_b[sel[i]] / closes_b[sel[i - 1]] - 1 for i in range(1, len(sel))]
+    return _pearson(ra, rb)
+
+
+def _sizer_v2_ctx(sim, aid, symbol, px, sig_d, cfg, atr_by_sym, closes_by_sym,
+                  last_px, env=None):
+    """从 pipeline 运行期状态组装 position_sizer_v2 的 ctx。
+    全部风险取数按 as-of = 信号日 sig_d（只用信号日及之前的数据）：
+    估值价、ATR、相关性均截断到 sig_d；入场价 px 为执行价（T+1 开盘）。"""
+    risk_cfg = cfg.get("risk", {})
+    atr_mult = risk_cfg.get("atr_stop_mult", 2.0)
+
+    def _px_asof(sym):
+        cp = closes_by_sym.get(sym, {})
+        if sig_d in cp:
+            return cp[sig_d]
+        earlier = [k for k in cp if k <= sig_d]
+        if earlier:
+            return cp[max(earlier)]
+        return last_px.get(sym)
+
+    positions = []  # (symbol, qty, px_asof)
+    pos_value = 0.0
+    for sym2, ll in sim.positions.items():
+        q2 = sum(l.qty for l in ll)
+        if q2 <= 0:
+            continue
+        p2 = _px_asof(sym2)
+        if p2 is None:
+            p2 = sum(l.qty * l.cost for l in ll) / q2
+        positions.append((sym2, q2, p2))
+        pos_value += q2 * p2
+    nav = sim.cash + pos_value
+
+    # ---- fail-closed 数据完整性（模块B-4②） ----
+    data_ok, data_reason = True, ""
+    cand_closes = closes_by_sym.get(symbol, {})
+    n_cand = sum(1 for d in cand_closes if d <= sig_d)
+    if n_cand < 20:
+        data_ok = False
+        data_reason = "%s 信号日 %s 前 bars 仅 %d 根，不足算 ATR/相关性" % (
+            symbol, sig_d, n_cand)
+    if aid in ("sim_a", "sim_hk") and symbol not in risk_gate.load_symbol_meta():
+        data_ok = False
+        data_reason = "workbook_map 无 %s 的记录（母板真源缺失）" % symbol
+
+    # ---- 双止损取严（模块B-3，as-of）：母板 stop_ref 与 ATR 策略止损
+    # 先统一到价格方向（均为入场价下方的止损价），定仓按每股潜在亏损
+    # 更大的一侧（两止损中更低者）取距离——任一止损实际触发时亏损都
+    # 不超预算。任一侧止损 ≥ 入场价视为该侧无效；两侧皆无效/缺失 →
+    # stop_price=None，sizer 拒绝建单。 ----
+    atr_v = _atr_at(atr_by_sym, symbol, sig_d)
+    sr = risk_gate.stop_ref_of(symbol)
+    atr_stop = (px - atr_mult * atr_v) if atr_v else None
+    cand_stops = []
+    if sr is not None and sr < px:
+        cand_stops.append(sr)
+    if atr_stop is not None:
+        cand_stops.append(atr_stop)
+    stop_price = min(cand_stops) if cand_stops else None
+    stop_dist = (px - stop_price) if stop_price is not None else None
+
+    # ---- 风险簇：同 sector_key 或 corr>0.8（并集），存量未实现风险 ----
+    target_sector = risk_gate.sector_key_of(symbol)
+    cand_cp = closes_by_sym.get(symbol, {})
+    cluster_risk = 0.0
+    members = []
+    for sym2, q2, p2 in positions:
+        same_sector = bool(target_sector) and \
+            risk_gate.sector_key_of(sym2) == target_sector
+        corr = _corr_asof(cand_cp, closes_by_sym.get(sym2, {}), sig_d)
+        if same_sector or (corr is not None and corr > 0.8):
+            sr2 = risk_gate.stop_ref_of(sym2)
+            if sr2 is not None:
+                dist2 = p2 - sr2
+            else:
+                a2 = _atr_at(atr_by_sym, sym2, sig_d)
+                dist2 = atr_mult * a2 if a2 else 0.0
+            cluster_risk += q2 * max(dist2, 0.0)
+            members.append(sym2)
+    cluster_label = ("板块 %s" % target_sector) if target_sector else "相关性簇"
+    if members:
+        cluster_label += "（%s）" % "/".join(sorted(members))
+
+    buy_rate, buy_min = _fee_for(aid, "BUY", cfg)
+    sell_rate, sell_min = _fee_for(aid, "SELL", cfg)
+    max_pos_pct = (risk_cfg.get("max_stock_position_pct", 70) / 100
+                   if aid in ("sim_a", "sim_hk")
+                   else risk_cfg.get("max_crypto_position_pct", 100) / 100)
+    ctx = {"nav": nav, "cash": sim.cash, "entry_px": px,
+           "lot": float(cfg.get("lots", {}).get(symbol, 1)),
+           "risk_pct": risk_cfg.get("single_trade_risk_pct", 2) / 100,
+           "buy_fee_rate": buy_rate, "buy_min_fee": buy_min,
+           "sell_fee_rate": sell_rate, "sell_min_fee": sell_min,
+           "slippage": cfg.get("fees", {}).get("slippage", 0.0),
+           "max_pos_pct": max_pos_pct, "pos_value": pos_value,
+           "stop_dist": stop_dist, "stop_price": stop_price,
+           "stop_ref_raw": sr, "atr_stop_raw": atr_stop,
+           "cluster_existing_risk": cluster_risk,
+           "cluster_budget_pct": risk_cfg.get("sector_risk_budget_pct", 4) / 100,
+           "cluster_label": cluster_label,
+           "data_ok": data_ok, "data_missing_reason": data_reason}
+    # 谨慎态参数由模块A状态机给出，此处只消费
+    if env and env.get("state") == "cautious":
+        ctx["env_buy_coef"] = env.get("buy_coef")
+        ctx["env_total_cap"] = env.get("total_cap")
+    return ctx
+
+
 def suggest_buy_qty_from_db(db_path, aid, symbol, px, cfg):
-    """从DB读取状态，计算建议买入数量（供app.py调用，与pipeline.position_sizer同逻辑）。
-    2026-10-18起：app的订单校验必须用此函数的结果，确保与实际下单数量一致。"""
-    import sqlite3, math
+    """从DB读取状态，计算建议买入数量（供app.py调用）。
+    2026-10-18起：app的订单校验必须用此函数的结果，确保与实际下单数量一致。
+    2026-10-26（模块A+B）：风险定仓 v2 + 环境态消费——本函数面向“当下
+    新单”的指引：环境禁开/降级 → 0（不给新开仓指引）；谨慎态套 A 的
+    系数/上限；pipeline 执行端另按信号日期分流（<2026-10-26 的信号仍走
+    旧 position_sizer，历史不可改写）。"""
+    import sqlite3
+    from engine import regime as _regime
+    env = _regime.load_market_env(map_path=cfg.get("env_map_path"))
+    if not _regime.allows_new_position(env):
+        return 0
     con = sqlite3.connect(db_path)
     try:
         row = con.execute(
@@ -138,27 +444,93 @@ def suggest_buy_qty_from_db(db_path, aid, symbol, px, cfg):
         if not row or not row[0] or row[0] <= 0:
             return 0
         nav, cash, pos_val = row[0], row[1] or 0, row[2] or 0
-        # 构造最小sim对象
-        class _Sim:
-            pass
-        sim = _Sim()
-        sim.cash = cash
-        # positions: 从positions表读取
-        sim.positions = {}
-        for r in con.execute(
-                "SELECT symbol, qty, avg_cost FROM positions WHERE account=?",
-                (aid,)).fetchall():
-            class _Lot:
-                pass
-            lot = _Lot()
-            lot.qty, lot.cost = r[1], r[2] or 0
-            sim.positions.setdefault(r[0], []).append(lot)
-        # 参数
-        _sig_cfg = cfg.get("signals", {})
-        strategy = _sig_cfg.get("per_account", {}).get(aid) or _sig_cfg.get("strategy", "ma20")
-        buy_frac = float((cfg.get("sizing", {}) or {}).get("buy_frac", 0.5))
-        lots = cfg.get("lots", {})
-        qty, _ = position_sizer(sim, aid, symbol, px, cfg, strategy, buy_frac, lots)
+        risk_cfg = cfg.get("risk", {})
+        atr_mult = risk_cfg.get("atr_stop_mult", 2.0)
+        today_s = __import__("datetime").date.today().isoformat()
+
+        def _bars_of(sym):
+            return con.execute(
+                "SELECT date, high, low, close FROM market_data WHERE symbol=?"
+                " ORDER BY date", (sym,)).fetchall()
+
+        def _atr_of(sym):
+            bars = _bars_of(sym)
+            if len(bars) < 15:
+                return None
+            from engine.signals import atr as _atr
+            vals = _atr([b[1] for b in bars], [b[2] for b in bars],
+                        [b[3] for b in bars], 14)
+            vals = [v for v in vals if v is not None]
+            return vals[-1] if vals else None
+
+        def _closes_of(sym):
+            return {b[0]: b[3] for b in _bars_of(sym)}
+
+        cand_bars = _bars_of(symbol)
+        data_ok, data_reason = True, ""
+        if len(cand_bars) < 20:
+            data_ok = False
+            data_reason = "%s bars 仅 %d 根，不足算 ATR/相关性" % (
+                symbol, len(cand_bars))
+        if aid in ("sim_a", "sim_hk") and \
+                symbol not in risk_gate.load_symbol_meta():
+            data_ok = False
+            data_reason = "workbook_map 无 %s 的记录（母板真源缺失）" % symbol
+        atr_v = _atr_of(symbol)
+        sr = risk_gate.stop_ref_of(symbol)
+        atr_stop = (px - atr_mult * atr_v) if atr_v else None
+        cand_stops = []
+        if sr is not None and sr < px:
+            cand_stops.append(sr)
+        if atr_stop is not None:
+            cand_stops.append(atr_stop)
+        stop_price = min(cand_stops) if cand_stops else None
+        stop_dist = (px - stop_price) if stop_price is not None else None
+        target_sector = risk_gate.sector_key_of(symbol)
+        cand_cp = _closes_of(symbol)
+        cluster_risk = 0.0
+        members = []
+        for sym2, q2, _avg, last2 in con.execute(
+                "SELECT symbol, qty, avg_cost, last_price FROM positions"
+                " WHERE account=? AND qty>0", (aid,)).fetchall():
+            same_sector = bool(target_sector) and \
+                risk_gate.sector_key_of(sym2) == target_sector
+            corr = _corr_asof(cand_cp, _closes_of(sym2), today_s)
+            if not (same_sector or (corr is not None and corr > 0.8)):
+                continue
+            sr2 = risk_gate.stop_ref_of(sym2)
+            if sr2 is not None and last2 is not None:
+                dist2 = last2 - sr2
+            else:
+                a2 = _atr_of(sym2)
+                dist2 = atr_mult * a2 if a2 else 0.0
+            cluster_risk += q2 * max(dist2, 0.0)
+            members.append(sym2)
+        cluster_label = ("板块 %s" % target_sector) if target_sector else "相关性簇"
+        if members:
+            cluster_label += "（%s）" % "/".join(sorted(members))
+        buy_rate, buy_min = _fee_for(aid, "BUY", cfg)
+        sell_rate, sell_min = _fee_for(aid, "SELL", cfg)
+        max_pos_pct = (risk_cfg.get("max_stock_position_pct", 70) / 100
+                       if aid in ("sim_a", "sim_hk")
+                       else risk_cfg.get("max_crypto_position_pct", 100) / 100)
+        ctx = {"nav": nav, "cash": cash, "entry_px": px,
+               "lot": float(cfg.get("lots", {}).get(symbol, 1)),
+               "risk_pct": risk_cfg.get("single_trade_risk_pct", 2) / 100,
+               "buy_fee_rate": buy_rate, "buy_min_fee": buy_min,
+               "sell_fee_rate": sell_rate, "sell_min_fee": sell_min,
+               "slippage": cfg.get("fees", {}).get("slippage", 0.0),
+               "max_pos_pct": max_pos_pct, "pos_value": pos_val,
+               "stop_dist": stop_dist, "stop_price": stop_price,
+               "stop_ref_raw": sr, "atr_stop_raw": atr_stop,
+               "cluster_existing_risk": cluster_risk,
+               "cluster_budget_pct": risk_cfg.get("sector_risk_budget_pct", 4) / 100,
+               "cluster_label": cluster_label,
+               "data_ok": data_ok, "data_missing_reason": data_reason}
+        if env.get("state") == "cautious":
+            ctx["env_buy_coef"] = env.get("buy_coef")
+            ctx["env_total_cap"] = env.get("total_cap")
+        qty, _reason = position_sizer_v2(ctx)
         return qty
     finally:
         con.close()
@@ -237,6 +609,16 @@ def _run_locked(db_path=DB, cfg=None):
     lots = cfg.get("lots", {})
     boards = cfg.get("boards", {})
     ma_long = cfg["signals"]["ma_windows"][-1]
+
+    # 市场环境态（模块A）：母板字段唯一真源（engine.regime 状态机），
+    # 整轮跑批加载一次。cfg["env_map_path"] 仅供测试注入映射变体。
+    from engine import regime as _regime
+    env = _regime.load_market_env(map_path=cfg.get("env_map_path"), con=con)
+    print("市场环境态：%s（%s）" % (env.get("label"),
+                                   env.get("degraded_reason") or env.get("reason") or ""))
+    # 换仓额度（模块A豁免）：禁开/降级态下，按账户在回放顺序中累计
+    # 已执行卖出金额；BUY 在额度内放行并扣减，超出拦截。仅本轮内存态。
+    rotation_quota = {}
 
     asof = None
     for acct in cfg["accounts"]:
@@ -345,6 +727,8 @@ def _run_locked(db_path=DB, cfg=None):
                                 " VALUES(?,?,?,?,?,?,?,?,?,?)",
                                 (d, aid, s, "SELL", qty, round(px, 6), round(fee, 4),
                                  round(pnl, 2), d, cfg.get("meta", {}).get("version", "unknown")))
+                            rotation_quota[aid] = \
+                                rotation_quota.get(aid, 0.0) + qty * px
                             del atr_stops[s]
                     except ValueError:
                         pass
@@ -373,6 +757,9 @@ def _run_locked(db_path=DB, cfg=None):
                 if key_new in existing_fills:
                     qty, price, fee = existing_fills[key_new]
                     _replay_fill(sim, s, side, qty, price, fee, d)
+                    if side == "SELL":
+                        rotation_quota[aid] = \
+                            rotation_quota.get(aid, 0.0) + qty * price
                     continue
                 # 旧口径成交由底部"历史成交补重放"统一处理（按执行日期），此处不重复处理
                 # 门禁（信号日维度）
@@ -399,6 +786,31 @@ def _run_locked(db_path=DB, cfg=None):
                              _breason,
                              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                         continue
+                    # 市场环境闸（模块A，与禁入闸同层）：仅对信号日
+                    # ≥2026-10-26 的新信号生效（清单C 生效日分流；此前
+                    # 信号走旧路径回放，逐笔与改造前一致）。attack/
+                    # cautious 不拦（谨慎参数由 sizing 消费 env）；
+                    # blocked_new/degraded 时 BUY 不执行——换仓豁免
+                    # 除外：本账户回放累计卖出额度 >0 时放行本闸，额度
+                    # 在 sizing 作金额上限、成交后扣减，超出另行留痕。
+                    # SELL 永不受本闸；历史成交已在上方重放，不受追溯。
+                    _env_blk, _env_reason = (False, "")
+                    _rot_cap = None
+                    if sig_d >= SIZING_EFFECTIVE_DATE:
+                        _env_blk, _env_reason = risk_gate.check_env_gate(env)
+                    if _env_blk:
+                        _quota = rotation_quota.get(aid, 0.0)
+                        if _quota <= 0:
+                            con.execute(
+                                "INSERT OR IGNORE INTO blocked_signals"
+                                "(date,signal_date,account,symbol,side,"
+                                "signal_price,exec_price,stop_ref,reason,created_at)"
+                                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                (d, sig_d, aid, s, side, sig_px, round(px, 6), _sr,
+                                 _env_reason + "；无换仓额度（未先卖后买）",
+                                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                            continue
+                        _rot_cap = _quota
                 if key_old in pause_blacklist:
                     continue  # 暂停期积压信号：恢复后不补成交
                 if status == "paused":
@@ -413,11 +825,54 @@ def _run_locked(db_path=DB, cfg=None):
                     continue
                 try:
                     if side == "BUY":
-                        qty, block_reason = position_sizer(
-                            sim, aid, s, px, cfg, strategy, buy_frac, lots)
-                        if qty <= 0:
-                            continue
+                        if sig_d >= SIZING_EFFECTIVE_DATE:
+                            # 风险定仓 v2（模块B）：按信号日期分流，
+                            # 此前信号仍走旧 position_sizer（历史不可改写）
+                            _v2ctx = _sizer_v2_ctx(
+                                sim, aid, s, px, sig_d, cfg, atr_by_sym,
+                                closes_by_sym, last_px, env=env)
+                            if _rot_cap is not None:
+                                _v2ctx["amount_cap"] = _rot_cap
+                            qty, block_reason = position_sizer_v2(_v2ctx)
+                            if qty <= 0:
+                                if block_reason:
+                                    con.execute(
+                                        "INSERT OR IGNORE INTO blocked_signals"
+                                        "(date,signal_date,account,symbol,side,"
+                                        "signal_price,exec_price,stop_ref,reason,created_at)"
+                                        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                        (d, sig_d, aid, s, side, sig_px,
+                                         round(px, 6), risk_gate.stop_ref_of(s),
+                                         "仓位拦截：" + block_reason,
+                                         datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                                continue
+                            if _rot_cap is not None:
+                                # 换仓额度截断了计划数量：超出部分留痕
+                                _planned, _pr = position_sizer_v2(
+                                    {**_v2ctx, "amount_cap": None})
+                                if _planned > qty:
+                                    con.execute(
+                                        "INSERT OR IGNORE INTO blocked_signals"
+                                        "(date,signal_date,account,symbol,side,"
+                                        "signal_price,exec_price,stop_ref,reason,created_at)"
+                                        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                        (d, sig_d, aid, s, side, sig_px,
+                                         round(px, 6), risk_gate.stop_ref_of(s),
+                                         "环境闸·禁止新开仓：换仓额度不足，超出"
+                                         "部分已拦截（计划 %s 股，额度内成交 %s 股，"
+                                         "剩余额度 %.2f 元）" % (_planned, qty, _rot_cap),
+                                         datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                        else:
+                            qty, block_reason = position_sizer(
+                                sim, aid, s, px, cfg, strategy, buy_frac, lots)
+                            if qty <= 0:
+                                continue
+                            # legacy 路径到此为止：不套环境态/换仓额度
+                            # （清单C：此前信号按旧路径逐笔回放）
                         fee = sim.buy(s, qty, px, d, fee_rate, min_fee)
+                        if _rot_cap is not None:
+                            rotation_quota[aid] = max(
+                                0.0, rotation_quota.get(aid, 0.0) - qty * px)
                         pnl = 0.0
                         # 设置策略止损（ATR）：entry - atr_mult * ATR(信号日)
                         atr_v = atr_by_sym.get(s, {}).get(sig_d)
@@ -435,6 +890,9 @@ def _run_locked(db_path=DB, cfg=None):
                     " VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (d, aid, s, side, qty, round(px, 6), round(fee, 4), round(pnl, 2), sig_d,
                      cfg.get("meta", {}).get("version", "unknown")))
+                if side == "SELL":
+                    rotation_quota[aid] = \
+                        rotation_quota.get(aid, 0.0) + qty * px
             pending = still_pending
 
             # ===== Phase 2：从今日收盘生成新信号，加入 pending =====
@@ -472,6 +930,9 @@ def _run_locked(db_path=DB, cfg=None):
                 if faid != aid or fd != d or (fd, faid, fs, fside) in seen:
                     continue
                 _replay_fill(sim, fs, fside, qty, price, fee, fd)
+                if fside == "SELL":
+                    rotation_quota[aid] = \
+                        rotation_quota.get(aid, 0.0) + qty * price
             # 当日收盘净值（缺 bar 的标的沿用上个收盘价估值，已在上方 WARN 留痕）
             pos_val, cash = 0.0, sim.cash
             for s in bars:
@@ -510,6 +971,25 @@ def write_report(db_path=DB, cfg=None, asof=None):
     if cfg is None:
         import yaml
         cfg = yaml.safe_load(open(os.path.join(BASE, "config", "strategy.yaml"), encoding="utf-8"))
+    from engine import regime as _regime_wr
+    _env_wr = _regime_wr.load_market_env(
+        map_path=cfg.get("env_map_path"), db_path=db_path)
+    _env_label = _env_wr.get("label", "?")
+    _auto_wr = _env_wr.get("auto") or {}
+    if _auto_wr.get("known"):
+        _recon_wr = (
+            "自动计算 上证 %.2f vs MA20 %.2f（指数日 %s）→ %s；母板B31=%s；"
+            "对账%s；环境态=%s" % (
+                _auto_wr["close"], _auto_wr["ma20"], _auto_wr.get("last_date"),
+                "站上20日线" if _auto_wr["on"] else "未站上20日线",
+                "是" if _env_wr.get("b31") else "否",
+                {True: "一致", False: "不一致"}.get(
+                    _env_wr.get("reconciled"), "不可用"),
+                _env_label))
+    else:
+        _recon_wr = "自动计算不可用（指数数据缺失）；环境态=%s" % _env_label
+    if _env_wr.get("state") == "degraded":
+        _recon_wr += "；降级原因：%s" % (_env_wr.get("degraded_reason") or "")
     # 测试时可覆盖日报输出目录，避免测试跑批覆盖生产日报
     report_dir = os.environ.get("PAPER_SIM_REPORTS", REPORT_DIR)
     os.makedirs(report_dir, exist_ok=True)
@@ -586,8 +1066,10 @@ def write_report(db_path=DB, cfg=None, asof=None):
     L += ["---", "口径声明：",
           "- 数据：%s；%s；%s" % (cfg["data_sources"]["a_hk"],
                                  cfg["data_sources"]["crypto"], cfg["data_sources"]["fx"]),
-          "- 执行：T+1 开盘执行，滑点 %s%%；BUY 用现金 %s%%，SELL 全平；费用见配置" % (
+          "- 执行：T+1 开盘执行，滑点 %s%%；BUY 仓位：信号日≥2026-10-26 按风险定仓（风险预算=净值×2%%，每股风险=止损距离+往返成本；总仓位/现金（含费）/风险簇预算4%%/换仓额度封顶），此前信号沿用旧口径（现金 %s%%）；SELL 全平；费用见配置" % (
               cfg["fees"]["slippage"] * 100, cfg.get("sizing", {}).get("buy_frac", 0.5) * 100),
+          "- 环境闸（模块A）：禁止新开仓时 BUY 不执行（换仓额度内除外），拦截逐条见上（blocked_signals）",
+          "- 环境对账（模块A·每日对账）：%s" % _recon_wr,
           "- 规则版本：%s（DRAFT）" % cfg["meta"]["version"]]
     path = os.path.join(report_dir, "日报-%s.md" % asof)
     open(path, "w", encoding="utf-8").write("\n".join(L) + "\n")

@@ -1009,29 +1009,8 @@ elif tab == "🔍 选股":
             st.caption("近14天无未过期新闻证据")
     except Exception as _e:
         st.caption(f"板块新闻面暂不可用：{_e}")
-    # ---- 全市场搜索：任意A股/港股代码，新浪实时K线 ----
-    with st.expander("🔎 全市场搜索（任意代码）", expanded=False):
-        s_code = st.text_input("输入代码，如 600519 / 002446 / 00700", key="mkt_search")
-        if s_code:
-            code = s_code.strip()
-            # 判断市场前缀
-            if code.startswith("HK") or (len(code) == 5 and code.isdigit()):
-                sina_sym = f"hk{code[-5:]}"
-                st.caption("港股：新浪静态K线不支持，跳转查看")
-                st.markdown(f"[新浪港股行情](https://stock.finance.sina.com.cn/hkstock/quotes/{code[-5:]}.html) | "
-                            f"[东方财富](https://quote.eastmoney.com/hk/{code[-5:]}.html)")
-            elif len(code) == 6 and code.isdigit():
-                prefix = "sh" if code[0] in "68" else "sz"
-                sina_sym = f"{prefix}{code}"
-                # 新浪K线图：日K/周K/分时切换
-                ktype = st.radio("周期", ["日K", "周K", "分时"], horizontal=True, key="sina_ktype")
-                kmap = {"日K": "daily", "周K": "weekly", "分时": "min"}
-                import time
-                img_url = f"https://image2.sinajs.cn/newchart/{kmap[ktype]}/n/{sina_sym}.gif?t={int(time.time())}"
-                st.image(img_url, use_container_width=True)
-                st.caption(f"数据来源：新浪财经 · {code}")
-            else:
-                st.warning("请输入6位A股代码或港股代码")
+    # 模块E裁决（2026-10-26 用户拍板删除）：原「🔎 全市场搜索」手动查图控件
+    # （不产出候选/订单、与全自动唯一入口冲突）已移除，不得回流。
     st.caption("市场面 + 技术形态")
     from engine.indicators import rsi, macd, bollinger, ma_align, adx as calc_adx, market_regime
     from engine.signals import moving_average
@@ -1049,22 +1028,8 @@ elif tab == "🔍 选股":
     c1.metric("上涨", adv)
     c2.metric("下跌", dec)
     c3.metric("持平", flat)
-    # ---- 持仓资讯：每个标的新闻直达 ----
-    with st.expander("📰 持仓资讯", expanded=False):
-        for sym in sorted(SYMBOL_CN.keys()):
-            nm = sym_name(sym)
-            if len(sym) == 6 and sym.isdigit():
-                # A股：新浪 + 东方财富新闻
-                st.markdown(f"**{nm}** · "
-                            f"[新浪](https://vip.stock.finance.sina.com.cn/corp/view/vCB_AllNewsStock.php?symbol={sym}) · "
-                            f"[东财](https://quote.eastmoney.com/concept/{sym}.html?from=classic)")
-            elif sym.startswith("HK"):
-                code5 = sym[2:]
-                st.markdown(f"**{nm}** · "
-                            f"[新浪港股](https://stock.finance.sina.com.cn/hkstock/quotes/{code5}.html) · "
-                            f"[东财](https://quote.eastmoney.com/hk/{code5}.html)")
-            elif sym == "BTCUSDT":
-                st.markdown(f"**{nm}** · [金色财经](https://www.jinse.cn) · [币世界](https://www.bishijie.com)")
+    # 模块E裁决（2026-10-26 用户拍板删除）：原「📰 持仓资讯」外链目录
+    # （已被证据制板块新闻面覆盖）已移除，不得回流。
     # ---- 技术形态：每个标的指标面板 ----
     st.subheader("📐 技术形态")
     import time as _time

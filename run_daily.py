@@ -139,6 +139,27 @@ def _record_shadow_samples(db):
              summary["blocked"]))
 
 
+def _check_workbook_map():
+    """母板映射核对（四项补齐① 甲2）：从封版母板重新推导映射并与
+    config/workbook_map.json 逐项 diff。一致打印一行；不一致打印
+    FAIL 行 + 差异摘要（现行 json 绝不自动覆盖，是否重跑生成器
+    由人工决定）。失败由调用方捕获打印 FAIL 行，不拖垮主链。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "check_workbook_map_tool",
+        os.path.join(BASE, "tools", "check_workbook_map.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    ok, diffs, summary = mod.run()
+    if ok:
+        print("母板映射核对：与封版母板推导结果逐项一致"
+              "（标的 %d、板块 %d）"
+              % (summary["symbols"], summary["sectors"]))
+    else:
+        print("FAIL 母板映射核对：%d 项不一致（现行 workbook_map.json "
+              "未自动覆盖）：%s" % (len(diffs), "；".join(diffs[:5])))
+
+
 def main():
     day = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == "--date" else str(date.today())
     con = init_db()
@@ -186,6 +207,13 @@ def main():
         _record_shadow_samples(DB)
     except Exception as e:  # noqa: BLE001
         print("FAIL 影子记录（screen/perf）: %s" % e)
+
+    # 5. 母板映射核对（补齐① 甲2）：derive+diff，只报不一致、不自动
+    #    覆盖现行映射；失败留 FAIL 行，不拖垮主链产物。
+    try:
+        _check_workbook_map()
+    except Exception as e:  # noqa: BLE001
+        print("FAIL 母板映射核对: %s" % e)
 
 
 if __name__ == "__main__":

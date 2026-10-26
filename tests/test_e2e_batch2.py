@@ -85,7 +85,14 @@ def test_scenario_01_blocked_no_new_position(tmp_path):
 
 
 def test_scenario_01b_rotation_quota(tmp_path):
-    """换仓豁免：禁开态下先卖后买，额度内放行、超出拦截（单独断言）。"""
+    """换仓豁免（额度券口径，2026-10-27 补齐①修订）：
+    禁开态下主动卖出生成额度券（一对一、净回收计额），券内买回
+    放行、用完作废，后续其他标的买入无券可用被拦截留痕。
+
+    修订说明：原用例断言旧「账户卖出毛额资金池」口径（002639 能用
+    002446 卖出剩余额度截断成交小量）。券制下额度与来源成交一对一
+    绑定、不混池：002446 的券只能资助一笔买入，002639 买入应为 0
+    且留「无可用换仓额度券」痕。场景结构与输入不变。"""
     # 阶段一（允许进攻）：002446 建仓 1500 股；002639 横盘
     db = _fresh_db(tmp_path)
     _insert(db, "002446", _bars_from_closes([10.0] * 25 + [8.9, 8.9]))
@@ -108,22 +115,42 @@ def test_scenario_01b_rotation_quota(tmp_path):
     fills, blk = _fills(db)
     sells = [f for f in fills if f[3] == "SELL"]
     buys2 = [f for f in fills if f[3] == "BUY" and f[0] > "2026-10-27"]
-    quota = sells[0][4] * sells[0][5] if sells else 0.0
+    # 券面额 = 来源卖出净回收（毛额 − 卖出费），非旧池的毛额口径
+    quota = sells[0][4] * sells[0][5] - sells[0][6] if sells else 0.0
     bought_amt = sum(f[4] * f[5] for f in buys2)
-    rot_blk = [b for b in blk if "换仓额度" in b[5]]
+    rot_blk = [b for b in blk if "无可用换仓额度券" in b[5]]
+    con = sqlite3.connect(db)
+    vouchers = con.execute(
+        "SELECT voucher_id,source_fill_id,amount,status,used_symbol,"
+        "used_fill_id FROM rotation_vouchers").fetchall()
+    sell_id = con.execute(
+        "SELECT id FROM fills WHERE side='SELL'").fetchone()[0]
+    buy_vid = {f[2]: f[10] for f in con.execute(
+        "SELECT date,account,symbol,side,qty,price,fee,pnl,signal_date,"
+        "strategy_version,rotation_voucher_id FROM fills"
+        " WHERE side='BUY' AND date>'2026-10-27'").fetchall()}
+    con.close()
     _evidence("scenario_01b_rotation_quota", {
-        "input": "阶段一允许进攻建仓002446 1500股；阶段二转禁止新开仓：002446止盈卖出（额度来源），随后002446回落买回信号 + 002639新买入信号",
-        "expected": "SELL 正常成交；禁开态 BUY 合计金额 ≤ 卖出额度；超出部分被拦截并留痕（换仓额度不足）",
+        "input": "阶段一允许进攻建仓002446 1500股；阶段二转禁止新开仓：002446止盈卖出（额度券来源），随后002446回落买回信号 + 002639新买入信号",
+        "expected": "SELL 正常成交并生成 1 张额度券（净回收计额）；券资助 002446 买回 1 笔且金额 ≤ 券面额、fills 带券来源引用；券用完后 002639 无券可用被拦截留痕",
         "actual": {"sell": sells, "rotation_buys": buys2,
-                   "quota": quota, "rotation_buy_amount": bought_amt,
-                   "rotation_blocked": rot_blk},
+                   "voucher_net_amount": quota,
+                   "rotation_buy_amount": bought_amt,
+                   "vouchers": vouchers, "rotation_blocked": rot_blk},
         "fills": fills, "blocked": blk})
     assert len(sells) == 1 and sells[0][4] == 1500
     assert bought_amt <= quota + 1e-6, (bought_amt, quota)
-    assert any(b[2] == "002639" for b in rot_blk), blk
     by_sym = {f[2]: f[4] for f in buys2}
-    assert by_sym.get("002446", 0) > 0  # 额度内买回成交
-    assert 0 < by_sym.get("002639", 0) < 1000  # 被额度截断为小量
+    assert by_sym.get("002446", 0) > 0  # 券内买回成交
+    # 一对一：券已被 002446 买回用完，002639 不得再用同一额度成交
+    assert by_sym.get("002639", 0) == 0, buys2
+    assert any(b[2] == "002639" for b in rot_blk), blk
+    # 券台账：恰 1 张、面额为净回收、已用、去向为 002446 买回
+    assert len(vouchers) == 1, vouchers
+    vid, src_id, vamt, vstatus, vused_sym, _ = vouchers[0]
+    assert src_id == sell_id and abs(vamt - quota) < 1e-6, vouchers
+    assert vstatus == "used" and vused_sym == "002446", vouchers
+    assert buy_vid.get("002446") == sell_id  # fills 定格券号引用
 
 
 # ---------- 场景 2：环境数据缺失 → 告警 + 禁开 ----------

@@ -43,7 +43,7 @@ IMPORT_MODULES = [
     "engine.pipeline", "engine.signals", "engine.sim", "engine.execution",
     "engine.realtime", "engine.indicators", "engine.tv_charts",
     "engine.order_validate", "engine.screen", "engine.news_sentiment",
-    "engine.risk_gate", "engine.regime",
+    "engine.risk_gate", "engine.regime", "engine.rotation",
     "data.quotes", "sync_snapshot", "run_daily",
 ]
 PYTEST_TIMEOUT = 300

@@ -15,8 +15,11 @@ fills 追加制——历史成交一旦产生即为事实，切换暂停/手动�
     字段（B31/实盘验证E14放行/B79，经 workbook_map 抽取）——允许进攻/
     谨慎交易（套母板验证期系数 0.5 与总仓位上限 0.3）/禁止新开仓；
     数据缺失或映射过期 fail-closed 降级为禁止新开仓。禁开态下换仓
-    豁免：按账户回放累计卖出金额为额度，BUY 额度内放行并扣减、超出
-    拦截（均写入 blocked_signals 留痕）；SELL 永不受环境闸；
+    豁免（补齐①额度券制，engine.rotation）：仅主动信号卖出生成额
+    度券（扣费后净回收计额、绑定来源成交、一券一买、5 交易日有
+    效、防再生），BUY 在券面额内放行、超出拦截（均写入
+    blocked_signals 留痕）；degraded 降级态禁用额度券；SELL 永不
+    受环境闸；
   - BUY 仓位：信号日 ≥2026-10-26 用风险定仓 v2（数量=风险预算÷每股
     风险；每股风险=止损距离+每股往返成本（费率+滑点+最低收费摊算），
     止损距离=max(入场−母板stop_ref, 2×ATR)；再受总仓位/现金（含费）/
@@ -35,9 +38,10 @@ import fcntl
 import math
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from engine import risk_gate
+from engine.rotation import RotationBook
 from engine.sim import SimAccount, Lot, check_limit
 from engine.signals import gen_signals, gen_buyback_signals
 
@@ -240,7 +244,7 @@ def position_sizer_v2(ctx):
     q_clu = _floor(room_risk / psr)
     if q_clu < qty:
         qty, binding = q_clu, "风险簇预算"
-    # 封顶 4：换仓额度（模块A禁开态放行上限，金额口径）
+    # 封顶 4：换仓额度券面额（模块A禁开态放行上限，金额口径）
     if ctx.get("amount_cap") is not None:
         q_amt = _floor(float(ctx["amount_cap"]) / px)
         if q_amt < qty:
@@ -248,7 +252,7 @@ def position_sizer_v2(ctx):
     qty = _floor(qty)
     if qty <= 0 or qty < lot:
         if binding == "换仓额度":
-            return 0, ("环境闸·禁止新开仓：换仓额度不足（剩余额度 %.2f 元，"
+            return 0, ("环境闸·禁止新开仓：换仓额度券面额不足（面额 %.2f 元，"
                        "不足一手）" % float(ctx.get("amount_cap") or 0.0))
         return 0, ("缩量后不足最小交易单位（绑定约束：%s，缩量结果 %s < 1 手 %s），"
                    "不强行下单" % (binding, qty, lot))
@@ -266,7 +270,7 @@ def position_sizer_v2(ctx):
         return 0, "终局校验不通过：名义额+费用超可用现金"
     if ctx.get("amount_cap") is not None and \
             qty * px > float(ctx["amount_cap"]) + 1e-6:
-        return 0, "终局校验不通过：成交额超换仓额度"
+        return 0, "终局校验不通过：成交额超换仓额度券面额"
     return qty, ""
 
 
@@ -570,12 +574,28 @@ def _run_locked(db_path=DB, cfg=None):
     con = sqlite3.connect(db_path)
     # signals/positions/daily_report 全量重算；fills 追加制：历史成交是事实，
     # 控制状态（暂停/手动）只决定新信号是否成交，不得删除历史成交。
-    for t in ("signals", "positions", "daily_report"):
+    # 换仓额度券台账（补齐①）：每轮按成交事实重建（重算产物）；
+    # fills.rotation_voucher_id 为用券买入的定格引用（旧库幂等补列，
+    # 不在发布门禁指纹列集内，不影响历史行哈希）。
+    con.execute("""CREATE TABLE IF NOT EXISTS rotation_vouchers(
+        voucher_id TEXT PRIMARY KEY, source_fill_id INTEGER,
+        account TEXT, symbol TEXT, signal_date TEXT, exec_date TEXT,
+        qty REAL, price REAL, fee REAL, amount REAL, status TEXT,
+        used_fill_id INTEGER, used_date TEXT, used_symbol TEXT,
+        created_at TEXT)""")
+    if "rotation_voucher_id" not in {
+            r[1] for r in con.execute("PRAGMA table_info(fills)")}:
+        con.execute(
+            "ALTER TABLE fills ADD COLUMN rotation_voucher_id INTEGER")
+    for t in ("signals", "positions", "daily_report", "rotation_vouchers"):
         con.execute("DELETE FROM %s" % t)
     existing_fills = {}
     for r in con.execute(
-            "SELECT date,account,symbol,side,qty,price,fee FROM fills ORDER BY date,id"):
-        existing_fills[(r[0], r[1], r[2], r[3])] = (r[4], r[5], r[6])
+            "SELECT id,date,account,symbol,side,qty,price,fee,signal_date,"
+            "rotation_voucher_id FROM fills ORDER BY date,id"):
+        existing_fills[(r[1], r[2], r[3], r[4])] = {
+            "id": r[0], "qty": r[5], "price": r[6], "fee": r[7],
+            "signal_date": r[8], "rotation_voucher_id": r[9]}
     # 网页版控制：paused 只记信号不成交；manual 需 approvals 表批准才成交
     row = con.execute("SELECT status, mode FROM control WHERE id=1").fetchone()
     status, mode = row if row else ("running", "auto")
@@ -616,9 +636,12 @@ def _run_locked(db_path=DB, cfg=None):
     env = _regime.load_market_env(map_path=cfg.get("env_map_path"), con=con)
     print("市场环境态：%s（%s）" % (env.get("label"),
                                    env.get("degraded_reason") or env.get("reason") or ""))
-    # 换仓额度（模块A豁免）：禁开/降级态下，按账户在回放顺序中累计
-    # 已执行卖出金额；BUY 在额度内放行并扣减，超出拦截。仅本轮内存态。
-    rotation_quota = {}
+    # 换仓额度券（补齐①，草案口径，engine.rotation）：仅 blocked_new
+    # 态消费；主动信号卖出生成、净回收计额、一对一、5 交易日有效、
+    # degraded 禁用、防再生。回放内由 RotationBook 维护，轮末落
+    # rotation_vouchers 表（重算产物），用券事实在 fills 定格。
+    book = RotationBook()
+    _acct_last = {}  # aid -> 本轮回放最后日期（券过期结算用）
 
     asof = None
     for acct in cfg["accounts"]:
@@ -694,6 +717,8 @@ def _run_locked(db_path=DB, cfg=None):
                 has_next_bar[(s, r[0])] = (i + 1 < len(blist))
 
         dates = sorted(set(d for bl in bars.values() for d, *_ in bl))
+        book.set_calendar(aid, dates)
+        _acct_last[aid] = dates[-1]
         asof = dates[-1] if asof is None or dates[-1] > asof else asof
         prev_nav = float(acct["principal"])
         last_px = {}  # 标的 -> 上个已知收盘价；缺 bar 的日期沿用（不归零、不编造）
@@ -727,8 +752,9 @@ def _run_locked(db_path=DB, cfg=None):
                                 " VALUES(?,?,?,?,?,?,?,?,?,?)",
                                 (d, aid, s, "SELL", qty, round(px, 6), round(fee, 4),
                                  round(pnl, 2), d, cfg.get("meta", {}).get("version", "unknown")))
-                            rotation_quota[aid] = \
-                                rotation_quota.get(aid, 0.0) + qty * px
+                            # 被动强制平仓（ATR 策略止损）：不生成额度
+                            # 券（草案第 8 条）；仅同步防再生来源队列。
+                            book.note_sell(aid, s, qty, d, sim.t1)
                             del atr_stops[s]
                     except ValueError:
                         pass
@@ -736,6 +762,7 @@ def _run_locked(db_path=DB, cfg=None):
             # 信号日 D 的信号，在 D+1 开盘价成交（贴近人工实盘：收盘看信号，次日开盘下单）
             still_pending = []
             for (sig_d, s, side, sig_px) in pending:
+                _rot_voucher = None  # 本笔若用券成交，成交后据此定格标注
                 # 该标的今日无 bar（如停牌），继续等待
                 if d not in opens_by_sym.get(s, {}):
                     still_pending.append((sig_d, s, side, sig_px))
@@ -755,11 +782,28 @@ def _run_locked(db_path=DB, cfg=None):
                 key_old = (sig_d, aid, s, side)
                 seen.add(key_new)
                 if key_new in existing_fills:
-                    qty, price, fee = existing_fills[key_new]
+                    _ef = existing_fills[key_new]
+                    qty, price, fee = _ef["qty"], _ef["price"], _ef["fee"]
                     _replay_fill(sim, s, side, qty, price, fee, d)
-                    if side == "SELL":
-                        rotation_quota[aid] = \
-                            rotation_quota.get(aid, 0.0) + qty * price
+                    if side == "BUY":
+                        _vid = _ef["rotation_voucher_id"]
+                        book.note_buy(aid, s, qty, d,
+                                      is_voucher=_vid is not None)
+                        if _vid is not None and not book.attach_replayed_use(
+                                "RV-%d" % _vid, _ef["id"], d, s):
+                            print("WARN 券 RV-%s 在重放中未找到来源"
+                                  "（fills #%s 的用券引用无对应券）"
+                                  % (_vid, _ef["id"]))
+                    else:
+                        # 历史信号卖出重放：与新成交同口径决定是否
+                        # 生成额度券（信号日生效日 + 防再生两道门）
+                        _touched = book.note_sell(aid, s, qty, d, sim.t1)
+                        if _ef["signal_date"] and \
+                                _ef["signal_date"] >= SIZING_EFFECTIVE_DATE \
+                                and not _touched:
+                            book.issue(aid, _ef["id"], s,
+                                       _ef["signal_date"], d,
+                                       qty, price, fee)
                     continue
                 # 旧口径成交由底部"历史成交补重放"统一处理（按执行日期），此处不重复处理
                 # 门禁（信号日维度）
@@ -790,27 +834,36 @@ def _run_locked(db_path=DB, cfg=None):
                     # ≥2026-10-26 的新信号生效（清单C 生效日分流；此前
                     # 信号走旧路径回放，逐笔与改造前一致）。attack/
                     # cautious 不拦（谨慎参数由 sizing 消费 env）；
-                    # blocked_new/degraded 时 BUY 不执行——换仓豁免
-                    # 除外：本账户回放累计卖出额度 >0 时放行本闸，额度
-                    # 在 sizing 作金额上限、成交后扣减，超出另行留痕。
-                    # SELL 永不受本闸；历史成交已在上方重放，不受追溯。
+                    # blocked_new 时 BUY 不执行——换仓豁免（额度券）
+                    # 除外：本账户有可用额度券时放行本闸，券面额在
+                    # sizing 作金额上限、成交后标已用，超出另行留痕；
+                    # degraded 时额度券禁用（草案第 2 条）。SELL 永不
+                    # 受本闸；历史成交已在上方重放，不受追溯。
                     _env_blk, _env_reason = (False, "")
-                    _rot_cap = None
                     if sig_d >= SIZING_EFFECTIVE_DATE:
                         _env_blk, _env_reason = risk_gate.check_env_gate(env)
                     if _env_blk:
-                        _quota = rotation_quota.get(aid, 0.0)
-                        if _quota <= 0:
+                        if env.get("state") == _regime.DEGRADED:
                             con.execute(
                                 "INSERT OR IGNORE INTO blocked_signals"
                                 "(date,signal_date,account,symbol,side,"
                                 "signal_price,exec_price,stop_ref,reason,created_at)"
                                 " VALUES(?,?,?,?,?,?,?,?,?,?)",
                                 (d, sig_d, aid, s, side, sig_px, round(px, 6), _sr,
-                                 _env_reason + "；无换仓额度（未先卖后买）",
+                                 _env_reason + "；安全降级态禁用换仓额度券",
                                  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                             continue
-                        _rot_cap = _quota
+                        _rot_voucher, _rot_why = book.pick(aid, d)
+                        if _rot_voucher is None:
+                            con.execute(
+                                "INSERT OR IGNORE INTO blocked_signals"
+                                "(date,signal_date,account,symbol,side,"
+                                "signal_price,exec_price,stop_ref,reason,created_at)"
+                                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                (d, sig_d, aid, s, side, sig_px, round(px, 6), _sr,
+                                 _env_reason + "；无可用换仓额度券（%s）" % _rot_why,
+                                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                            continue
                 if key_old in pause_blacklist:
                     continue  # 暂停期积压信号：恢复后不补成交
                 if status == "paused":
@@ -831,8 +884,8 @@ def _run_locked(db_path=DB, cfg=None):
                             _v2ctx = _sizer_v2_ctx(
                                 sim, aid, s, px, sig_d, cfg, atr_by_sym,
                                 closes_by_sym, last_px, env=env)
-                            if _rot_cap is not None:
-                                _v2ctx["amount_cap"] = _rot_cap
+                            if _rot_voucher is not None:
+                                _v2ctx["amount_cap"] = _rot_voucher["amount"]
                             qty, block_reason = position_sizer_v2(_v2ctx)
                             if qty <= 0:
                                 if block_reason:
@@ -846,8 +899,8 @@ def _run_locked(db_path=DB, cfg=None):
                                          "仓位拦截：" + block_reason,
                                          datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                                 continue
-                            if _rot_cap is not None:
-                                # 换仓额度截断了计划数量：超出部分留痕
+                            if _rot_voucher is not None:
+                                # 额度券截断了计划数量：超出部分留痕
                                 _planned, _pr = position_sizer_v2(
                                     {**_v2ctx, "amount_cap": None})
                                 if _planned > qty:
@@ -858,9 +911,12 @@ def _run_locked(db_path=DB, cfg=None):
                                         " VALUES(?,?,?,?,?,?,?,?,?,?)",
                                         (d, sig_d, aid, s, side, sig_px,
                                          round(px, 6), risk_gate.stop_ref_of(s),
-                                         "环境闸·禁止新开仓：换仓额度不足，超出"
-                                         "部分已拦截（计划 %s 股，额度内成交 %s 股，"
-                                         "剩余额度 %.2f 元）" % (_planned, qty, _rot_cap),
+                                         "环境闸·禁止新开仓：换仓额度券 %s 面额"
+                                         "不足，超出部分已拦截（计划 %s 股，券内"
+                                         "成交 %s 股，券面额 %.2f 元）"
+                                         % (_rot_voucher["voucher_id"],
+                                            _planned, qty,
+                                            _rot_voucher["amount"]),
                                          datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                         else:
                             qty, block_reason = position_sizer(
@@ -870,9 +926,6 @@ def _run_locked(db_path=DB, cfg=None):
                             # legacy 路径到此为止：不套环境态/换仓额度
                             # （清单C：此前信号按旧路径逐笔回放）
                         fee = sim.buy(s, qty, px, d, fee_rate, min_fee)
-                        if _rot_cap is not None:
-                            rotation_quota[aid] = max(
-                                0.0, rotation_quota.get(aid, 0.0) - qty * px)
                         pnl = 0.0
                         # 设置策略止损（ATR）：entry - atr_mult * ATR(信号日)
                         atr_v = atr_by_sym.get(s, {}).get(sig_d)
@@ -885,14 +938,27 @@ def _run_locked(db_path=DB, cfg=None):
                         fee, pnl = sim.sell(s, qty, px, d, fee_rate)
                 except ValueError:
                     continue
-                con.execute(
-                    "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl,signal_date,strategy_version)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                _cur = con.execute(
+                    "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl,signal_date,strategy_version,rotation_voucher_id)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (d, aid, s, side, qty, round(px, 6), round(fee, 4), round(pnl, 2), sig_d,
-                     cfg.get("meta", {}).get("version", "unknown")))
-                if side == "SELL":
-                    rotation_quota[aid] = \
-                        rotation_quota.get(aid, 0.0) + qty * px
+                     cfg.get("meta", {}).get("version", "unknown"),
+                     _rot_voucher["source_fill_id"]
+                     if (side == "BUY" and _rot_voucher is not None)
+                     else None))
+                _fill_id = _cur.lastrowid
+                if side == "BUY":
+                    book.note_buy(aid, s, qty, d,
+                                  is_voucher=_rot_voucher is not None)
+                    if _rot_voucher is not None:
+                        book.mark_used(_rot_voucher, _fill_id, d, s)
+                else:
+                    # 主动信号卖出成交（Phase 1 信号执行路径）→ 生成
+                    # 额度券；卖出触及券资助仓位时不生成（防再生）。
+                    _touched = book.note_sell(aid, s, qty, d, sim.t1)
+                    if sig_d >= SIZING_EFFECTIVE_DATE and not _touched:
+                        book.issue(aid, _fill_id, s, sig_d, d,
+                                   qty, round(px, 6), round(fee, 4))
             pending = still_pending
 
             # ===== Phase 2：从今日收盘生成新信号，加入 pending =====
@@ -911,7 +977,6 @@ def _run_locked(db_path=DB, cfg=None):
                 # 策略中文名
                 strat_cn = {"buyback": "接回策略", "ma20": "MA20趋势"}.get(strategy, strategy)
                 # 信号过期：超过7天未执行的信号标记为已过期（2026-10-18起）
-                from datetime import datetime, timedelta
                 sig_date = datetime.strptime(d, "%Y-%m-%d").date()
                 today = datetime.now().date()
                 days_old = (today - sig_date).days
@@ -926,13 +991,33 @@ def _run_locked(db_path=DB, cfg=None):
                 # 无 T+1 bar（如最新日期）：信号已入库，pending 待下次跑批
             # 历史成交补重放：bar 缺失导致信号未重新生成时（如行情漏入库），
             # 该日期的历史成交仍必须重放，否则持仓会被静默丢弃。
-            for (fd, faid, fs, fside), (qty, price, fee) in existing_fills.items():
+            for (fd, faid, fs, fside), _ef in existing_fills.items():
                 if faid != aid or fd != d or (fd, faid, fs, fside) in seen:
                     continue
+                qty, price, fee = _ef["qty"], _ef["price"], _ef["fee"]
                 _replay_fill(sim, fs, fside, qty, price, fee, fd)
-                if fside == "SELL":
-                    rotation_quota[aid] = \
-                        rotation_quota.get(aid, 0.0) + qty * price
+                if fside == "BUY":
+                    _vid = _ef["rotation_voucher_id"]
+                    book.note_buy(aid, fs, qty, fd,
+                                  is_voucher=_vid is not None)
+                    if _vid is not None and not book.attach_replayed_use(
+                            "RV-%d" % _vid, _ef["id"], fd, fs):
+                        print("WARN 券 RV-%s 在补重放中未找到来源"
+                              "（fills #%s）" % (_vid, _ef["id"]))
+                else:
+                    _touched = book.note_sell(aid, fs, qty, fd, sim.t1)
+                    # 补重放的卖出无 pending 上下文：以 signals 表有无
+                    # 对应信号行判类别（查无对应信号行 → 保守不生成）
+                    _sd = _ef["signal_date"]
+                    if _sd and _sd >= SIZING_EFFECTIVE_DATE \
+                            and not _touched:
+                        _has_sig = con.execute(
+                            "SELECT 1 FROM signals WHERE date=? AND"
+                            " account=? AND symbol=? AND side='SELL'",
+                            (_sd, aid, fs)).fetchone()
+                        if _has_sig:
+                            book.issue(aid, _ef["id"], fs, _sd, fd,
+                                       qty, price, fee)
             # 当日收盘净值（缺 bar 的标的沿用上个收盘价估值，已在上方 WARN 留痕）
             pos_val, cash = 0.0, sim.cash
             for s in bars:
@@ -961,6 +1046,20 @@ def _run_locked(db_path=DB, cfg=None):
                 "INSERT INTO positions(account,symbol,qty,avg_cost,last_price,market_value)"
                 " VALUES(?,?,?,?,?,?)",
                 (aid, s, q, round(avg, 6), last, round(q * last, 2)))
+    # 换仓额度券落表（重算产物：轮始已清空，此处按回放事实全量写入，
+    # 供日报逐笔列示与事后审计；用券事实同时在 fills 定格引用）
+    book.settle(_acct_last)
+    _now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for v in book.vouchers:
+        con.execute(
+            "INSERT INTO rotation_vouchers(voucher_id,source_fill_id,"
+            "account,symbol,signal_date,exec_date,qty,price,fee,amount,"
+            "status,used_fill_id,used_date,used_symbol,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (v["voucher_id"], v["source_fill_id"], v["account"],
+             v["symbol"], v["signal_date"], v["exec_date"], v["qty"],
+             v["price"], v["fee"], v["amount"], v["status"],
+             v["used_fill_id"], v["used_date"], v["used_symbol"], _now))
     con.commit()
     con.close()
     return asof
@@ -1063,12 +1162,31 @@ def write_report(db_path=DB, cfg=None, asof=None):
             L.append("- %s %s BUY（信号日 %s，信号价 %s，母板止损 %s）：%s"
                      % (a_, s_, sd_, sp_, sr_, rs_))
         L.append("")
+    # 换仓额度券（补齐①，草案第 9 条）：全部券逐笔列示（生成来源/
+    # 面额/状态/使用去向），不只总述；表为本轮重算产物。
+    try:
+        vchs = con.execute(
+            "SELECT voucher_id,account,symbol,signal_date,exec_date,"
+            "amount,status,used_symbol,used_date FROM rotation_vouchers"
+            " ORDER BY exec_date, source_fill_id").fetchall()
+    except Exception:
+        vchs = []
+    if vchs:
+        _st = {"active": "有效", "used": "已用", "expired": "已过期"}
+        L += ["## 换仓额度券（禁开态豁免·一对一）", ""]
+        for vid, va, vs, vsd, ved, vamt, vst, vus, vud in vchs:
+            line = "- %s %s：来源卖出 %s（信号日 %s、成交日 %s），面额 %.2f 元，状态 %s" \
+                   % (vid, va, vs, vsd, ved, vamt, _st.get(vst, vst))
+            if vst == "used":
+                line += "，用于 %s 买入（%s）" % (vus, vud)
+            L.append(line)
+        L.append("")
     L += ["---", "口径声明：",
           "- 数据：%s；%s；%s" % (cfg["data_sources"]["a_hk"],
                                  cfg["data_sources"]["crypto"], cfg["data_sources"]["fx"]),
           "- 执行：T+1 开盘执行，滑点 %s%%；BUY 仓位：信号日≥2026-10-26 按风险定仓（风险预算=净值×2%%，每股风险=止损距离+往返成本；总仓位/现金（含费）/风险簇预算4%%/换仓额度封顶），此前信号沿用旧口径（现金 %s%%）；SELL 全平；费用见配置" % (
               cfg["fees"]["slippage"] * 100, cfg.get("sizing", {}).get("buy_frac", 0.5) * 100),
-          "- 环境闸（模块A）：禁止新开仓时 BUY 不执行（换仓额度内除外），拦截逐条见上（blocked_signals）",
+          "- 环境闸（模块A）：禁止新开仓时 BUY 不执行（换仓额度券内除外：主动卖出生成、扣费后净回收计额、一券一买、5 交易日有效、降级态禁用，逐笔见上额度券段），拦截逐条见上（blocked_signals）",
           "- 环境对账（模块A·每日对账）：%s" % _recon_wr,
           "- 规则版本：%s（DRAFT）" % cfg["meta"]["version"]]
     path = os.path.join(report_dir, "日报-%s.md" % asof)

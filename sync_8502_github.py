@@ -50,6 +50,7 @@ FILES = [
     "engine/news_sentiment.py",
     "engine/risk_gate.py",
     "engine/regime.py",
+    "engine/rotation.py",
     "config/sector_news.json",
     "config/workbook_map.json",
     "engine/lightweight-charts.standalone.js",

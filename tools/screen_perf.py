@@ -56,9 +56,16 @@ DDL = """CREATE TABLE IF NOT EXISTS screen_perf(
     PRIMARY KEY(run_id, symbol))"""
 
 # 旧库（本工具早期版本建的表）缺列时的补列口径（幂等迁移）。
+# tech/news/board_score（补齐① 甲3）：分项分数落库，为新闻面/母板面
+# 的事后归因铺路；回填时从 screen_runs.results_json 的逐标的分项
+# （tech/news/board，screen_all 落库时即有）原样带出，只加存储、
+# 不改任何分数与评级口径。
 _PERF_EXTRA_COLS = (("capped", "INTEGER DEFAULT 0"),
                     ("gates", "TEXT"),
-                    ("grp", "TEXT"))
+                    ("grp", "TEXT"),
+                    ("tech_score", "REAL"),
+                    ("news_score", "REAL"),
+                    ("board_score", "REAL"))
 
 # 模块D（2026-10-26）：按因子追踪——候选命中的每个形态因子
 # （含负标记）单独一行，承接同一标的的 5/20 日相对收益，供窗口
@@ -239,12 +246,13 @@ def run(db_path=DEFAULT_DB):
                 "INSERT OR REPLACE INTO screen_perf"
                 "(run_id,asof,symbol,grade,total,base_close,capped,gates,"
                 "grp,fwd5_date,fwd5_ret,fwd5_excess,fwd20_date,fwd20_ret,"
-                "fwd20_excess,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "fwd20_excess,updated_at,tech_score,news_score,board_score)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, asof, sym, r.get("grade"), r.get("total"),
                  r.get("close"), 1 if r.get("capped") else 0,
                  json.dumps(r.get("gates") or [], ensure_ascii=False),
-                 grp, d5, ret5, ex5, d20, ret20, ex20, now))
+                 grp, d5, ret5, ex5, d20, ret20, ex20, now,
+                 r.get("tech"), r.get("news"), r.get("board")))
             if cur is None:
                 n_new += 1
             elif cur[0] is None or cur[1] is None:

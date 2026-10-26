@@ -187,6 +187,41 @@ def fetch_kline(code, start):
     return rows
 
 
+def fetch_index_kline(start, tx_code="sh000001"):
+    """指数日K（市场环境闸专用，如上证指数 sh000001）。
+    腾讯主源与个股同接口：fqkline/get + bfq（指数无复权概念，数据在
+    "day" 键，格式同个股 [日期,开,收,高,低,量]）；腾讯失败/为空时
+    切新浪 CN_MarketData（sh000001）备用。返回 [(date,open,high,low,
+    close,volume), ...] 日期升序。"""
+    url = ("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+           "?param=%s,day,%s,2100-01-01,640,bfq" % (tx_code, start.isoformat()))
+    try:
+        d = _get_json(url)
+        days = d["data"][tx_code].get("day") or []
+        out = []
+        for x in days:
+            dt = datetime.strptime(x[0], "%Y-%m-%d").date()
+            if dt >= start:
+                out.append((dt, float(x[1]), float(x[3]), float(x[4]),
+                            float(x[2]), float(x[5])))
+        if out:
+            return sorted(out)
+        print("WARN 指数 %s 腾讯返回 0 行，切换新浪备用源" % tx_code)
+    except Exception as e:  # noqa: BLE001
+        print("WARN 指数 %s 腾讯异常 %s，切换新浪备用源" % (tx_code, e))
+    days_needed = max((date.today() - start).days + 30, 60)
+    url = ("https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketData.getKLineData"
+           "?symbol=%s&scale=240&ma=no&datalen=%d" % (tx_code, min(days_needed, 1023)))
+    d = json.loads(_read(url).decode("utf-8"))
+    out = []
+    for x in d:
+        dt = datetime.strptime(x["day"], "%Y-%m-%d").date()
+        if dt >= start:
+            out.append((dt, float(x["open"]), float(x["high"]),
+                        float(x["low"]), float(x["close"]), float(x["volume"])))
+    return sorted(out)
+
+
 _KRAKEN_PAIR = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD"}
 
 

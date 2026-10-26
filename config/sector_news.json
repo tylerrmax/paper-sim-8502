@@ -1,1 +1,98 @@
-{"entries":[{"date":"2026-10-23","direction":1,"evidence":"存储芯片长约锁定至2035、黄仁勋否认2029年过剩、三星多数产能锁定至2031","sector_key":"semi","source":"Serenity","strength":3,"tags":["memory"]},{"date":"2026-10-23","direction":1,"evidence":"利基存储短缺：ESMT 预期缺口>30%、紧缺延续至2028年后、Q4合约价续涨","sector_key":"semi","source":"Serenity","strength":2,"tags":["memory","niche"]},{"date":"2026-10-25","direction":1,"evidence":"中国激光产能扩张：东山精密/索尔思光芯片与模块扩产，回应中国供应商竞争","sector_key":"optical_comm","source":"Serenity","strength":2,"tags":["laser","cpo"]},{"date":"2026-10-25","direction":1,"evidence":"AWS 大算力产能基本售罄至2027年，存储/电力/数据中心资源受限（亚马逊CEO a16z访谈）","sector_key":"ai_infra","source":"Serenity","strength":2,"tags":[]},{"date":"2026-10-24","direction":-1,"evidence":"ASML 日线波动率空洞+黄K标记 $1800-1850 临时顶，已转中期下行","sector_key":"semi_equip","source":"Danny","strength":2,"tags":[]},{"date":"2026-10-20","direction":-1,"evidence":"LRCX 日线波动率空洞标记阶段临时顶（半导体设备）","sector_key":"semi_equip","source":"Danny","strength":2,"tags":[]},{"date":"2026-10-20","direction":1,"evidence":"QCOM 周线波动率空洞+蓝色缎带下行标记底部（手机SoC企稳信号）","sector_key":"semi","source":"Danny","strength":1,"tags":[]},{"date":"2026-10-23","direction":-1,"evidence":"市场级去杠杆：新冠崩盘以来首次各类对冲基金同日跌超1%，亚洲对冲基金10月跌约9%，散户抄底半导体/存储","scope":"market_risk","sector_key":"market","source":"Serenity","strength":1,"tags":[]}],"note":"X 博主每日简报（2026-10-21~25 已交付期）的板块新闻证据账。新增证据按同一格式追加；engine/news_sentiment.py 按日期衰减计入板块情绪。铁律：Serenity 的“存储”=存储芯片 memory，只记 semi，绝不记 energy_storage（储能）。market 条目只作风险提示（scope=market_risk），不进任何个股新闻分。"}
+{
+  "entries": [
+    {
+      "date": "2026-10-23",
+      "direction": 1,
+      "evidence": "存储芯片长约锁定至2035、黄仁勋否认2029年过剩、三星多数产能锁定至2031",
+      "sector_key": "semi",
+      "source": "Serenity",
+      "strength": 3,
+      "tags": [
+        "memory"
+      ]
+    },
+    {
+      "date": "2026-10-23",
+      "direction": 1,
+      "evidence": "利基存储短缺：ESMT 预期缺口>30%、紧缺延续至2028年后、Q4合约价续涨",
+      "sector_key": "semi",
+      "source": "Serenity",
+      "strength": 2,
+      "tags": [
+        "memory",
+        "niche"
+      ]
+    },
+    {
+      "date": "2026-10-25",
+      "direction": 1,
+      "evidence": "中国激光产能扩张：东山精密/索尔思光芯片与模块扩产，回应中国供应商竞争",
+      "sector_key": "optical_comm",
+      "source": "Serenity",
+      "strength": 2,
+      "tags": [
+        "laser",
+        "cpo"
+      ]
+    },
+    {
+      "date": "2026-10-25",
+      "direction": 1,
+      "evidence": "AWS 大算力产能基本售罄至2027年，存储/电力/数据中心资源受限（亚马逊CEO a16z访谈）",
+      "sector_key": "ai_infra",
+      "source": "Serenity",
+      "strength": 2,
+      "tags": []
+    },
+    {
+      "date": "2026-10-24",
+      "direction": -1,
+      "evidence": "ASML 日线波动率空洞+黄K标记 $1800-1850 临时顶，已转中期下行",
+      "sector_key": "semi_equip",
+      "source": "Danny",
+      "strength": 2,
+      "tags": []
+    },
+    {
+      "date": "2026-10-20",
+      "direction": -1,
+      "evidence": "LRCX 日线波动率空洞标记阶段临时顶（半导体设备）",
+      "sector_key": "semi_equip",
+      "source": "Danny",
+      "strength": 2,
+      "tags": []
+    },
+    {
+      "date": "2026-10-20",
+      "direction": 1,
+      "evidence": "QCOM 周线波动率空洞+蓝色缎带下行标记底部（手机SoC企稳信号）",
+      "sector_key": "semi",
+      "source": "Danny",
+      "strength": 1,
+      "tags": []
+    },
+    {
+      "date": "2026-10-23",
+      "direction": -1,
+      "evidence": "市场级去杠杆：新冠崩盘以来首次各类对冲基金同日跌超1%，亚洲对冲基金10月跌约9%，散户抄底半导体/存储",
+      "scope": "market_risk",
+      "sector_key": "market",
+      "source": "Serenity",
+      "strength": 1,
+      "tags": []
+    },
+    {
+      "date": "2026-10-25",
+      "direction": 1,
+      "evidence": "黄仁勋称光学规模化后光学总量将达15倍，CW激光已短缺、面临配置争夺与涨价",
+      "sector_key": "optical_comm",
+      "source": "Serenity",
+      "strength": 2,
+      "tags": [
+        "laser",
+        "cpo"
+      ]
+    }
+  ],
+  "note": "X 博主每日简报（2026-10-21~25 已交付期）的板块新闻证据账。新增证据按同一格式追加；engine/news_sentiment.py 按日期衰减计入板块情绪。铁律：Serenity 的“存储”=存储芯片 memory，只记 semi，绝不记 energy_storage（储能）。market 条目只作风险提示（scope=market_risk），不进任何个股新闻分。"
+}

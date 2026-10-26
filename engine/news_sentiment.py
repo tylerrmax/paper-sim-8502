@@ -5,9 +5,10 @@
 
 口径（显式声明）：
 - 衰减：证据距 asof ≤3天 ×1.0、≤7天 ×0.8、≤14天 ×0.5、>14天 0（过期不计）。
-- 来源权重：Serenity 1.0（产业链基本面，第一优先）、Danny 0.4（纯技术面）。
-- Danny 封顶：同一板块内 Danny 贡献合计的绝对值封顶 DANNY_CAP=1.2（原始单位），
-  防止高频技术帖淹没基本面证据。
+- 来源权重：Serenity 1.0（产业链基本面，第一优先）、次级来源 0.4
+  （Danny 历史条目；2026-10-26 起简报次级来源换为 Musk，权重同为 0.4）。
+- 次级来源封顶：同一板块内次级来源（Danny/Musk）贡献合计的绝对值封顶
+  SECONDARY_CAP=1.2（原始单位），防止高频帖淹没基本面证据。
 - 单条贡献 = direction × strength × 来源权重 × 衰减；板块原始情绪为贡献之和。
 - 折算新闻面得分（满分35）：score = clamp(raw, -RAW_FULL, RAW_FULL) / RAW_FULL × 35，
   RAW_FULL=5.0（原始情绪 ±5 视为打满）。
@@ -26,8 +27,10 @@ from datetime import date, datetime
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEWS_PATH = os.path.join(BASE, "config", "sector_news.json")
 
-SOURCE_WEIGHT = {"Serenity": 1.0, "Danny": 0.4}
-DANNY_CAP = 1.2        # Danny 同板块贡献绝对值封顶（原始单位）
+SOURCE_WEIGHT = {"Serenity": 1.0, "Danny": 0.4, "Musk": 0.4}
+SECONDARY_SOURCES = ("Danny", "Musk")  # 次级来源（Danny 为历史条目，Musk 为现行）
+SECONDARY_CAP = 1.2    # 次级来源同板块贡献绝对值封顶（原始单位）
+DANNY_CAP = SECONDARY_CAP  # 兼容旧引用
 RAW_FULL = 5.0         # 原始情绪打满值 -> 新闻面 35 分
 NEWS_MAX = 35.0
 INHERITS = {"liquid_cooling": ["ai_infra"]}  # 子集板块 -> 可继承的父板块
@@ -118,15 +121,17 @@ def sector_sentiment(sector_key, asof, entries=None):
             continue
         items.append({**e, "contribution": round(c, 3),
                       "inherited": e["sector_key"] != sector_key})
-    # Danny 封顶：按贡献绝对值从大到小保留，累计绝对值不超过 DANNY_CAP
-    danny = sorted((i for i in items if i["source"] == "Danny"),
-                   key=lambda i: -abs(i["contribution"]))
+    # 次级来源封顶（Danny 历史条目/Musk 现行）：按贡献绝对值从大到小保留，
+    # 累计绝对值不超过 SECONDARY_CAP
+    secondary = sorted((i for i in items if i["source"] in SECONDARY_SOURCES),
+                       key=lambda i: -abs(i["contribution"]))
     kept, acc = set(), 0.0
-    for i in danny:
-        if acc + abs(i["contribution"]) <= DANNY_CAP + 1e-9:
+    for i in secondary:
+        if acc + abs(i["contribution"]) <= SECONDARY_CAP + 1e-9:
             kept.add(id(i))
             acc += abs(i["contribution"])
-    items = [i for i in items if i["source"] != "Danny" or id(i) in kept]
+    items = [i for i in items
+             if i["source"] not in SECONDARY_SOURCES or id(i) in kept]
     raw = sum(i["contribution"] for i in items)
     score = max(-RAW_FULL, min(RAW_FULL, raw)) / RAW_FULL * NEWS_MAX
     items.sort(key=lambda i: -abs(i["contribution"]))

@@ -66,7 +66,7 @@ def test_screen_page_auto_only():
                          [str(h.value) for h in at.header])
     assert "条件筛选" not in full_text, "选股页仍有手动条件筛选面板残留"
     assert "多重校验" in full_text, "选股页自动筛选结果区缺失"
-    assert "screen-v1.5" in " ".join(str(c.value) for c in at.caption), \
+    assert "screen-v1.6" in " ".join(str(c.value) for c in at.caption), \
         "选股页未标注 RULE_VERSION/asof（模块D页面要求）"
 
 

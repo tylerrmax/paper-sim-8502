@@ -101,6 +101,65 @@ def build_plan(cfg, start, today):
     return plan
 
 
+def _record_shadow_samples(db):
+    """影子样本记录（四项补齐② G2）：主链完成后固定执行——
+    ① 选股落库一期（screen_all，record=True）；今日已有落库
+       （页面访问先行）则跳过，避免同 asof 双写。
+    ② 绩效回填（tools/screen_perf.run）：全集+分组落 screen_perf、
+       因子分项落 screen_perf_factors、拦截前向落 blocked_perf。
+    只写影子表，与成交链路物理隔离（见 tests/test_shadow_isolation.py）。
+    失败由调用方捕获并打印 FAIL 行，不静默、不回滚主链产物。"""
+    today_str = str(date.today())
+    already = 0
+    con = sqlite3.connect(db)
+    try:
+        already = con.execute(
+            "SELECT COUNT(*) FROM screen_runs WHERE asof=?",
+            (today_str,)).fetchone()[0]
+    except sqlite3.OperationalError:
+        already = 0  # 表尚不存在（首跑）→ 下面 screen_all 自行建表落库
+    finally:
+        con.close()
+    if already:
+        print("影子记录：今日 screen_runs 已落库（%d 期），跳过选股落库"
+              % already)
+    else:
+        from engine.screen import screen_all
+        rows = screen_all(db)
+        print("影子记录：screen_all 落库一期（%d 只，asof=%s）"
+              % (len(rows), today_str))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "screen_perf_tool", os.path.join(BASE, "tools", "screen_perf.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    summary = mod.run(db)
+    print("影子记录：绩效回填完成（全集 %d 条，影子组 %d 条，拦截样本 %d 条）"
+          % (summary["total"], summary["groups"]["shadow"],
+             summary["blocked"]))
+
+
+def _check_workbook_map():
+    """母板映射核对（四项补齐① 甲2）：从封版母板重新推导映射并与
+    config/workbook_map.json 逐项 diff。一致打印一行；不一致打印
+    FAIL 行 + 差异摘要（现行 json 绝不自动覆盖，是否重跑生成器
+    由人工决定）。失败由调用方捕获打印 FAIL 行，不拖垮主链。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "check_workbook_map_tool",
+        os.path.join(BASE, "tools", "check_workbook_map.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    ok, diffs, summary = mod.run()
+    if ok:
+        print("母板映射核对：与封版母板推导结果逐项一致"
+              "（标的 %d、板块 %d）"
+              % (summary["symbols"], summary["sectors"]))
+    else:
+        print("FAIL 母板映射核对：%d 项不一致（现行 workbook_map.json "
+              "未自动覆盖）：%s" % (len(diffs), "；".join(diffs[:5])))
+
+
 def main():
     day = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == "--date" else str(date.today())
     con = init_db()
@@ -140,6 +199,21 @@ def main():
     print("模拟管线完成，数据截至 %s" % asof)
     print("日报：%s" % report)
     con.close()
+
+    # 4. 影子样本记录（补齐② G2）：选股落库 + 绩效/因子/拦截前向回填。
+    #    在主链产物（日报）落定后执行；失败不得拖垮主链，但必须在
+    #    输出里留 FAIL 行供 nightly cron 报告，严禁静默吞掉。
+    try:
+        _record_shadow_samples(DB)
+    except Exception as e:  # noqa: BLE001
+        print("FAIL 影子记录（screen/perf）: %s" % e)
+
+    # 5. 母板映射核对（补齐① 甲2）：derive+diff，只报不一致、不自动
+    #    覆盖现行映射；失败留 FAIL 行，不拖垮主链产物。
+    try:
+        _check_workbook_map()
+    except Exception as e:  # noqa: BLE001
+        print("FAIL 母板映射核对: %s" % e)
 
 
 if __name__ == "__main__":

@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS fills (
     fee     REAL NOT NULL,
     pnl     REAL DEFAULT 0,        -- SELL 时的实现盈亏
     signal_date TEXT,              -- 信号日期（T+1 撮合：date=执行日）
-    strategy_version TEXT          -- 策略版本（毕业样本按版本隔离）
+    strategy_version TEXT,         -- 策略版本（毕业样本按版本隔离）
+    rotation_voucher_id INTEGER    -- 用券买入时 = 来源卖出成交 fills.id（额度券 RV-<id>）；旧库由 pipeline 幂等补列
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -146,4 +147,25 @@ CREATE TABLE IF NOT EXISTS pause_skipped_signals (
     symbol TEXT NOT NULL,
     side TEXT NOT NULL,            -- BUY / SELL
     PRIMARY KEY (date, account, symbol, side)
+);
+
+-- 换仓额度券台账（四项补齐①，2026-10-27）：禁开态换仓豁免的审计表。
+-- 每轮由 pipeline 按成交事实全量重建（重算产物，与 positions 同性质）：
+-- 主动信号卖出生成一张券（voucher_id = 'RV-' || 来源卖出 fills.id），
+-- 面额 = 扣费后净回收额；一券至多资助一笔买入（used_* 回填买入成交），
+-- 5 个交易日未用自动 expired；用券事实同时在 fills.rotation_voucher_id 定格。
+CREATE TABLE IF NOT EXISTS rotation_vouchers (
+    voucher_id TEXT PRIMARY KEY,   -- RV-<source_fill_id>
+    source_fill_id INTEGER,        -- 来源卖出成交 fills.id
+    account TEXT,
+    symbol TEXT,                   -- 来源卖出的标的
+    signal_date TEXT,              -- 来源卖出的信号日
+    exec_date TEXT,                -- 来源卖出的成交（执行）日，有效期起算
+    qty REAL, price REAL, fee REAL,-- 来源卖出成交的数量/价/费（账本口径）
+    amount REAL,                   -- 面额 = qty*price - fee（净回收）
+    status TEXT,                   -- active / used / expired
+    used_fill_id INTEGER,          -- 被资助买入的 fills.id（used 时）
+    used_date TEXT,
+    used_symbol TEXT,
+    created_at TEXT                -- 本轮重建时间
 );

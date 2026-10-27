@@ -15,6 +15,10 @@ meta:
     此前信号沿用 v1.0 口径（buy_frac），历史 fills 逐笔不变。毕业
     样本按 strategy_version 隔离：v1.1 起算的新成交与 v1.0 分开统计。
     v1.0 口径摘要：T+1开盘撮合+ATR止损(2x)+净盈亏+策略版本隔离。
+    ③2026-10-27 补齐①（机制收紧，strategy_version 不变）：换仓豁免
+    由"历史卖出毛额资金池"改为额度券制——仅主动卖出按扣费后净回收
+    生券、一券一买、5 个交易日有效、被动止损不生券、券仓位卖出不
+    再生券、环境闸 degraded 时禁用；口径实现见 engine/rotation.py。
 accounts:
 - id: sim_a
   ccy: CNY

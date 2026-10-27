@@ -185,6 +185,60 @@ def _sector_news_cached(day_str):
     return all_sector_sentiments(day_str)
 
 
+def _topboard_data(db_path):
+    """TOP标的榜数据：最近一次 screen_runs 的 results_json（评分全集，
+    母板观察池口径）按总分降序取 TOP8，合并 screen_perf 样本外验证聚合。
+
+    验证列口径（按 symbol 聚合 screen_perf 的 sa 组，如实统计、不插值）：
+    只计正常入选样本（grp='sa'）——影子组（被硬闸门封顶）与 other 组
+    不混入本列，各组分开统计（补齐②b，2026-10-27）。历史行 grp 为空时
+    按 tools/screen_perf.py 的 _group_of 口径推导组别（未封顶且评级
+    S/A → sa；封顶 → shadow），与现行登记逻辑一致。
+    n = 该标的 fwd5_ret 非空条数（已满 5 日的 sa 样本数）；
+    5日平均前向收益 = AVG(fwd5_ret)，20日平均 = AVG(fwd20_ret 非空部分)，
+    5日胜率 = fwd5_ret>0 的样本占比。表缺失/无样本 → 聚合为空，
+    页面对 n<5 一律标注「未验证·积累中」，不呈现任何估算数字。
+    返回 (asof, rule_version, rows)；无落库记录时 rows 为空。"""
+    import json as _json
+    try:
+        con = sqlite3.connect(db_path)
+        run = con.execute(
+            "SELECT asof, rule_version, results_json FROM screen_runs"
+            " ORDER BY id DESC LIMIT 1").fetchone()
+        perf = {}
+        try:
+            for sym, n5, a5, a20, win5 in con.execute(
+                    "SELECT symbol, COUNT(fwd5_ret), AVG(fwd5_ret),"
+                    " AVG(fwd20_ret),"
+                    " AVG(CASE WHEN fwd5_ret IS NULL THEN NULL"
+                    "          WHEN fwd5_ret > 0 THEN 1.0 ELSE 0.0 END)"
+                    " FROM screen_perf"
+                    " WHERE grp='sa'"
+                    "    OR (COALESCE(grp,'')='' AND COALESCE(capped,0)=0"
+                    "        AND grade IN ('S','A'))"
+                    " GROUP BY symbol"):
+                perf[sym] = {"n": n5 or 0, "avg5": a5, "avg20": a20,
+                             "win5": win5}
+        except sqlite3.OperationalError:
+            perf = {}  # screen_perf 尚未建表：全部按积累中呈现
+        con.close()
+    except sqlite3.OperationalError:
+        return None, None, []  # screen_runs 尚未落库
+    if not run:
+        return None, None, []
+    try:
+        rows = _json.loads(run[2])
+    except (TypeError, ValueError):
+        return run[0], run[1], []
+    rows = sorted(rows, key=lambda r: (-(r.get("total") or 0),
+                                       str(r.get("symbol") or "")))[:8]
+    for r in rows:
+        r["_perf"] = perf.get(r.get("symbol"),
+                               {"n": 0, "avg5": None, "avg20": None,
+                                "win5": None})
+    return run[0], run[1], rows
+
+
 def get_control():
     r = q("SELECT status, mode FROM control WHERE id=1")
     return r[0] if r else ("running", "auto")
@@ -937,6 +991,54 @@ elif tab == "🔍 选股":
     st.caption("自动筛选 · 运行时点（asof）：%s · 规则版本 %s · 结果与 "
                "screen_runs 落库一致（页面不提供手动筛选入口）"
                % (datetime.now().strftime("%Y-%m-%d"), _SCREEN_RV))
+    # ---- TOP标的榜：最近一期 screen_runs 全集 TOP8 + screen_perf 验证列 ----
+    st.subheader("🏆 TOP标的榜")
+    _tb_asof, _tb_rv, _tb_rows = _topboard_data(DB)
+    if _tb_rows:
+        st.caption(f"最近一期落库评分（asof {_tb_asof} · {_tb_rv}）按总分 "
+                   "TOP8；验证列 = screen_perf 样本外前向收益（S/A 样本）")
+        _tb_table = []
+        for _i, r in enumerate(_tb_rows, 1):
+            def _px(v):
+                return f"{v:.2f}" if isinstance(v, (int, float)) else "—"
+            _trig, _close = r.get("plan_trigger"), r.get("close")
+            if isinstance(_trig, (int, float)) and \
+                    isinstance(_close, (int, float)) and _close:
+                _dist_v = (_trig - _close) / _close * 100
+                _dist = "已触发" if _dist_v <= 0 else f"+{_dist_v:.1f}%"
+            else:
+                _dist = "—"
+            if r.get("capped"):
+                _note = "⛔封顶：" + "；".join(r.get("gates") or [])
+            elif r.get("gates"):
+                _note = "；".join(r["gates"])
+            else:
+                _note = ""
+            _p = r.get("_perf") or {"n": 0}
+            if (_p.get("n") or 0) < 5:
+                _verify = f"未验证·积累中（n={_p.get('n') or 0}）"
+            elif _p.get("avg20") is not None:
+                _verify = (f"n={_p['n']} · 5日 {_p['avg5'] * 100:+.2f}% · "
+                           f"20日 {_p['avg20'] * 100:+.2f}% · "
+                           f"5日胜率 {_p['win5'] * 100:.0f}%")
+            else:
+                _verify = (f"n={_p['n']} · 5日 {_p['avg5'] * 100:+.2f}% · "
+                           f"20日 — · 5日胜率 {_p['win5'] * 100:.0f}%")
+            _tb_table.append({
+                "#": _i, "代码": r.get("symbol") or "—",
+                "名称": r.get("name") or "—",
+                "评级": r.get("grade") or "—",
+                "总分": (f"{r['total']:.1f}" if isinstance(r.get("total"), (int, float)) else "—"),
+                "技术": (f"{r['tech']:.1f}" if isinstance(r.get("tech"), (int, float)) else "—"),
+                "新闻": (f"{r['news']:.1f}" if isinstance(r.get("news"), (int, float)) else "—"),
+                "母板": (f"{r['board']:.1f}" if isinstance(r.get("board"), (int, float)) else "—"),
+                "触发价": _px(r.get("plan_trigger")),
+                "止损位": _px(r.get("plan_stop")),
+                "目标位": _px(r.get("plan_target")),
+                "距触发": _dist, "验证（样本外）": _verify, "标注": _note})
+        st.table(_tb_table)
+    else:
+        st.caption("暂无 screen_runs 落库记录（夜跑评分后生成）")
     # ---- 多重校验·优质标的：技术面45 + 新闻面35 + 母板面20，硬闸门封顶，只列 S/A ----
     st.subheader("🏆 多重校验·优质标的")
     _today_str = datetime.now().strftime("%Y-%m-%d")
@@ -1491,7 +1593,10 @@ elif tab == "🛡 验证":
     try:
         _sp = q("SELECT COUNT(*), SUM(CASE WHEN fwd5_ret IS NOT NULL THEN 1 ELSE 0 END),"
                 " AVG(fwd5_excess), SUM(CASE WHEN fwd5_excess>0 THEN 1 ELSE 0 END)"
-                " FROM screen_perf")
+                " FROM screen_perf"
+                " WHERE grp='sa'"
+                "    OR (COALESCE(grp,'')='' AND COALESCE(capped,0)=0"
+                "        AND grade IN ('S','A'))")
         _n, _m5, _avg5, _hit5 = (_sp[0] if _sp else (0, None, None, None))
     except Exception:
         _n, _m5, _avg5, _hit5 = 0, None, None, None

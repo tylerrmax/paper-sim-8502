@@ -92,6 +92,30 @@
         "laser",
         "cpo"
       ]
+    },
+    {
+      "date": "2026-10-27",
+      "direction": 1,
+      "evidence": "InP衬底/EML/CW激光或成AI基建瓶颈，基建争夺激烈、放缓不太可能",
+      "sector_key": "optical_comm",
+      "source": "Serenity",
+      "strength": 2
+    },
+    {
+      "date": "2026-10-27",
+      "direction": 1,
+      "evidence": "AI基建融资用于采购GPU并间接拉动内存与网络需求，存储需求端获支撑",
+      "sector_key": "semi",
+      "source": "Serenity",
+      "strength": 2
+    },
+    {
+      "date": "2026-10-27",
+      "direction": 1,
+      "evidence": "MU至AAOI等AI基建股跌幅过深，前沿实验室融资最终会回流GPU、网络与内存",
+      "sector_key": "ai_infra",
+      "source": "Serenity",
+      "strength": 2
     }
   ],
   "note": "X 博主每日简报（2026-10-21~25 已交付期）的板块新闻证据账。新增证据按同一格式追加；engine/news_sentiment.py 按日期衰减计入板块情绪。铁律：Serenity 的“存储”=存储芯片 memory，只记 semi，绝不记 energy_storage（储能）。market 条目只作风险提示（scope=market_risk），不进任何个股新闻分。"

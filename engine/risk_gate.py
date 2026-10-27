@@ -77,8 +77,9 @@ def check_env_gate(env):
     - attack/cautious → 不拦（谨慎态的系数/上限由 sizing 消费 env）；
     - blocked_new → 拦，reason 注明母板依据；
     - degraded → 拦（fail-closed 安全降级），reason 注明数据不可用。
-    换仓豁免不在本函数：额度由 pipeline 按账户回放维护，额度内 BUY
-    由 pipeline 在调用 sizing 前放行本闸。SELL 永不走本闸。"""
+    换仓豁免不在本函数：额度券由 pipeline 的 RotationBook 按草案
+    口径维护（engine.rotation），仅 blocked_new 态可消费券放行
+    本闸，degraded 态 pipeline 禁用额度券。SELL 永不走本闸。"""
     from engine import regime as _regime
     state = (env or {}).get("state")
     if state in (_regime.ATTACK, _regime.CAUTIOUS):

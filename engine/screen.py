@@ -21,7 +21,12 @@
   箱体突破 +4（60 日箱体宽度 ≤均价 12% 后收盘站上箱顶且量 ≥1.5×
   20 日均量；突破后 3 日内收回箱内 → 负标记 box_false_breakout）；
   相对强度 +3（20/60 日涨幅减上证同期涨幅双正且 60 日居池内前 1/3）；
-  回踩确认 +3（近 2–10 日有 ≥3% 上涨段后回踩 MA20 ±3% 不破且缩量）。
+  回踩确认 +3（近 2–10 日有 ≥3% 上涨段后回踩 MA20 ±3% 不破且缩量）；
+  斐波收复0.618 +3（v1.6 新增，2026-10-26 历史验证定版：斐波三段
+  路径仅此一段有微弱相对边际，0.382 介入/0.5 站稳经验证明确不加分。
+  定义：收盘 zigzag 8% 取最近合格冲高腿（拐点日极值 L0→H，振幅
+  ≥8%、时长 ≤60 日、H 距今 ≤120 日），H 后曾收盘跌破 0.618 位、
+  10 日内首次收盘收复且最新收盘仍站其上、腿未失效）。
 
 新闻面 35：engine/news_sentiment 板块情绪折算（Serenity 为主，次级来源
 Danny/Musk 封顶；市场级风险条目不进个股分）。
@@ -76,7 +81,7 @@ from datetime import date, datetime
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_PATH = os.path.join(BASE, "config", "workbook_map.json")
 DEFAULT_DB = os.path.join(BASE, "db", "sim.db")
-RULE_VERSION = "screen-v1.5-2026-10-26"
+RULE_VERSION = "screen-v1.6-2026-10-26"
 
 from engine.indicators import macd, rsi  # noqa: E402
 from engine.news_sentiment import news_freshness, sector_sentiment  # noqa: E402
@@ -234,6 +239,94 @@ def _rs_excess(bars, idx_bars, n):
     return sym_ret - idx_ret
 
 
+def _zigzag_pivots(closes, thresh=0.08):
+    """收盘价百分比 zigzag（反转阈值 thresh），返回已确认拐点
+    [(idx, 'L'|'H')]：不含末尾未确认的候选极值，无未来函数。"""
+    pivots = []
+    if len(closes) < 2:
+        return pivots
+    trend = 0  # 1=上行段（找高点），-1=下行段（找低点），0=方向未定
+    hi_i, hi = 0, closes[0]
+    lo_i, lo = 0, closes[0]
+    ext_i, ext = 0, closes[0]
+    for i in range(1, len(closes)):
+        c = closes[i]
+        if trend == 0:
+            if c > hi:
+                hi_i, hi = i, c
+            if c < lo:
+                lo_i, lo = i, c
+            if lo > 0 and c >= lo * (1 + thresh):
+                pivots.append((lo_i, "L"))
+                trend, ext_i, ext = 1, i, c
+            elif hi > 0 and c <= hi * (1 - thresh):
+                pivots.append((hi_i, "H"))
+                trend, ext_i, ext = -1, i, c
+        elif trend == 1:
+            if c >= ext:
+                ext_i, ext = i, c
+            elif ext > 0 and c <= ext * (1 - thresh):
+                pivots.append((ext_i, "H"))
+                trend, ext_i, ext = -1, i, c
+        else:
+            if c <= ext:
+                ext_i, ext = i, c
+            elif ext > 0 and c >= ext * (1 + thresh):
+                pivots.append((ext_i, "L"))
+                trend, ext_i, ext = 1, i, c
+    return pivots
+
+
+def _fib_reclaim_618(bars):
+    """斐波收复0.618 检测（待验证因子，+3）：深回撤收盘跌破最近合格
+    冲高腿的 0.618 位后，10 个交易日内首次收盘收复且仍站其上。
+
+    bars 升序 [(date,open,high,low,close,volume)]，date 为 str。
+    冲高腿：收盘 zigzag 8% 相邻拐点对 L→H，L0/H 取拐点日 low/high；
+    合格 = 振幅 ≥8%、时长 ≤60 日、H 距今 ≤120 日（自最近一条取起）。
+    H 后至收复日之间收盘跌破 L0 → 与研究报告一致按腿失效处理。
+    触发返回证据 dict，不触发/数据不足（<60 根）返回 None。"""
+    if len(bars) < 60:
+        return None
+    closes = [b[4] for b in bars]
+    n = len(closes)
+    pivots = _zigzag_pivots(closes, 0.08)
+    leg = None
+    for k in range(len(pivots) - 2, -1, -1):
+        (li, lk), (hi, hk) = pivots[k], pivots[k + 1]
+        if lk != "L" or hk != "H":
+            continue
+        l0, h = bars[li][3], bars[hi][2]
+        if l0 > 0 and (h - l0) / l0 >= 0.08 and hi - li <= 60 \
+                and (n - 1) - hi <= 120:
+            leg = (li, hi, l0, h)
+            break
+    if leg is None:
+        return None
+    li, hi, l0, h = leg
+    l618 = h - 0.618 * (h - l0)
+    broke = reclaim = None
+    for j in range(hi + 1, n):
+        if closes[j] < l0:
+            return None  # 腿失效（研究报告口径：观察窗内收盘破 L0 终止）
+        if broke is None and closes[j] < l618:
+            broke = j
+        elif broke is not None and closes[j] >= l618:
+            reclaim = j
+            break
+    if broke is None or reclaim is None:
+        return None
+    if (n - 1) - reclaim > 10:
+        return None
+    if closes[-1] < l618 or closes[-1] <= l0:
+        return None
+    return {"leg_start_date": bars[li][0], "leg_high_date": bars[hi][0],
+            "leg_low": round(l0, 4), "leg_high": round(h, 4),
+            "level_618": round(l618, 4), "broke_date": bars[broke][0],
+            "reclaim_date": bars[reclaim][0],
+            "days_since_reclaim": (n - 1) - reclaim}
+
+
 def pattern_factors(bars, idx_bars=None, rs_top=False, board_near_breakout=False):
     """形态因子层（模块D，全部「待验证因子」）：纯函数、同输入同输出、
     只用传入的 ≤asof bars（as-of 安全由调用方截断保证）。
@@ -276,6 +369,17 @@ def pattern_factors(bars, idx_bars=None, rs_top=False, board_near_breakout=False
                         points += 4.0
                         break
     ev["fib"] = fib
+
+    # ---- 斐波收复0.618（深回撤后收复 0.618 位，待验证因子 +3） ----
+    reclaim = _fib_reclaim_618(bars)
+    reclaim_ev = {"available": reclaim is not None}
+    if reclaim is not None:
+        reclaim_ev.update(reclaim)
+        reclaim_ev["mark"] = "fib_reclaim_618"
+        reclaim_ev["points"] = 3.0
+        flags.append("fib_reclaim_618")
+        points += 3.0
+    ev["fib_reclaim_618"] = reclaim_ev
 
     # ---- 上升通道近突破（90 日对数价格回归通道） ----
     chan = {"available": False}

@@ -116,6 +116,22 @@
       "sector_key": "ai_infra",
       "source": "Serenity",
       "strength": 2
+    },
+    {
+      "date": "2026-10-28",
+      "direction": 1,
+      "evidence": "Tesla奥斯汀周度无人驾驶里程43.8万英里超Waymo二季度周均40.6万英里，Cybercab自8月下旬起放量",
+      "sector_key": "ai_chip",
+      "source": "Musk",
+      "strength": 2
+    },
+    {
+      "date": "2026-10-28",
+      "direction": 1,
+      "evidence": "中国CSP与SK海力士/三星谈存储长期协议、部分推动至2035年，美国公司先锁定供应，存储需求端获支撑",
+      "sector_key": "semi",
+      "source": "Serenity",
+      "strength": 2
     }
   ],
   "note": "X 博主每日简报（2026-10-21~25 已交付期）的板块新闻证据账。新增证据按同一格式追加；engine/news_sentiment.py 按日期衰减计入板块情绪。铁律：Serenity 的“存储”=存储芯片 memory，只记 semi，绝不记 energy_storage（储能）。market 条目只作风险提示（scope=market_risk），不进任何个股新闻分。"

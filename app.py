@@ -665,6 +665,30 @@ with st.expander("账户策略", expanded=False):
 if blocked:
     st.error("⛔ 系统阻断：" + "；".join(block_reasons[:5]))
 
+# 数据健康四态指示（安全补充③，2026-10-30）：由各市场最新 bar 日期
+# 与参照日期的真实差距判定（engine.data_health），非正常态带数据
+# 时间与失效标注；后端冻结由 pipeline/regime 强制，本行只是同步显示。
+try:
+    from engine import data_health as _dh
+    _ref_stock = q("SELECT MAX(date) FROM market_data"
+                   " WHERE market IN ('a','hk')")[0][0]
+    _today = datetime.now().strftime("%Y-%m-%d")
+    _hparts = []
+    for _mkt, _label in (("a", "A股"), ("hk", "港股"), ("crypto", "加密")):
+        _last = q("SELECT MAX(date) FROM market_data WHERE market=?",
+                  (_mkt,))[0][0]
+        _ref = _today if _mkt == "crypto" else _ref_stock
+        _state, _reason = _dh.classify(last_bar_date=_last, ref_date=_ref)
+        _icon = {"normal": "🟢", "delayed": "🟡",
+                 "disconnected": "🔴", "anomalous": "🔴"}[_state]
+        _txt = "%s %s %s" % (_icon, _label, _dh.LABELS[_state])
+        if _state != _dh.NORMAL:
+            _txt += "（%s）" % _dh.label_stale(_state, _last)
+        _hparts.append(_txt)
+    st.caption("数据健康：" + " · ".join(_hparts))
+except Exception:
+    st.caption("数据健康：未知（判定失败，不影响后端冻结口径）")
+
 # ============ 导航（顶部横排；左侧栏已移除） ============
 tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"],
                horizontal=True, label_visibility="collapsed", key="main_nav")

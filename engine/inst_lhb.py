@@ -167,7 +167,14 @@ def ensure_inst_tables(con):
         PRIMARY KEY(date, kind, seq))""")
     con.execute("""CREATE TABLE IF NOT EXISTS inst_lhb_fetch_days(
         date TEXT PRIMARY KEY, agg_rows INTEGER, raw_rows INTEGER,
-        state TEXT, fetched_at TEXT)""")
+        state TEXT, fetched_at TEXT, reason TEXT)""")
+    # 迁移（可重复执行）：旧表补 reason 列（失败原因供视图展示，
+    # 抓取失败必须可追踪——验收口径 2026-10-30）。
+    cols = [r[1] for r in con.execute(
+        "PRAGMA table_info(inst_lhb_fetch_days)")]
+    if cols and "reason" not in cols:
+        con.execute(
+            "ALTER TABLE inst_lhb_fetch_days ADD COLUMN reason TEXT")
 
 
 def store_daily(con, date_str, agg_rows, raw_rows=None, state="normal"):
@@ -175,6 +182,10 @@ def store_daily(con, date_str, agg_rows, raw_rows=None, state="normal"):
     以抓取日序列为分母）。返回聚合条数。"""
     ensure_inst_tables(con)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 重复抓取收敛：先清当日旧行再写入（同一交易日重复执行不
+    # 重复累计，数据源修订/条数变少也以最新一次为准）。
+    con.execute("DELETE FROM inst_lhb_daily WHERE date=?", (date_str,))
+    con.execute("DELETE FROM inst_lhb_raw WHERE date=?", (date_str,))
     for a in agg_rows:
         con.execute(
             "INSERT OR REPLACE INTO inst_lhb_daily"
@@ -212,9 +223,15 @@ def record_fetch_failure(con, date_str, reason=""):
     ensure_inst_tables(con)
     con.execute(
         "INSERT OR IGNORE INTO inst_lhb_fetch_days"
-        "(date,agg_rows,raw_rows,state,fetched_at) VALUES(?,?,?,?,?)",
+        "(date,agg_rows,raw_rows,state,fetched_at,reason)"
+        " VALUES(?,?,?,?,?,?)",
         (date_str, 0, 0, "failed",
-         datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+         datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reason or ""))
+    # 已是失败日时刷新失败原因；成功日不被失败记录降级（上行
+    # INSERT OR IGNORE 已保证），此处 UPDATE 只命中 failed 行。
+    con.execute(
+        "UPDATE inst_lhb_fetch_days SET reason=?"
+        " WHERE date=? AND state='failed'", (reason or "", date_str))
 
 
 def ingest_day(con, date_str, get=None):
@@ -223,6 +240,12 @@ def ingest_day(con, date_str, get=None):
     返回 (state, reason)。"""
     from engine import data_health
     rows, raw, state, reason = fetch_inst_daily(date_str, get=get)
+    if state == data_health.NORMAL and not rows:
+        # 空数据守卫：接口成功但聚合为 0 —— 缺失不能当作零，
+        # 更不能覆盖已落库的好数据；按失败登记、保留旧数据。
+        reason = "接口返回空数据（疑当日未发布完全）"
+        record_fetch_failure(con, date_str, reason)
+        return "failed", reason
     if state == data_health.NORMAL:
         store_daily(con, date_str, rows, raw, state)
     else:
@@ -281,6 +304,50 @@ def consecutive_detail(con, symbol, upto_date=None):
     b, bc = _consec(con, symbol, upto_date, require_net_positive=True)
     return {"appear_days": a, "appear_certain": ac,
             "net_buy_days": b, "net_buy_certain": bc}
+
+
+def latest_success_date(con):
+    """最近一个成功抓取日（state 非 failed）；无样本返回 None。"""
+    ensure_inst_tables(con)
+    row = con.execute(
+        "SELECT MAX(date) FROM inst_lhb_fetch_days"
+        " WHERE state<>'failed'").fetchone()
+    return row[0] if row else None
+
+
+def recent_fetch_status(con, limit=10):
+    """近 N 个抓取日的状态（供视图展示新鲜度与失败原因）：
+    [{date, state, agg_rows, raw_rows, reason, fetched_at}]，
+    按日期倒序。state='failed' 即抓取失败，reason 为失败原因。"""
+    ensure_inst_tables(con)
+    return [{"date": d, "state": st, "agg_rows": a, "raw_rows": r,
+             "reason": rs or "", "fetched_at": fa}
+            for d, st, a, r, rs, fa in con.execute(
+                "SELECT date,state,agg_rows,raw_rows,reason,fetched_at"
+                " FROM inst_lhb_fetch_days ORDER BY date DESC LIMIT ?",
+                (limit,))]
+
+
+def ingest_recent(con, get=None, days=2):
+    """夜间抓取入口：对 market_data 中最近 days 个 A 股交易日
+    逐日 ingest（当日 + 前一交易日刷新收敛——龙虎榜当日傍晚
+    可能未发布完全，次日以最终数据覆盖）。空数据守卫：接口
+    返回成功但聚合为 0 时按失败登记（原因=疑未发布），绝不
+    把缺失当作零落库污染连续天数分母。返回 [(date,state,
+    reason)]；无 A 股行情数据时返回空列表。"""
+    ensure_inst_tables(con)
+    try:
+        targets = [r[0] for r in con.execute(
+            "SELECT DISTINCT date FROM market_data WHERE market='a'"
+            " ORDER BY date DESC LIMIT ?", (days,))]
+    except Exception:  # noqa: BLE001 — 无 market_data 表（空库）
+        return []
+    out = []
+    for d in reversed(targets):
+        state, reason = ingest_day(con, d, get=get)
+        con.commit()
+        out.append((d, state, reason))
+    return out
 
 
 def shadow_board(con, min_net_buy_days=2, limit=20):

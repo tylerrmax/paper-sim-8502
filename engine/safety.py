@@ -217,15 +217,30 @@ def chain_head_path():
     return os.path.join(BASE, "reports", "risk_block_chain_head.json")
 
 
+def checkpoint_path():
+    """链头检查点（独立于仓库与推送白名单）：环境变量
+    PAPER_SIM_CHAIN_CHECKPOINT 可覆盖；默认在目标工作区
+    hidden_files（不在 git 仓内、不随同步推送）。与仓内锚点
+    双写双验：攻击者只改库、或连仓内锚点一起改，仍会被仓外
+    检查点发现；仓与检查点同机整体替换不在检测范围内
+    （如实披露，需异机检查点才可防）。"""
+    p = os.environ.get("PAPER_SIM_CHAIN_CHECKPOINT")
+    if p:
+        return p
+    return os.path.expanduser(
+        "~/workspace/goals/paper-trading-simulator/hidden_files/"
+        "risk_block_chain_checkpoint.json")
+
+
 def _write_head_anchor(row_hash, event_id):
-    p = chain_head_path()
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump({"head_hash": row_hash, "event_id": event_id,
-                       "at": _now()}, f, ensure_ascii=False)
-    except OSError:
-        pass  # 锚点写失败不掩盖主写入结果；verify 会报告锚点缺失
+    payload = {"head_hash": row_hash, "event_id": event_id, "at": _now()}
+    for p in (chain_head_path(), checkpoint_path()):
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except OSError:
+            pass  # 写失败不掩盖主写入结果；verify 会报告锚点/检查点缺失
 
 
 def log_block_event(con, *, trade_date, account=None, market=None,
@@ -314,16 +329,17 @@ def verify_block_chain(con, check_anchor=True):
             return False, "事件 %s 内容被篡改（row_hash 不符）" % fields["event_id"]
         prev = stored_hash
         last_hash = stored_hash
-    if check_anchor:
-        p = chain_head_path()
-        if last_hash is not None:
+    if check_anchor and last_hash is not None:
+        for label, p in (("仓内锚点", chain_head_path()),
+                         ("仓外检查点", checkpoint_path())):
             try:
                 with open(p, encoding="utf-8") as f:
                     anchor = json.load(f)
             except (OSError, ValueError):
-                return False, "链头锚点缺失/不可读（疑似尾部回退或锚点丢失）"
+                return False, "%s缺失/不可读（疑似尾部回退或%s丢失）" % (
+                    label, label)
             if anchor.get("head_hash") != last_hash:
-                return False, "链头与锚点不符（疑似尾部删除/回退）"
+                return False, "链头与%s不符（疑似尾部删除/回退/全链重写）" % label
     return True, "链完整，共 %d 条" % len(rows)
 
 

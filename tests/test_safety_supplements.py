@@ -157,7 +157,9 @@ def _log(con, **kw):
 @pytest.fixture()
 def anchor_tmp(tmp_path, monkeypatch):
     p = tmp_path / "head.json"
+    cp = tmp_path / "checkpoint.json"
     monkeypatch.setattr(safety, "chain_head_path", lambda: str(p))
+    monkeypatch.setattr(safety, "checkpoint_path", lambda: str(cp))
     return p
 
 
@@ -209,6 +211,35 @@ def test_block_chain_tail_delete_caught_by_anchor(tmp_path, anchor_tmp):
     con.execute("DELETE FROM risk_block_events WHERE symbol='600150'")
     ok, detail = safety.verify_block_chain(con)
     assert not ok and "锚点" in detail
+
+
+def test_block_chain_full_rewrite_caught_by_checkpoint(tmp_path, anchor_tmp):
+    # 攻击者重写全部记录并重算一条自洽的假链：链内校验会通过，
+    # 但链头与仓内锚点/仓外检查点不一致，必须被检出。
+    import hashlib as _hl
+    con = _con(tmp_path)
+    _log(con)
+    _log(con, symbol="600150")
+    ok, _ = safety.verify_block_chain(con)
+    assert ok
+    rows = con.execute(
+        "SELECT * FROM risk_block_events ORDER BY rowid").fetchall()
+    cols = [d[0] for d in con.execute(
+        "SELECT * FROM risk_block_events LIMIT 0").description]
+    prev = safety.GENESIS
+    for r in rows:
+        f = dict(zip(cols, r))
+        f["reason"] = "被改写的假理由"
+        body = {k: f[k] for k in safety._CHAIN_COLS}
+        h = _hl.sha256((prev + safety._canon(body)).encode()).hexdigest()
+        con.execute("UPDATE risk_block_events SET reason=?, prev_hash=?,"
+                    " row_hash=? WHERE event_id=?",
+                    (f["reason"], prev, h, f["event_id"]))
+        prev = h
+    ok_internal, _ = safety.verify_block_chain(con, check_anchor=False)
+    assert ok_internal  # 假链自洽——这正是必须有独立检查点的原因
+    ok, detail = safety.verify_block_chain(con)
+    assert not ok and "不符" in detail
 
 
 def test_block_log_write_failure_is_loud(tmp_path, monkeypatch):
@@ -386,3 +417,28 @@ def test_inst_consecutive_days_and_shadow_board(tmp_path):
         {"symbol": "600150", "name": "中国船舶", "inst_buy": 10,
          "inst_sell": 0, "inst_net": 10}])
     assert inst_lhb.consecutive_appear_days(con, "002446") == 0
+
+
+def test_inst_failed_day_is_not_absence(tmp_path):
+    con = sqlite3.connect(str(tmp_path / "f.db"))
+    row = {"symbol": "002446", "name": "盛路通信", "inst_buy": 100,
+           "inst_sell": 0, "inst_net": 100}
+    inst_lhb.store_daily(con, "2026-10-27", [row])
+    inst_lhb.record_fetch_failure(con, "2026-10-28")  # 中间日抓取失败
+    inst_lhb.store_daily(con, "2026-10-29", [row])
+    det = inst_lhb.consecutive_detail(con, "002446")
+    # 只数到失败日为止（1 天），不跨越失败日拼成 2 天不断言缺席
+    assert det["net_buy_days"] == 1 and det["net_buy_certain"] is False
+    # 最新日失败：以最近成功日为口径起点，此前连续不被清零
+    inst_lhb.record_fetch_failure(con, "2026-10-30")
+    det = inst_lhb.consecutive_detail(con, "002446")
+    assert det["net_buy_days"] == 1 and det["net_buy_certain"] is False
+    # ingest_day 失败路径：只登记失败日，不落当日数据
+    def boom(url):
+        raise TimeoutError("x")
+    state, _ = inst_lhb.ingest_day(con, "2026-11-02", get=boom)
+    assert state == data_health.DISCONNECTED
+    assert con.execute("SELECT state FROM inst_lhb_fetch_days"
+                       " WHERE date='2026-11-02'").fetchone()[0] == "failed"
+    assert con.execute("SELECT COUNT(*) FROM inst_lhb_daily"
+                       " WHERE date='2026-11-02'").fetchone()[0] == 0

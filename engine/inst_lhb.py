@@ -18,6 +18,10 @@
     的连续交易日数；某交易日未上榜/无机构专用记录即中断。
   * 连续净买交易日 consec_net_buy_days：同上，但要求当日机构
     专用净额 > 0。
+  * 「无记录」与「抓取失败」严格分开：抓取失败的日子只登记
+    state='failed'、不落数据；连续天数回溯遇到失败日即停止
+    并标 certain=False（已计天数成立、更早未知），绝不把失败
+    当真实缺席中断、也不跨越失败日拼接天数。
 - 原始记录全量落 inst_lhb_raw（买卖两侧席位明细），聚合可复算。
 
 交易联动边界：本模块只落库、评分展示、盘后评估；绝不生成
@@ -200,35 +204,83 @@ def store_daily(con, date_str, agg_rows, raw_rows=None, state="normal"):
     return len(agg_rows)
 
 
-def _consec(con, symbol, upto_date, require_net_positive):
+def record_fetch_failure(con, date_str, reason=""):
+    """登记抓取失败日（state='failed'）。失败日 ≠ 真实缺席日：
+    连续天数回溯遇到失败日即停止计数并标注不确定——不把失败
+    当缺席中断已计天数，也不无声跨越失败日拼接更长天数。
+    已成功落库的日子不被失败记录降级（INSERT OR IGNORE）。"""
     ensure_inst_tables(con)
-    days = [r[0] for r in con.execute(
-        "SELECT date FROM inst_lhb_fetch_days WHERE date<=?"
-        " ORDER BY date DESC", (upto_date,))] if upto_date else \
-        [r[0] for r in con.execute(
-            "SELECT date FROM inst_lhb_fetch_days ORDER BY date DESC")]
+    con.execute(
+        "INSERT OR IGNORE INTO inst_lhb_fetch_days"
+        "(date,agg_rows,raw_rows,state,fetched_at) VALUES(?,?,?,?,?)",
+        (date_str, 0, 0, "failed",
+         datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
+
+def ingest_day(con, date_str, get=None):
+    """一日标准入口：抓取成功→落库（聚合+原始+抓取日登记）；
+    失败/异常→只登记失败日，不落任何当日数据、不伪装缺席。
+    返回 (state, reason)。"""
+    from engine import data_health
+    rows, raw, state, reason = fetch_inst_daily(date_str, get=get)
+    if state == data_health.NORMAL:
+        store_daily(con, date_str, rows, raw, state)
+    else:
+        record_fetch_failure(con, date_str, reason)
+    return state, reason
+
+
+def _consec(con, symbol, upto_date, require_net_positive):
+    """返回 (days, certain)。回溯已登记的抓取日序列：
+    - 成功日且该股有记录（净买口径另要求净额>0）→ 计数；
+    - 成功日但该股无记录/净额不达标 → 真实中断，certain=True；
+    - 失败日 → 停止计数，certain=False（已计天数仍成立，
+      但更早的天数未知，不拼接、不冒充完整连续）。"""
+    ensure_inst_tables(con)
+    if upto_date:
+        day_rows = con.execute(
+            "SELECT date, state FROM inst_lhb_fetch_days WHERE date<=?"
+            " ORDER BY date DESC", (upto_date,)).fetchall()
+    else:
+        day_rows = con.execute(
+            "SELECT date, state FROM inst_lhb_fetch_days"
+            " ORDER BY date DESC").fetchall()
     nets = dict(con.execute(
         "SELECT date, inst_net FROM inst_lhb_daily WHERE symbol=?",
         (symbol,)).fetchall())
     n = 0
-    for d in days:
+    started = False
+    for d, st in day_rows:
+        if st == "failed":
+            if not started:
+                continue  # 最新日抓取失败：以最近成功日为口径起点
+            return n, False  # 序列中间失败：停止并标不确定
+        started = True
         if d not in nets:
-            break  # 该交易日未上榜/无机构专用记录 → 中断
+            return n, True  # 真实缺席 → 中断
         if require_net_positive and not nets[d] > 0:
-            break
+            return n, True
         n += 1
-    return n
+    return n, started
 
 
 def consecutive_appear_days(con, symbol, upto_date=None):
     """连续出现交易日：已抓取交易日序列中，该股有机构专用
     席位记录（净额任意符号）的连续天数（从最近一日往回数）。"""
-    return _consec(con, symbol, upto_date, require_net_positive=False)
+    return _consec(con, symbol, upto_date, require_net_positive=False)[0]
 
 
 def consecutive_net_buy_days(con, symbol, upto_date=None):
     """连续净买交易日：同上，但要求当日机构专用净额 > 0。"""
-    return _consec(con, symbol, upto_date, require_net_positive=True)
+    return _consec(con, symbol, upto_date, require_net_positive=True)[0]
+
+
+def consecutive_detail(con, symbol, upto_date=None):
+    """两口径天数 + 确定性标注（失败日截断时 certain=False）。"""
+    a, ac = _consec(con, symbol, upto_date, require_net_positive=False)
+    b, bc = _consec(con, symbol, upto_date, require_net_positive=True)
+    return {"appear_days": a, "appear_certain": ac,
+            "net_buy_days": b, "net_buy_certain": bc}
 
 
 def shadow_board(con, min_net_buy_days=2, limit=20):
@@ -236,7 +288,9 @@ def shadow_board(con, min_net_buy_days=2, limit=20):
     抓取日机构专用净买为正、且连续净买交易日 >= 阈值的标的，
     同时给出连续出现交易日，两个口径并列标注。"""
     ensure_inst_tables(con)
-    row = con.execute("SELECT MAX(date) FROM inst_lhb_fetch_days").fetchone()
+    row = con.execute(
+        "SELECT MAX(date) FROM inst_lhb_fetch_days"
+        " WHERE state<>'failed'").fetchone()
     if not row or not row[0]:
         return []
     latest = row[0]
@@ -245,14 +299,15 @@ def shadow_board(con, min_net_buy_days=2, limit=20):
             "SELECT symbol,name,inst_net FROM inst_lhb_daily"
             " WHERE date=? AND inst_net>0 ORDER BY inst_net DESC",
             (latest,)):
-        nb = consecutive_net_buy_days(con, sym, upto_date=latest)
-        if nb >= min_net_buy_days:
+        det = consecutive_detail(con, sym, upto_date=latest)
+        if det["net_buy_days"] >= min_net_buy_days:
             out.append({
                 "date": latest, "symbol": sym, "name": name,
                 "inst_net": net,
-                "consec_net_buy_days": nb,
-                "consec_appear_days": consecutive_appear_days(
-                    con, sym, upto_date=latest),
+                "consec_net_buy_days": det["net_buy_days"],
+                "consec_appear_days": det["appear_days"],
+                "streak_certain": det["appear_certain"]
+                and det["net_buy_certain"],
                 "caliber": "龙虎榜机构专用席位（匿名聚合，非机构家数）",
             })
     return out[:limit]

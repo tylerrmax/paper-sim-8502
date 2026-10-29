@@ -1,0 +1,30 @@
+name: ci
+on:
+  push:
+    branches: [master]
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pandas requests pyyaml
+      # 测试用假 streamlit 模块，无需安装 Streamlit
+      - name: 单元/烟雾/回归测试
+        run: |
+          set -e
+          for t in test_integrity test_app_smoke test_zh_simplified test_signal_guard test_pause_resume test_decision_desk test_live_quotes; do
+            echo "== $t"; python3 tests/$t.py
+          done
+      - name: 部署清单完整性（import 闭包 ⊆ 同步清单）
+        continue-on-error: true   # 暂为报告性质：muse 修复入库口径与同步清单后，删除本行改为强制
+        run: python3 tools/sync_manifest.py
+      - name: 一致性检查（线上 db；warn 允许，error 失败）
+        continue-on-error: true   # 暂为报告性质：muse 修复入库口径与同步清单后，删除本行改为强制
+        run: python3 tools/check_consistency.py
+      - name: 重建演练（只靠 fills 重建并比对）
+        continue-on-error: true   # 暂为报告性质：muse 修复入库口径与同步清单后，删除本行改为强制
+        run: python3 tools/rebuild_from_fills.py

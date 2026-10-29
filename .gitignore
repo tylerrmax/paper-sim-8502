@@ -22,3 +22,4 @@ db/*.lock
 !.env.example
 reports/risk_block_chain_head.json
 reports/risk_block_log_failures.jsonl
+risk_block_chain_head*.json

@@ -15,3 +15,10 @@ db/*.bak.*
 db/*.db-shm
 db/*.db-wal
 db/*.lock
+
+# 敏感配置（安全补充④，2026-10-30）：本地 .env 永不入库
+.env
+.env.*
+!.env.example
+reports/risk_block_chain_head.json
+reports/risk_block_log_failures.jsonl

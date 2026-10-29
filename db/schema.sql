@@ -218,5 +218,5 @@ CREATE TABLE IF NOT EXISTS inst_lhb_raw (
 );
 CREATE TABLE IF NOT EXISTS inst_lhb_fetch_days (
     date TEXT PRIMARY KEY, agg_rows INTEGER, raw_rows INTEGER,
-    state TEXT, fetched_at TEXT
+    state TEXT, fetched_at TEXT, reason TEXT
 );

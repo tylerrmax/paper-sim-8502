@@ -132,6 +132,14 @@
       "sector_key": "semi",
       "source": "Serenity",
       "strength": 2
+    },
+    {
+      "date": "2026-10-29",
+      "direction": 1,
+      "evidence": "SK海力士Q3财报点评：存储供不应求持续至2030年，DRAM与HBM 2029年前基本售罄，2027—2028年过半产能已被长期协议锁定",
+      "sector_key": "semi",
+      "source": "Serenity",
+      "strength": 3
     }
   ],
   "note": "X 博主每日简报（2026-10-21~25 已交付期）的板块新闻证据账。新增证据按同一格式追加；engine/news_sentiment.py 按日期衰减计入板块情绪。铁律：Serenity 的“存储”=存储芯片 memory，只记 semi，绝不记 energy_storage（储能）。market 条目只作风险提示（scope=market_risk），不进任何个股新闻分。"

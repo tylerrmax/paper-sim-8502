@@ -690,7 +690,7 @@ except Exception:
     st.caption("数据健康：未知（判定失败，不影响后端冻结口径）")
 
 # ============ 导航（顶部横排；左侧栏已移除） ============
-tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "📝 交易", "💰 账户", "🛡 验证"],
+tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "🏦 机构集体建仓监控", "📝 交易", "💰 账户", "🛡 验证"],
                horizontal=True, label_visibility="collapsed", key="main_nav")
 
 # 控制（本地模式可用；云端只读时不渲染）
@@ -1450,6 +1450,76 @@ elif tab == "💰 账户":
                   for d, s, sd, qty, px, fee, pnl in fl])
     else:
         st.write("暂无成交")
+
+# ================================================================
+# 🏦 机构集体建仓监控（方案1 影子监控 · 只读）：龙虎榜机构专用
+# 席位净买/连续天数；不生成信号、不建意图、不影响交易主链。
+# ================================================================
+elif tab == "🏦 机构集体建仓监控":
+    st.markdown('<div class="section-head">🏦 机构集体建仓监控（影子 · 只读）</div>',
+                unsafe_allow_html=True)
+    st.caption("口径：龙虎榜「机构专用」席位——匿名聚合席位，非机构家数；"
+               "机构专用席位净买不等于具名机构真实建仓。本页仅作影子监控与"
+               "盘后评估，不生成信号、不创建交易意图、不改变策略参数。"
+               "数据源：东方财富龙虎榜公开数据（夜间抓取）。")
+    try:
+        from engine import inst_lhb as _inst
+        _con = sqlite3.connect(DB)
+        try:
+            _status = _inst.recent_fetch_status(_con, limit=10)
+            _latest_ok = _inst.latest_success_date(_con)
+            if not _status:
+                st.info("尚无生产样本：夜间抓取尚未首次运行，页面不展示任何数据。")
+            else:
+                _last = _status[0]
+                st.write("最近成功抓取日期：**%s** · 最近一次抓取 %s（%s）"
+                         % (_latest_ok or "无",
+                            _last["date"],
+                            "成功" if _last["state"] != "failed" else "失败"))
+                st.markdown("**抓取状态（近 10 个抓取日）**")
+                st.table([{
+                    "日期": s["date"],
+                    "状态": "成功" if s["state"] != "failed" else "失败",
+                    "聚合标的": s["agg_rows"] if s["state"] != "failed" else "—",
+                    "原始席位记录": s["raw_rows"] if s["state"] != "failed" else "—",
+                    "失败原因": s["reason"] if s["state"] == "failed" else "—",
+                } for s in _status])
+                if _latest_ok:
+                    _board = _inst.shadow_board(_con, min_net_buy_days=2)
+                    st.markdown("**影子榜（%s · 当日净买为正且连续净买 ≥2 交易日）**"
+                                % _latest_ok)
+                    if _board:
+                        st.table([{
+                            "代码": b["symbol"], "名称": b["name"] or "",
+                            "当日净买(万)": f"{b['inst_net'] / 10000:,.0f}",
+                            "连续净买交易日": b["consec_net_buy_days"],
+                            "连续出现交易日": b["consec_appear_days"],
+                            "天数确定性": "确定" if b["streak_certain"]
+                            else "不确定（序列含抓取失败日）",
+                        } for b in _board])
+                    else:
+                        st.write("当日无符合条件的标的。")
+                    _day_rows = _con.execute(
+                        "SELECT symbol,name,inst_buy,inst_sell,inst_net,"
+                        "seat_buy_records,seat_sell_records,window"
+                        " FROM inst_lhb_daily WHERE date=?"
+                        " ORDER BY inst_net DESC", (_latest_ok,)).fetchall()
+                    st.markdown("**当日聚合全表（%s · 共 %d 只 · 供复算核对）**"
+                                % (_latest_ok, len(_day_rows)))
+                    st.table([{
+                        "代码": r[0], "名称": r[1] or "",
+                        "买入(万)": f"{(r[2] or 0) / 10000:,.0f}",
+                        "卖出(万)": f"{(r[3] or 0) / 10000:,.0f}",
+                        "净买(万)": f"{(r[4] or 0) / 10000:,.0f}",
+                        "买席位记录": r[5], "卖席位记录": r[6],
+                        "窗口": "累计" if r[7] == "cum" else "一日",
+                    } for r in _day_rows])
+                    st.caption("窗口=累计：该股当日只有多日累计类事件，金额为累计口径，"
+                               "与一日类不相加（聚合规则见 engine/inst_lhb）。")
+        finally:
+            _con.close()
+    except Exception:  # noqa: BLE001 — 影子视图故障隔离，不影响交易功能
+        st.info("机构监控数据暂不可用（不影响交易功能）。")
 
 # ================================================================
 # 🛡 验证与风控：KPI 验证 + 风控指标 + 审计

@@ -169,3 +169,54 @@ CREATE TABLE IF NOT EXISTS rotation_vouchers (
     used_symbol TEXT,
     created_at TEXT                -- 本轮重建时间
 );
+
+-- 安全补充（2026-10-30）：交易意图幂等与状态机（engine/safety.py）
+CREATE TABLE IF NOT EXISTS trade_intents (
+    idempotency_key TEXT PRIMARY KEY,  -- sha256(账户|市场|标的|方向|策略版本|信号事件标识)
+    account TEXT, market TEXT, symbol TEXT, side TEXT,
+    qty REAL, price REAL,
+    strategy_version TEXT, signal_event_id TEXT,
+    state TEXT NOT NULL,               -- pending_review/risk_check/released/submitting/confirmed/rejected/unknown
+    result_ref TEXT, note TEXT,
+    created_at TEXT, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS intent_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT, from_state TEXT, to_state TEXT,
+    note TEXT, at TEXT
+);
+
+-- 安全补充（2026-10-30）：风控拦截结构化事件（追加式哈希链，engine/safety.py）
+CREATE TABLE IF NOT EXISTS risk_block_events (
+    event_id TEXT PRIMARY KEY,
+    ts TEXT, trade_date TEXT, account TEXT, market TEXT,
+    symbol TEXT, side TEXT, source TEXT,
+    institution_evidence TEXT, strategy_version TEXT,
+    screen_passed INTEGER, screen_score REAL,
+    rule_name TEXT, rule_version TEXT, reason TEXT,
+    b31_state TEXT, index_close REAL, index_ma20 REAL,
+    data_ts TEXT, request_id TEXT, idempotency_key TEXT,
+    order_id TEXT, disposition TEXT,
+    review_status TEXT DEFAULT 'pending', review_at TEXT,
+    prev_hash TEXT, row_hash TEXT
+);
+
+-- 机构集体建仓影子监控（2026-10-30，口径=龙虎榜机构专用席位，engine/inst_lhb.py）
+CREATE TABLE IF NOT EXISTS inst_lhb_daily (
+    date TEXT, symbol TEXT, name TEXT,
+    inst_buy REAL, inst_sell REAL, inst_net REAL,
+    seat_buy_records INTEGER, seat_sell_records INTEGER,
+    window TEXT, trade_id TEXT,
+    fetched_at TEXT,
+    PRIMARY KEY (date, symbol)
+);
+CREATE TABLE IF NOT EXISTS inst_lhb_raw (
+    date TEXT, kind TEXT, seq INTEGER, symbol TEXT, seat_name TEXT,
+    trade_id TEXT, explanation TEXT,
+    buy REAL, sell REAL, net REAL,
+    PRIMARY KEY (date, kind, seq)
+);
+CREATE TABLE IF NOT EXISTS inst_lhb_fetch_days (
+    date TEXT PRIMARY KEY, agg_rows INTEGER, raw_rows INTEGER,
+    state TEXT, fetched_at TEXT
+);

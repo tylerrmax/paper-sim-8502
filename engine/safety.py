@@ -213,11 +213,30 @@ def _canon(fields):
                       default=str)
 
 
-def chain_head_path():
-    return os.path.join(BASE, "reports", "risk_block_chain_head.json")
+def _db_key(con):
+    """锚点必须绑定具体数据库：按连接的库文件绝对路径派生键，
+    防止测试库/副本库的链头覆盖生产库锚点（2026-10-30 部署后
+    复核实测发现的缺陷：门禁 pytest 的管线跑批曾把测试链链头
+    写进生产锚点，导致生产校验误报不符）。"""
+    try:
+        rows = con.execute("PRAGMA database_list").fetchall()
+        path = rows[0][2] if rows else ""
+    except Exception:  # noqa: BLE001
+        path = ""
+    if not path:
+        return "memory"
+    return hashlib.sha256(
+        os.path.abspath(path).encode("utf-8")).hexdigest()[:12]
 
 
-def checkpoint_path():
+def chain_head_path(db_key=None):
+    name = "risk_block_chain_head.json"
+    if db_key:
+        name = "risk_block_chain_head_%s.json" % db_key
+    return os.path.join(BASE, "reports", name)
+
+
+def checkpoint_path(db_key=None):
     """链头检查点（独立于仓库与推送白名单）：环境变量
     PAPER_SIM_CHAIN_CHECKPOINT 可覆盖；默认在目标工作区
     hidden_files（不在 git 仓内、不随同步推送）。与仓内锚点
@@ -227,14 +246,17 @@ def checkpoint_path():
     p = os.environ.get("PAPER_SIM_CHAIN_CHECKPOINT")
     if p:
         return p
+    name = "risk_block_chain_checkpoint.json"
+    if db_key:
+        name = "risk_block_chain_checkpoint_%s.json" % db_key
     return os.path.expanduser(
-        "~/workspace/goals/paper-trading-simulator/hidden_files/"
-        "risk_block_chain_checkpoint.json")
+        "~/workspace/goals/paper-trading-simulator/hidden_files/" + name)
 
 
-def _write_head_anchor(row_hash, event_id):
+def _write_head_anchor(con, row_hash, event_id):
     payload = {"head_hash": row_hash, "event_id": event_id, "at": _now()}
-    for p in (chain_head_path(), checkpoint_path()):
+    key = _db_key(con)
+    for p in (chain_head_path(key), checkpoint_path(key)):
         try:
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w", encoding="utf-8") as f:
@@ -295,7 +317,7 @@ def log_block_event(con, *, trade_date, account=None, market=None,
         except OSError:
             pass
         raise RiskBlockLogError("拦截事件写入失败：%s" % e) from e
-    _write_head_anchor(row_hash, fields["event_id"])
+    _write_head_anchor(con, row_hash, fields["event_id"])
     return fields["event_id"]
 
 
@@ -330,8 +352,9 @@ def verify_block_chain(con, check_anchor=True):
         prev = stored_hash
         last_hash = stored_hash
     if check_anchor and last_hash is not None:
-        for label, p in (("仓内锚点", chain_head_path()),
-                         ("仓外检查点", checkpoint_path())):
+        _key = _db_key(con)
+        for label, p in (("仓内锚点", chain_head_path(_key)),
+                         ("仓外检查点", checkpoint_path(_key))):
             try:
                 with open(p, encoding="utf-8") as f:
                     anchor = json.load(f)
@@ -392,6 +415,21 @@ def mirror_blocked_signals(con, *, strategy_version=None, env=None,
             event_id=eid)
         n += 1
     return n
+
+
+def reanchor(con):
+    """锚点/检查点丢失或被无关跑批覆盖后的恢复动作：先做链内
+    校验（哈希链本身必须自洽），通过后把当前链头重写到本库
+    专属的双锚点。链内校验不过时拒绝重锚（不给篡改背书）。"""
+    ok, detail = verify_block_chain(con, check_anchor=False)
+    if not ok:
+        raise RiskBlockLogError("链内校验未过，拒绝重锚：%s" % detail)
+    row = con.execute(
+        "SELECT event_id, row_hash FROM risk_block_events"
+        " ORDER BY rowid DESC LIMIT 1").fetchone()
+    if row:
+        _write_head_anchor(con, row[1], row[0])
+    return True, "已重锚（%s）" % detail
 
 
 def query_block_events(con, *, trade_date=None, symbol=None,

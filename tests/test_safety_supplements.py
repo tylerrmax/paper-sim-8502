@@ -158,8 +158,8 @@ def _log(con, **kw):
 def anchor_tmp(tmp_path, monkeypatch):
     p = tmp_path / "head.json"
     cp = tmp_path / "checkpoint.json"
-    monkeypatch.setattr(safety, "chain_head_path", lambda: str(p))
-    monkeypatch.setattr(safety, "checkpoint_path", lambda: str(cp))
+    monkeypatch.setattr(safety, "chain_head_path", lambda *a: str(p))
+    monkeypatch.setattr(safety, "checkpoint_path", lambda *a: str(cp))
     return p
 
 
@@ -240,6 +240,28 @@ def test_block_chain_full_rewrite_caught_by_checkpoint(tmp_path, anchor_tmp):
     assert ok_internal  # 假链自洽——这正是必须有独立检查点的原因
     ok, detail = safety.verify_block_chain(con)
     assert not ok and "不符" in detail
+
+
+def test_anchors_are_per_database(tmp_path):
+    # 回归（2026-10-30 部署后复核发现）：锚点/检查点按库隔离，
+    # 测试库的链头不得覆盖另一库的锚点。
+    con_a = _con(tmp_path, "a.db")
+    con_b = _con(tmp_path, "b.db")
+    _log(con_a)
+    _log(con_b, symbol="600150")
+    _log(con_b, symbol="002185")
+    assert safety.verify_block_chain(con_a)[0]
+    assert safety.verify_block_chain(con_b)[0]
+    assert safety.chain_head_path(safety._db_key(con_a)) != \
+        safety.chain_head_path(safety._db_key(con_b))
+    # 锚点被覆盖后的恢复：链内自洽 → reanchor 后双锚点校验恢复
+    import json as _json
+    p = safety.chain_head_path(safety._db_key(con_a))
+    with open(p, "w", encoding="utf-8") as f:
+        _json.dump({"head_hash": "bogus", "event_id": "x"}, f)
+    assert not safety.verify_block_chain(con_a)[0]
+    safety.reanchor(con_a)
+    assert safety.verify_block_chain(con_a)[0]
 
 
 def test_block_log_write_failure_is_loud(tmp_path, monkeypatch):

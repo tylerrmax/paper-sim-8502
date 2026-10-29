@@ -160,6 +160,23 @@ def _check_workbook_map():
               "未自动覆盖）：%s" % (len(diffs), "；".join(diffs[:5])))
 
 
+def _record_inst_shadow(db):
+    """机构专用席位影子抓取（方案1 影子监控，不进信号链）：
+    最近两个 A 股交易日逐日抓取（当日 + 前一日刷新收敛）。
+    失败只登记失败日并打印结果行，由调用方兜底 FAIL 行；
+    只写 inst_lhb 三张影子表，不触碰交易状态。"""
+    from engine import inst_lhb
+    con = sqlite3.connect(db)
+    try:
+        results = inst_lhb.ingest_recent(con, days=2)
+    finally:
+        con.close()
+    if not results:
+        print("WARN 机构影子抓取：无 A 股行情日期，跳过")
+    for d, state, reason in results:
+        print("机构影子抓取 %s: %s（%s）" % (d, state, reason))
+
+
 def main():
     day = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == "--date" else str(date.today())
     con = init_db()
@@ -214,6 +231,13 @@ def main():
         _check_workbook_map()
     except Exception as e:  # noqa: BLE001
         print("FAIL 母板映射核对: %s" % e)
+
+    # 6. 机构专用席位影子抓取（方案1）：只写影子表，失败留
+    #    FAIL 行供 nightly 报告，绝不阻塞主链与交易状态。
+    try:
+        _record_inst_shadow(DB)
+    except Exception as e:  # noqa: BLE001
+        print("FAIL 机构影子抓取: %s" % e)
 
 
 if __name__ == "__main__":

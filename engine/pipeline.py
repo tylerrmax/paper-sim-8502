@@ -819,6 +819,34 @@ def _run_locked(db_path=DB, cfg=None):
                 # 放行）；拦截写入 blocked_signals 并在日报列明原因。
                 # 历史成交在上方 existing_fills 分支已重放，不受本闸追溯。
                 if side == "BUY":
+                    # 数据新鲜度闸（安全补充③，2026-10-30）：单标的
+                    # 行情滞后越线 → 后端冻结该标的新买入并留痕，
+                    # 不再只 WARN 沿用旧价（check_fresh 接入执行层）。
+                    # 口径 as-of 执行日 d，保证全量重放确定性。
+                    _mkt = {"sim_a": "a", "sim_hk": "hk",
+                            "sim_crypto": "crypto"}.get(aid)
+                    if _mkt:
+                        _lb = con.execute(
+                            "SELECT MAX(date) FROM market_data"
+                            " WHERE symbol=? AND date<=?",
+                            (s, d)).fetchone()[0]
+                        _ref = con.execute(
+                            "SELECT MAX(date) FROM market_data"
+                            " WHERE market=? AND date<=?",
+                            (_mkt, d)).fetchone()[0]
+                        _fb, _fr = risk_gate.check_fresh(s, _lb, _ref)
+                        if _fb:
+                            con.execute(
+                                "INSERT OR IGNORE INTO blocked_signals"
+                                "(date,signal_date,account,symbol,side,"
+                                "signal_price,exec_price,stop_ref,reason,"
+                                "created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                (d, sig_d, aid, s, side, sig_px,
+                                 round(px, 6), risk_gate.stop_ref_of(s),
+                                 _fr,
+                                 datetime.now().strftime(
+                                     "%Y-%m-%d %H:%M:%S")))
+                            continue
                     _blk, _breason, _sr = risk_gate.check_buy(s, px, sig_px)
                     if _blk:
                         con.execute(
@@ -1060,6 +1088,13 @@ def _run_locked(db_path=DB, cfg=None):
              v["symbol"], v["signal_date"], v["exec_date"], v["qty"],
              v["price"], v["fee"], v["amount"], v["status"],
              v["used_fill_id"], v["used_date"], v["used_symbol"], _now))
+    # 风控拦截结构化事件链（安全补充②，2026-10-30）：把本轮（及
+    # 历史未镜像的）blocked_signals 镜像为哈希链事件，含策略版本与
+    # 本轮环境证据（B31/指数收盘/MA20）。写入失败抛 RiskBlockLogError
+    # 使整轮失败——拦截日志不得静默丢失。
+    from engine import safety as _safety
+    _safety.mirror_blocked_signals(
+        con, strategy_version=cfg.get("meta", {}).get("version"), env=env)
     con.commit()
     con.close()
     return asof

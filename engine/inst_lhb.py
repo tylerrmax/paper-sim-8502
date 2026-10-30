@@ -22,7 +22,24 @@
     state='failed'、不落数据；连续天数回溯遇到失败日即停止
     并标 certain=False（已计天数成立、更早未知），绝不把失败
     当真实缺席中断、也不跨越失败日拼接天数。
+  * 「完全未登记」与失败同样处理（2026-10-31 专项整改 P1-01）：
+    连续计算前先用可信 A 股交易日历（market_data 的 A 股日期
+    集合，或调用方显式传入的日历）与抓取登记做差集检查；区间
+    内应有交易日缺登记时不得跨越拼接，受影响结果标
+    certain=False 并在 consecutive_detail 里给出 missing_dates
+    与原因；缺失日不等于净买为零。交易日历缺失/过期（最新日
+    早于最新抓取登记日）时 calendar_ok=False，任何连续结果
+    都不得标确定。序列头部（最新侧）的失败/未登记日按既有
+    口径跳过、以最近成功日为起点，缺失日期仍如实记录。
 - 原始记录全量落 inst_lhb_raw（买卖两侧席位明细），聚合可复算。
+- 数据字典（2026-10-31 专项整改 P2-08）：inst_lhb_daily.name
+  仅为展示字段（来自当日龙虎榜汇总的名称映射），不参与金额
+  计算、净买判断或任何评分；inst_lhb_raw 本身不含名称字段，
+  聚合复算不需要也不使用名称。
+- 样本时间口径（P2-01）：事件日 2026-10-16~10-29 为 backfill
+  段，其时间戳为事后重构、不可冒充真实历史可用时间；正式
+  因子研究默认只用 2026-10-30 起具有真实采集时间证据的
+  forward 样本，回溯性探索必须单独标识。
 
 交易联动边界：本模块只落库、评分展示、盘后评估；绝不生成
 signals、绝不创建交易意图、绝不进入排队队列、不改任何现有
@@ -253,57 +270,150 @@ def ingest_day(con, date_str, get=None):
     return state, reason
 
 
-def _consec(con, symbol, upto_date, require_net_positive):
-    """返回 (days, certain)。回溯已登记的抓取日序列：
-    - 成功日且该股有记录（净买口径另要求净额>0）→ 计数；
-    - 成功日但该股无记录/净额不达标 → 真实中断，certain=True；
-    - 失败日 → 停止计数，certain=False（已计天数仍成立，
-      但更早的天数未知，不拼接、不冒充完整连续）。"""
+def _calendar_dates(con, calendar):
+    """可信 A 股交易日历来源：调用方显式传入的日历优先，其次
+    market_data 中 market='a' 的 distinct 日期集合（与
+    ingest_recent 的目标日来源同源）。返回日期集合（可为空）。"""
+    if calendar is not None:
+        return {str(d)[:10] for d in calendar}
+    try:
+        return {r[0] for r in con.execute(
+            "SELECT DISTINCT date FROM market_data WHERE market='a'")}
+    except Exception:  # noqa: BLE001 — 无 market_data 表（空库/测试库）
+        return set()
+
+
+def _consec_detail(con, symbol, upto_date, require_net_positive,
+                   calendar=None):
+    """连续天数明细。返回 dict(days, certain, missing_dates,
+    calendar_ok, uncertainty)。
+
+    回溯规则（2026-10-31 整改 P1-01，含交易日历差集校验）：
+    - 计算区间 = [最早抓取登记日, anchor]，anchor = upto_date
+      或最新抓取登记日；区间内的应有交易日以交易日历为准。
+    - 日历可信（calendar_ok）：日历非空且其在 anchor 之前的
+      最新日期不早于区间内最新抓取登记日（否则日历过期、
+      无法覆盖校验区间 → 不可信）。
+    - 日历可信时逐「应有交易日」回溯：成功日且该股有记录
+      （净买口径另要求净额>0）→ 计数；成功日但无记录/净额
+      不达标 → 真实中断，certain=True；失败日或完全未登记日
+      → 序列头部（尚未数到成功日）跳过并记录，序列中部则
+      停止计数、certain=False、missing_dates/原因如实给出，
+      绝不跨越拼接；未登记日不等于净买为零。
+    - 日历缺失/不可信时退回已登记序列回溯，但 certain 一律
+      False（无法排除未登记交易日被跳过），原因记
+      calendar_unavailable。"""
     ensure_inst_tables(con)
-    if upto_date:
-        day_rows = con.execute(
-            "SELECT date, state FROM inst_lhb_fetch_days WHERE date<=?"
-            " ORDER BY date DESC", (upto_date,)).fetchall()
-    else:
-        day_rows = con.execute(
-            "SELECT date, state FROM inst_lhb_fetch_days"
-            " ORDER BY date DESC").fetchall()
+    fetch_map = dict(con.execute(
+        "SELECT date, state FROM inst_lhb_fetch_days").fetchall())
+    info = {"days": 0, "certain": False, "missing_dates": [],
+            "calendar_ok": False, "uncertainty": ""}
+    if not fetch_map:
+        info["uncertainty"] = "no_fetch_days"
+        return info
+    anchor = upto_date or max(fetch_map)
+    win_min = min(fetch_map)
+    in_window = {d: st for d, st in fetch_map.items() if d <= anchor}
+    if not in_window:
+        info["uncertainty"] = "no_fetch_days"
+        return info
+    cal = _calendar_dates(con, calendar)
+    cal_le = [d for d in cal if d <= anchor]
+    calendar_ok = bool(cal_le) and max(cal_le) >= max(in_window)
+    info["calendar_ok"] = calendar_ok
     nets = dict(con.execute(
         "SELECT date, inst_net FROM inst_lhb_daily WHERE symbol=?",
         (symbol,)).fetchall())
     n = 0
     started = False
-    for d, st in day_rows:
-        if st == "failed":
-            if not started:
-                continue  # 最新日抓取失败：以最近成功日为口径起点
-            return n, False  # 序列中间失败：停止并标不确定
-        started = True
+
+    def _hit(d):
+        """成功日的计数判定：True=计数，False=真实中断。"""
         if d not in nets:
-            return n, True  # 真实缺席 → 中断
+            return False
         if require_net_positive and not nets[d] > 0:
-            return n, True
+            return False
+        return True
+
+    if calendar_ok:
+        expected = sorted((d for d in cal if win_min <= d <= anchor),
+                          reverse=True)
+        for d in expected:
+            st = in_window.get(d)
+            if st is None:  # 应有交易日完全没有抓取登记
+                info["missing_dates"].append(d)
+                if not started:
+                    continue  # 序列头部：以最近成功日为口径起点
+                info["days"] = n
+                info["uncertainty"] = "unregistered_trading_day"
+                return info  # 中部缺口：截断，绝不跨越拼接
+            if st == "failed":
+                if not started:
+                    continue  # 序列头部失败：同上
+                info["days"] = n
+                info["uncertainty"] = "fetch_failed_day"
+                return info
+            started = True
+            if not _hit(d):
+                info["days"] = n
+                info["certain"] = True  # 真实缺席/净额不达标中断
+                return info
+            n += 1
+        info["days"] = n
+        info["certain"] = started
+        return info
+    # 日历缺失/过期：无法做差集校验，结果一律不确定。
+    info["uncertainty"] = "calendar_unavailable"
+    for d in sorted(in_window, reverse=True):
+        if in_window[d] == "failed":
+            if not started:
+                continue
+            info["days"] = n
+            return info
+        started = True
+        if not _hit(d):
+            info["days"] = n
+            return info
         n += 1
-    return n, started
+    info["days"] = n
+    return info
 
 
-def consecutive_appear_days(con, symbol, upto_date=None):
+def _consec(con, symbol, upto_date, require_net_positive, calendar=None):
+    """返回 (days, certain)。语义见 _consec_detail。"""
+    det = _consec_detail(con, symbol, upto_date, require_net_positive,
+                         calendar=calendar)
+    return det["days"], det["certain"]
+
+
+def consecutive_appear_days(con, symbol, upto_date=None, calendar=None):
     """连续出现交易日：已抓取交易日序列中，该股有机构专用
     席位记录（净额任意符号）的连续天数（从最近一日往回数）。"""
-    return _consec(con, symbol, upto_date, require_net_positive=False)[0]
+    return _consec(con, symbol, upto_date, require_net_positive=False,
+                   calendar=calendar)[0]
 
 
-def consecutive_net_buy_days(con, symbol, upto_date=None):
+def consecutive_net_buy_days(con, symbol, upto_date=None, calendar=None):
     """连续净买交易日：同上，但要求当日机构专用净额 > 0。"""
-    return _consec(con, symbol, upto_date, require_net_positive=True)[0]
+    return _consec(con, symbol, upto_date, require_net_positive=True,
+                   calendar=calendar)[0]
 
 
-def consecutive_detail(con, symbol, upto_date=None):
-    """两口径天数 + 确定性标注（失败日截断时 certain=False）。"""
-    a, ac = _consec(con, symbol, upto_date, require_net_positive=False)
-    b, bc = _consec(con, symbol, upto_date, require_net_positive=True)
-    return {"appear_days": a, "appear_certain": ac,
-            "net_buy_days": b, "net_buy_certain": bc}
+def consecutive_detail(con, symbol, upto_date=None, calendar=None):
+    """两口径天数 + 确定性标注。certain=False 的情形：失败日/
+    未登记交易日截断（missing_dates 给出未登记日期）、交易
+    日历缺失或过期（calendar_ok=False）。"""
+    a = _consec_detail(con, symbol, upto_date,
+                       require_net_positive=False, calendar=calendar)
+    b = _consec_detail(con, symbol, upto_date,
+                       require_net_positive=True, calendar=calendar)
+    reasons = {r for r in (a["uncertainty"], b["uncertainty"]) if r}
+    return {"appear_days": a["days"], "appear_certain": a["certain"],
+            "net_buy_days": b["days"], "net_buy_certain": b["certain"],
+            "missing_dates": sorted(set(a["missing_dates"])
+                                    | set(b["missing_dates"])),
+            "calendar_ok": a["calendar_ok"] and b["calendar_ok"],
+            "uncertainty": ";".join(sorted(reasons))}
 
 
 def latest_success_date(con):

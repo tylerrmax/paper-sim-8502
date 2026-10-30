@@ -140,6 +140,14 @@
       "sector_key": "semi",
       "source": "Serenity",
       "strength": 3
+    },
+    {
+      "date": "2026-10-30",
+      "direction": 1,
+      "evidence": "Serenity称Marvell已进入收购Lumentum最后阶段，意在纵向整合供应最受约束的激光环节，若成行其他激光厂商战略价值提升。",
+      "sector_key": "optical_comm",
+      "source": "Serenity",
+      "strength": 2
     }
   ],
   "note": "X 博主每日简报（2026-10-21~25 已交付期）的板块新闻证据账。新增证据按同一格式追加；engine/news_sentiment.py 按日期衰减计入板块情绪。铁律：Serenity 的“存储”=存储芯片 memory，只记 semi，绝不记 energy_storage（储能）。market 条目只作风险提示（scope=market_risk），不进任何个股新闻分。"

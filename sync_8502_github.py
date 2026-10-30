@@ -65,6 +65,17 @@ FILES = [
     "config/strategy.yaml",
     # 验收报告（2026-10-31）：验证页直发报告，随同步上公网
     "reports/public/*.md",
+    # 关键测试公开复现（2026-10-31 专项整改 P2-02）：公开仓可
+    # 独立运行安全补充/影子链/专项整改三套关键测试（独立测试
+    # 库、运行命令与依赖版本见 README「关键测试复现」节）。
+    "init_db.py",
+    "tools/hash_baseline.py",
+    "tools/nightly_run.sh",
+    "tests/test_safety_supplements.py",
+    "tests/test_inst_shadow_chain.py",
+    "tests/test_audit_remediation.py",
+    # 构建标识（P2-04）：同步时生成，云端页面只读展示运行版本
+    "build_info.json",
 ]
 
 
@@ -243,6 +254,26 @@ def main():
 
     if not dry_run:
         _assert_fresh()  # 推送前断言（保留原有新鲜度检查）
+        # 构建标识（2026-10-31 整改 P2-04）：记录本次同步对应的
+        # 本地提交，供云端页面只读展示实际运行版本。生成文件
+        # 不入主仓（.gitignore 已排除）；生成失败只告警不阻断。
+        try:
+            import json as _bj
+            from datetime import datetime as _dt
+            _head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=SRC,
+                capture_output=True, text=True).stdout.strip()
+            with open(os.path.join(SRC, "build_info.json"), "w",
+                      encoding="utf-8") as _bf:
+                _bj.dump({"commit": _head,
+                          "built_at": _dt.now().strftime(
+                              "%Y-%m-%d %H:%M:%S"),
+                          "source_repo": "paper-trading-sim (local master)"},
+                         _bf, ensure_ascii=False)
+            print("构建标识已生成：build_info.json commit=%s"
+                  % _head[:12])
+        except Exception as _be:  # noqa: BLE001
+            print("WARN 构建标识生成失败（不阻断同步）：%s" % _be)
     changed = 0
     failures = []
     # 公开仓库：代码

@@ -314,6 +314,114 @@ def test_consistency_after_mixed_ops_with_fault(tmp_path):
     assert safety.get_intent(con, k1)["state"] == safety.RISK_CHECK
 
 
+# ============================================================ P2-05/07
+
+def _load_hash_tool():
+    import importlib.util
+    p = os.path.join(os.path.dirname(__file__), "..",
+                     "tools", "hash_baseline.py")
+    spec = importlib.util.spec_from_file_location("hash_baseline", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_hash_spec_v1_known_vector(tmp_path):
+    # 固定测试向量（期望值由规范文本独立计算并冻结）：
+    # 行 ("x",1.5,None)、("y",2.0,"z") 按主键 a 升序序列化为
+    # "x|1.5|\ny|2.0|z\n"，sha256 见下。
+    hb = _load_hash_tool()
+    con = sqlite3.connect(str(tmp_path / "h.db"))
+    con.execute("CREATE TABLE t(a TEXT PRIMARY KEY, b REAL, c TEXT)")
+    con.execute("INSERT INTO t VALUES('y', 2.0, 'z')")
+    con.execute("INSERT INTO t VALUES('x', 1.5, NULL)")
+    n, h = hb.table_hash(con, "t", "a")
+    assert n == 2
+    assert h == "971491c9637d9336c949609acc616146419767d3" \
+                "6874c6c3827175c5bf564dd6"
+    # 空表哈希 = sha256("") 已知常量
+    con.execute("CREATE TABLE e(a TEXT PRIMARY KEY)")
+    n, h = hb.table_hash(con, "e", "a")
+    assert n == 0
+    assert h == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991" \
+                "b7852b855"
+
+
+_FORBIDDEN = ("signals", "approvals", "fills",
+              "trade_intents", "intent_transitions")
+_ALLOWED_WRITES = {"inst_lhb_daily", "inst_lhb_raw",
+                   "inst_lhb_fetch_days"}
+
+
+def _fake_inst_get(url):
+    if "DAILYDETAILSBUY" in url:
+        return {"result": {"pages": 1, "data": [
+            {"OPERATEDEPT_NAME": "机构专用", "SECURITY_CODE": "002446",
+             "BUY": 5000, "SELL": 0, "NET": 5000, "TRADE_ID": "T1",
+             "EXPLANATION": "日涨幅偏离值达到7%的前5只证券"}]}}
+    if "DAILYDETAILSSELL" in url:
+        return {"result": {"pages": 1, "data": []}}
+    return {"result": {"pages": 1, "data": [
+        {"SECURITY_CODE": "002446", "SECURITY_NAME_ABBR": "盛路通信"}]}}
+
+
+def test_inst_runtime_writes_only_shadow_tables(tmp_path):
+    # P2-05：运行时 SQL 追踪（测试环境）——机构模块运行全程
+    # 不得对五张核心账本表发生任何 INSERT/UPDATE/DELETE，
+    # 且其指纹（hash-spec-v1）运行前后不变。
+    import re as _re
+    hb = _load_hash_tool()
+    con = sqlite3.connect(str(tmp_path / "iso.db"))
+    for t in _FORBIDDEN:
+        con.execute("CREATE TABLE %s(id INTEGER PRIMARY KEY, v TEXT)" % t)
+        con.execute("INSERT INTO %s VALUES(1, 'sentinel')" % t)
+    con.execute("CREATE TABLE market_data(symbol TEXT, date TEXT,"
+                " open REAL, high REAL, low REAL, close REAL,"
+                " volume REAL, market TEXT)")
+    con.execute("INSERT INTO market_data VALUES"
+                "('002446','2026-10-29',1,1,1,1,1,'a')")
+    con.commit()
+    before = {t: hb.table_hash(con, t, "rowid") for t in _FORBIDDEN}
+    traced = []
+    con.set_trace_callback(traced.append)
+    state, _reason = inst_lhb.ingest_day(con, "2026-10-29",
+                                         get=_fake_inst_get)
+    inst_lhb.consecutive_detail(con, "002446")
+    inst_lhb.shadow_board(con, min_net_buy_days=1)
+    con.set_trace_callback(None)
+    assert state == "normal"
+    write_res = [
+        _re.compile(r"^\s*(?:INSERT|REPLACE)\s+(?:OR\s+\w+\s+)?INTO\s+(\w+)",
+                    _re.IGNORECASE),
+        _re.compile(r"^\s*UPDATE\s+(?:OR\s+\w+\s+)?(\w+)", _re.IGNORECASE),
+        _re.compile(r"^\s*DELETE\s+FROM\s+(\w+)", _re.IGNORECASE),
+    ]
+    targets = set()
+    for stmt in traced:
+        for write_re in write_res:
+            m = write_re.match(stmt or "")
+            if m:
+                targets.add(m.group(1).lower())
+                break
+    assert not (targets & set(_FORBIDDEN)), targets
+    assert targets <= _ALLOWED_WRITES, targets
+    after = {t: hb.table_hash(con, t, "rowid") for t in _FORBIDDEN}
+    assert before == after
+
+
+def test_sell_path_independent_of_buy_freeze(tmp_path):
+    # P2-05 附带：BUY 冻结（断连）语义不得阻断 SELL 路径——
+    # 安全层 SELL 意图在 buy_blocked=True 下仍可完整走通
+    # 状态机并确认，expire 也不得触碰 SELL（已由 P1-03 覆盖）。
+    con = _safety_con(tmp_path, autocommit=True)
+    assert data_health.buy_blocked(data_health.DISCONNECTED) is True
+    s, _ = _submit(con, side="SELL", signal_event_id="iso|sell")
+    key = s["idempotency_key"]
+    _drive(con, key, safety.RISK_CHECK, safety.RELEASED,
+           safety.SUBMITTING, safety.CONFIRMED)
+    assert safety.get_intent(con, key)["state"] == safety.CONFIRMED
+
+
 # ================================================================ P1-03
 
 def _drive(con, key, *states):

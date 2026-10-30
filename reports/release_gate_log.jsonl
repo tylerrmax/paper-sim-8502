@@ -2893,3 +2893,5 @@
 {"script": "tools/git_sync.py", "path": "A", "event": "pass", "detail": "db_fills=50，snapshot_fills=13（上轮 13），账本一致", "ts": "2026-10-30 17:36:19"}
 {"script": "tools/git_sync.py", "path": "A", "event": "pass", "detail": "db_fills=50，snapshot_fills=13（上轮 13），账本一致", "ts": "2026-10-30 17:38:18"}
 {"script": "tools/git_sync.py", "path": "A", "event": "pass", "detail": "db_fills=50，snapshot_fills=13（上轮 13），账本一致", "ts": "2026-10-30 17:40:20"}
+{"script": "tools/git_sync.py", "path": "A", "event": "pass", "detail": "db_fills=50，snapshot_fills=13（上轮 13），账本一致", "ts": "2026-10-30 17:42:34"}
+{"event": "pass", "checks": [{"name": "smoke", "ok": true, "detail": "22 个 .py 语法 OK，17 个模块 import OK"}, {"name": "pytest", "ok": true, "detail": "pytest 通过：165 passed, 2 warnings in 54.41s"}, {"name": "fingerprint", "ok": true, "detail": "水位线 OK（水位 50 笔 / max_id 466，本次新增 0 笔）"}, {"name": "ledger", "ok": true, "detail": "positions == fills 汇总"}], "dry_run": false, "ts": "2026-10-31 01:42:41", "path": "B"}

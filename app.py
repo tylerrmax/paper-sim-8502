@@ -689,6 +689,40 @@ try:
 except Exception:
     st.caption("数据健康：未知（判定失败，不影响后端冻结口径）")
 
+# 运行版本标识（2026-10-31 专项整改 P2-04，只读展示）：优先读
+# 应用目录的 git 检出 HEAD（云端克隆检出的即实际加载的代码），
+# 其次 build_info.json（同步脚本推送时写入的构建标识）；两者
+# 都不可得时明确显示未标记——不得以 GitHub 仓库 HEAD 推定
+# 云端已加载某版本。
+def _runtime_version():
+    try:
+        _r = subprocess.run(["git", "-C", BASE, "rev-parse", "HEAD"],
+                            capture_output=True, text=True, timeout=3)
+        if _r.returncode == 0 and _r.stdout.strip():
+            return _r.stdout.strip(), "git检出"
+    except Exception:
+        pass
+    try:
+        import json as _bj
+        with open(os.path.join(BASE, "build_info.json"),
+                  encoding="utf-8") as _f:
+            _bi = _bj.load(_f)
+        if _bi.get("commit"):
+            return str(_bi["commit"]), "构建标识"
+    except Exception:
+        pass
+    return None, None
+
+
+try:
+    _ver, _ver_src = _runtime_version()
+    if _ver:
+        st.caption("运行版本：%s（来源：%s）" % (_ver[:12], _ver_src))
+    else:
+        st.caption("运行版本：未标记（实际加载版本未验证）")
+except Exception:
+    st.caption("运行版本：未标记（实际加载版本未验证）")
+
 # ============ 导航（顶部横排；左侧栏已移除） ============
 tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "🏦 机构专用席位连续净买监控", "📝 交易", "💰 账户", "🛡 验证"],
                horizontal=True, label_visibility="collapsed", key="main_nav")
@@ -1767,10 +1801,13 @@ elif tab == "🛡 验证":
         if not _reports:
             st.caption("暂无报告")
         for _rp in _reports:
-            _title = os.path.splitext(os.path.basename(_rp))[0]
+            with open(_rp, encoding="utf-8") as _f:
+                _content = _f.read()
+            _first = _content.lstrip().splitlines()[0] if _content.strip() else ""
+            _title = (_first.lstrip("# ").strip() if _first.startswith("#")
+                      else os.path.splitext(os.path.basename(_rp))[0])
             with st.expander(_title, expanded=False):
-                with open(_rp, encoding="utf-8") as _f:
-                    st.markdown(_f.read())
+                st.markdown(_content)
     except Exception as _re:
         st.caption(f"验收报告暂不可用：{_re}")
 

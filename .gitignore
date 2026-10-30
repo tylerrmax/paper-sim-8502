@@ -23,3 +23,6 @@ db/*.lock
 reports/risk_block_chain_head.json
 reports/risk_block_log_failures.jsonl
 risk_block_chain_head*.json
+
+# 构建标识（同步时生成，2026-10-31 整改 P2-04）：只推公开仓、不入主仓
+build_info.json

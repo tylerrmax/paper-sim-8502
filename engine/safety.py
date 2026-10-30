@@ -10,7 +10,9 @@
 - 状态机：待审核 pending_review → 风控检查 risk_check → 已放行
   released → 提交中 submitting → 已确认 confirmed / 已拒绝
   rejected / 结果未知 unknown。迁移一律用原子条件更新
-  （UPDATE ... WHERE key=? AND state=?），并发下只有一个迁移成功。
+  （UPDATE ... WHERE key=? AND state=?），并发下只有一个迁移成功；
+  状态更新与迁移记录写入同处函数自包含事务（atomic_unit，
+  2026-10-31 整改 P1-02），不依赖调用方事务设置。
 - submitting 超时/无回执 → unknown：禁止盲目重发；必须先
   reconcile_unknown() 对账（下游查到成交→confirmed；确认未收到→
   回到 released 才允许再次提交）。本系统下游为模拟撮合/人工回执，
@@ -30,6 +32,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -69,6 +72,40 @@ class RiskBlockLogError(Exception):
 
 def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+@contextlib.contextmanager
+def atomic_unit(con):
+    """函数自包含原子单元（2026-10-31 专项整改 P1-02）：保证一
+    组写入要么整体提交、要么整体回滚，不依赖调用方的事务设置。
+    - 连接不在事务中（含 autocommit，isolation_level=None）：
+      BEGIN IMMEDIATE … COMMIT，异常 ROLLBACK；
+    - 连接已在调用方事务中：SAVEPOINT … RELEASE，异常
+      ROLLBACK TO SAVEPOINT——只回滚本单元，不替调用方提交或
+      回滚其外层事务，避免嵌套事务/重复提交回归。
+    主表状态 UPDATE 与 intent_transitions INSERT 必须同处一个
+    atomic_unit 内：不得出现状态前进但迁移记录缺失，也不得
+    出现迁移记录写入但状态未变。"""
+    if con.in_transaction:
+        sp = "sp_atomic_" + uuid.uuid4().hex[:12]
+        con.execute("SAVEPOINT " + sp)
+        try:
+            yield
+        except BaseException:
+            con.execute("ROLLBACK TO " + sp)
+            con.execute("RELEASE " + sp)
+            raise
+        else:
+            con.execute("RELEASE " + sp)
+    else:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        else:
+            con.execute("COMMIT")
 
 
 def make_idempotency_key(account, market, symbol, side, strategy_version,
@@ -114,21 +151,22 @@ def submit_intent(con, *, account, market, symbol, side, qty=None,
     ensure_safety_tables(con)
     key = make_idempotency_key(account, market, symbol, side,
                                strategy_version, signal_event_id)
-    cur = con.execute(
-        "INSERT OR IGNORE INTO trade_intents"
-        "(idempotency_key,account,market,symbol,side,qty,price,"
-        "strategy_version,signal_event_id,state,note,created_at,updated_at)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (key, account, market, symbol, side, qty, price,
-         strategy_version, signal_event_id, PENDING_REVIEW, note,
-         _now(), _now()))
-    created = cur.rowcount == 1
-    if created:
-        con.execute(
-            "INSERT INTO intent_transitions"
-            "(idempotency_key,from_state,to_state,note,at)"
-            " VALUES(?,?,?,?,?)",
-            (key, None, PENDING_REVIEW, note or "意图创建", _now()))
+    with atomic_unit(con):
+        cur = con.execute(
+            "INSERT OR IGNORE INTO trade_intents"
+            "(idempotency_key,account,market,symbol,side,qty,price,"
+            "strategy_version,signal_event_id,state,note,created_at,"
+            "updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (key, account, market, symbol, side, qty, price,
+             strategy_version, signal_event_id, PENDING_REVIEW, note,
+             _now(), _now()))
+        created = cur.rowcount == 1
+        if created:
+            con.execute(
+                "INSERT INTO intent_transitions"
+                "(idempotency_key,from_state,to_state,note,at)"
+                " VALUES(?,?,?,?,?)",
+                (key, None, PENDING_REVIEW, note or "意图创建", _now()))
     row = con.execute(
         "SELECT * FROM trade_intents WHERE idempotency_key=?",
         (key,)).fetchone()
@@ -149,7 +187,10 @@ def get_intent(con, key):
 
 
 def transition(con, key, to_state, note="", result_ref=None):
-    """原子条件迁移：只有当前状态合法且未被并发改走时成功。"""
+    """原子条件迁移：只有当前状态合法且未被并发改走时成功。
+    状态 UPDATE 与迁移 INSERT 同处一个 atomic_unit（P1-02）：
+    任一失败整体回滚，autocommit 连接下同样成立；条件 UPDATE
+    的 WHERE state=当前状态 + rowcount 校验保留，防并发覆盖。"""
     ensure_safety_tables(con)
     cur_row = get_intent(con, key)
     if cur_row is None:
@@ -158,18 +199,21 @@ def transition(con, key, to_state, note="", result_ref=None):
     if to_state not in TRANSITIONS.get(frm, set()):
         raise IntentStateError(
             "非法迁移 %s → %s（key=%s）" % (frm, to_state, key))
-    cur = con.execute(
-        "UPDATE trade_intents SET state=?, updated_at=?,"
-        " result_ref=COALESCE(?,result_ref), note=?"
-        " WHERE idempotency_key=? AND state=?",
-        (to_state, _now(), result_ref, note or cur_row["note"], key, frm))
-    if cur.rowcount != 1:
-        raise IntentStateError(
-            "并发迁移冲突：%s 已不在 %s 状态" % (key, frm))
-    con.execute(
-        "INSERT INTO intent_transitions"
-        "(idempotency_key,from_state,to_state,note,at) VALUES(?,?,?,?,?)",
-        (key, frm, to_state, note, _now()))
+    with atomic_unit(con):
+        cur = con.execute(
+            "UPDATE trade_intents SET state=?, updated_at=?,"
+            " result_ref=COALESCE(?,result_ref), note=?"
+            " WHERE idempotency_key=? AND state=?",
+            (to_state, _now(), result_ref, note or cur_row["note"],
+             key, frm))
+        if cur.rowcount != 1:
+            raise IntentStateError(
+                "并发迁移冲突：%s 已不在 %s 状态" % (key, frm))
+        con.execute(
+            "INSERT INTO intent_transitions"
+            "(idempotency_key,from_state,to_state,note,at)"
+            " VALUES(?,?,?,?,?)",
+            (key, frm, to_state, note, _now()))
     return get_intent(con, key)
 
 

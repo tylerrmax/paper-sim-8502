@@ -63,6 +63,8 @@ FILES = [
     # 数据文件已公开（用户要求）
     "db/sim.db",
     "config/strategy.yaml",
+    # 验收报告（2026-10-31）：验证页直发报告，随同步上公网
+    "reports/public/*.md",
 ]
 
 
@@ -244,7 +246,16 @@ def main():
     changed = 0
     failures = []
     # 公开仓库：代码
-    for f in FILES:
+    import glob as _glob
+    _files = []
+    for _pat in FILES:
+        if "*" in _pat:
+            _files.extend(sorted(
+                os.path.relpath(p, SRC)
+                for p in _glob.glob(os.path.join(SRC, _pat))))
+        else:
+            _files.append(_pat)
+    for f in _files:
         try:
             if push_file(f, dry_run):
                 changed += 1

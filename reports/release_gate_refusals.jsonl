@@ -1,0 +1,2 @@
+{"ts": "2026-10-27 09:29:52", "script": "sync_8502_github.py", "path": "B", "check": "smoke", "reason": "smoke：import 冒烟失败：ModuleNotFoundError: No module named 'streamlit'"}
+{"ts": "2026-10-28 09:29:52", "script": "sync_8502_github.py", "path": "B", "check": "smoke", "reason": "smoke：import 冒烟失败：ModuleNotFoundError: No module named 'streamlit'"}

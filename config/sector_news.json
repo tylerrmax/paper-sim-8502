@@ -92,6 +92,62 @@
         "laser",
         "cpo"
       ]
+    },
+    {
+      "date": "2026-10-27",
+      "direction": 1,
+      "evidence": "InP衬底/EML/CW激光或成AI基建瓶颈，基建争夺激烈、放缓不太可能",
+      "sector_key": "optical_comm",
+      "source": "Serenity",
+      "strength": 2
+    },
+    {
+      "date": "2026-10-27",
+      "direction": 1,
+      "evidence": "AI基建融资用于采购GPU并间接拉动内存与网络需求，存储需求端获支撑",
+      "sector_key": "semi",
+      "source": "Serenity",
+      "strength": 2
+    },
+    {
+      "date": "2026-10-27",
+      "direction": 1,
+      "evidence": "MU至AAOI等AI基建股跌幅过深，前沿实验室融资最终会回流GPU、网络与内存",
+      "sector_key": "ai_infra",
+      "source": "Serenity",
+      "strength": 2
+    },
+    {
+      "date": "2026-10-28",
+      "direction": 1,
+      "evidence": "Tesla奥斯汀周度无人驾驶里程43.8万英里超Waymo二季度周均40.6万英里，Cybercab自8月下旬起放量",
+      "sector_key": "ai_chip",
+      "source": "Musk",
+      "strength": 2
+    },
+    {
+      "date": "2026-10-28",
+      "direction": 1,
+      "evidence": "中国CSP与SK海力士/三星谈存储长期协议、部分推动至2035年，美国公司先锁定供应，存储需求端获支撑",
+      "sector_key": "semi",
+      "source": "Serenity",
+      "strength": 2
+    },
+    {
+      "date": "2026-10-29",
+      "direction": 1,
+      "evidence": "SK海力士Q3财报点评：存储供不应求持续至2030年，DRAM与HBM 2029年前基本售罄，2027—2028年过半产能已被长期协议锁定",
+      "sector_key": "semi",
+      "source": "Serenity",
+      "strength": 3
+    },
+    {
+      "date": "2026-10-30",
+      "direction": 1,
+      "evidence": "Serenity称Marvell已进入收购Lumentum最后阶段，意在纵向整合供应最受约束的激光环节，若成行其他激光厂商战略价值提升。",
+      "sector_key": "optical_comm",
+      "source": "Serenity",
+      "strength": 2
     }
   ],
   "note": "X 博主每日简报（2026-10-21~25 已交付期）的板块新闻证据账。新增证据按同一格式追加；engine/news_sentiment.py 按日期衰减计入板块情绪。铁律：Serenity 的“存储”=存储芯片 memory，只记 semi，绝不记 energy_storage（储能）。market 条目只作风险提示（scope=market_risk），不进任何个股新闻分。"

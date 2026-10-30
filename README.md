@@ -26,6 +26,30 @@ python3 run_daily.py                    # 每日管线：拉数据→信号→�
 .venv/bin/streamlit run app.py          # 网页版（http://localhost:8501）
 ```
 
+## 关键测试复现（公开仓可独立执行，2026-10-31 专项整改 P2-02）
+
+公开仓（paper-sim-8502）内含三套关键测试，可独立复现：
+`tests/test_safety_supplements.py`（四项安全补充 + 机构影子口径）、
+`tests/test_inst_shadow_chain.py`（影子链抓取/收敛/守卫）、
+`tests/test_audit_remediation.py`（连续天数日历校验、状态机原子性
+含多进程并发、BUY 作废来源状态、运行时账本隔离、哈希规范向量）。
+
+- 环境：Python 3.12.3、pytest 9.1.1（`pip install pytest==9.1.1`）。
+  三套测试本身只用 Python 标准库 + pytest；应用运行依赖见
+  requirements.txt（streamlit 1.64.0 等）。
+- 测试数据库：全部由 pytest 的 tmp_path 在临时目录新建独立
+  SQLite，不读取、不写入任何生产数据库，不依赖本地路径、
+  私有密钥或网络（机构抓取用注入的假接口）。
+- 运行命令（必须在仓库根目录执行，且用 `python -m pytest`
+  以保证仓库根目录在 sys.path 上）：
+```bash
+python -m pytest tests/test_safety_supplements.py \
+  tests/test_inst_shadow_chain.py tests/test_audit_remediation.py -q
+```
+- 表级哈希复算（规范 hash-spec-v1，见 tools/hash_baseline.py
+  文件头全文）：`python tools/hash_baseline.py --db <库> \
+  --table inst_lhb_daily --order-by "date, symbol"`（只读打开）。
+
 ## 进度
 - [x] P0：骨架 + 数据层实测打通（2026-10-02）：腾讯港股/ Kraken BTC / 新浪 HKDCNY 三源入库
 - [x] P1：信号+撮合+日报管线跑通（2026-10-02）：87 信号/84 成交，现金流独立重算对账 <0.01，首份日报已出

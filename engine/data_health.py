@@ -101,28 +101,38 @@ def revalidate(*, fetch_ok, payload_ok, last_bar_date, ref_date,
 
 def expire_queued_buys(con, *, reason="数据断连期间积压，恢复后不自动补发"):
     """把仍在待审核/风控检查/已放行状态的 BUY 意图全部作废留痕。
-    返回作废条数。SELL 意图不受影响。"""
+    返回作废条数。SELL 意图不受影响。
+
+    2026-10-31 专项整改 P1-03：迁移记录的 from_state 必须来自
+    数据库中的真实状态（旧实现固定写字面量 "queued"，真实来源
+    不可复原，已作废的历史记录不重写）。每条意图的作废用条件
+    UPDATE 锁定其真实状态（WHERE state=读取到的真实状态），
+    并与迁移 INSERT 同处 safety.atomic_unit 原子单元：并发下
+    状态已被推进（如 submitting）时 rowcount=0，自动跳过且
+    不留错误来源记录；任一写入失败该条整体回滚。可作废状态
+    集合与状态机既有迁移范围一致（pending_review/risk_check/
+    released → rejected），不扩大迁移范围；系统无独立的
+    expired 状态，作废终态沿用 rejected 并在 note 记原因。"""
     from engine import safety
     safety.ensure_safety_tables(con)
     rows = con.execute(
-        "SELECT idempotency_key FROM trade_intents"
+        "SELECT idempotency_key, state FROM trade_intents"
         " WHERE side='BUY' AND state IN (?,?,?)",
         (safety.PENDING_REVIEW, safety.RISK_CHECK,
          safety.RELEASED)).fetchall()
     n = 0
-    for (key,) in rows:
-        cur = con.execute(
-            "UPDATE trade_intents SET state=?, updated_at=?"
-            " WHERE idempotency_key=? AND state IN (?,?,?)",
-            (safety.REJECTED, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-             key, safety.PENDING_REVIEW, safety.RISK_CHECK,
-             safety.RELEASED))
-        if cur.rowcount == 1:
-            con.execute(
-                "INSERT INTO intent_transitions"
-                "(idempotency_key,from_state,to_state,note,at)"
-                " VALUES(?,?,?,?,?)",
-                (key, "queued", safety.REJECTED, reason,
-                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            n += 1
+    for key, real_state in rows:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with safety.atomic_unit(con):
+            cur = con.execute(
+                "UPDATE trade_intents SET state=?, updated_at=?"
+                " WHERE idempotency_key=? AND state=?",
+                (safety.REJECTED, now, key, real_state))
+            if cur.rowcount == 1:
+                con.execute(
+                    "INSERT INTO intent_transitions"
+                    "(idempotency_key,from_state,to_state,note,at)"
+                    " VALUES(?,?,?,?,?)",
+                    (key, real_state, safety.REJECTED, reason, now))
+                n += 1
     return n

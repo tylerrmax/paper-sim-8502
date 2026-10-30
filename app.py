@@ -1757,6 +1757,22 @@ elif tab == "🛡 验证":
                    f"回撤≤{tg['max_drawdown']*100:.0f}% · 期望值>0")
     except Exception as e:
         st.error(f"仪表盘读取失败：{e}")
+    # ---- 验收报告（2026-10-31 新增）：判分/查收类报告直发本页 ----
+    # 定时任务把报告写入 reports/public/*.md，随每日同步上公网，不走聊天推送。
+    st.subheader("📄 验收报告")
+    try:
+        import glob as _glob
+        _reports = sorted(_glob.glob(os.path.join(
+            BASE, "reports", "public", "*.md")), reverse=True)
+        if not _reports:
+            st.caption("暂无报告")
+        for _rp in _reports:
+            _title = os.path.splitext(os.path.basename(_rp))[0]
+            with st.expander(_title, expanded=False):
+                with open(_rp, encoding="utf-8") as _f:
+                    st.markdown(_f.read())
+    except Exception as _re:
+        st.caption(f"验收报告暂不可用：{_re}")
 
 # ================================================================
 # ⚙ 系统与审计：数据源 / 规则版本 / 指令日志

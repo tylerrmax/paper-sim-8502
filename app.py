@@ -1700,10 +1700,20 @@ elif tab == "🛡 验证":
         pos_ratio = pv / nav if nav else 0
         c1, c2, c3 = st.columns(3)
         with c1:
-            ok = pos_ratio <= 0.7
+            # V-2（2026-10-31 批准实施）：仓位上限与执行端口径同源——
+            # 读 strategy.yaml risk 段同一组键，账户映射与
+            # engine.order_validate._position_cap 逐字一致
+            # （sim_a/sim_hk 股票 70%，sim_crypto 加密 100%），
+            # 不再写死 70% 对加密账户误报超限。
+            _risk = CFG.get("risk") or {}
+            if acct in ("sim_a", "sim_hk"):
+                _cap_pct = float(_risk.get("max_stock_position_pct", 70))
+            else:
+                _cap_pct = float(_risk.get("max_crypto_position_pct", 100))
+            ok = pos_ratio <= _cap_pct / 100.0
             st.markdown(f'<div class="kpi-card"><div class="kpi-label">仓位 {"✅" if ok else "⚠"}</div>'
                         f'<div class="kpi-value {"up" if ok else "down"}">{pos_ratio*100:.1f}%</div>'
-                        f'<div class="kpi-label">上限 70%</div></div>', unsafe_allow_html=True)
+                        f'<div class="kpi-label">上限 {_cap_pct:g}%</div></div>', unsafe_allow_html=True)
         with c2:
             pos_r = q("SELECT symbol,market_value FROM positions WHERE account=? AND qty>0 ORDER BY market_value DESC", (acct,))
             conc = (pos_r[0][1] / nav) if pos_r and nav else 0

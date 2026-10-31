@@ -1642,7 +1642,7 @@ if tab == "🏠 工作台":
 
 # ================================================================
 elif tab == "🔍 选股":
-    st.header("🔍 选股")
+    st.markdown('<div class="section-head">🔍 选股 · 研究与候选</div>', unsafe_allow_html=True)
     # 模块D（2026-10-26）：原「🎯 条件筛选」手动面板（2026-10-17 试验版，
     # 涨幅/RSI/MACD 手动条件 + 独立出结果）已删除——它是与三重校验并存的
     # 第二个决策入口，违反唯一入口原则。本页只呈现每日自动筛选结果：
@@ -1682,6 +1682,26 @@ elif tab == "🔍 选股":
                     unsafe_allow_html=True)
     except Exception:
         pass
+    # ===== UI-R1 阶段C 选股页：摘要条（覆盖/等级分布/asof，事实先行） =====
+    try:
+        import json as _json_s
+        _srow = q("SELECT asof, results_json FROM screen_runs ORDER BY asof DESC, id DESC LIMIT 1")
+        if _srow:
+            _sres = _json_s.loads(_srow[0][1])
+            _grades = {}
+            for _r in _sres:
+                _grades[_r.get("grade") or "?"] = _grades.get(_r.get("grade") or "?", 0) + 1
+            _gdist = " · ".join(f"{g} 级 {_grades[g]}" for g in ("S", "A", "B", "C", "D") if g in _grades)
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">选股摘要</div>'
+                f'<div style="font-size:13.5px;">评分覆盖 <span class="num">{len(_sres)}</span> 只（母板观察池全集） · '
+                f'{_gdist} · 数据 asof <span class="num">{_srow[0][0]}</span><br>'
+                f'<span style="color:#8b9bab;font-size:12px;">本页只呈现每日自动筛选结果，不提供手动筛选或下单入口；候选是否可买由环境闸与风控决定。</span></div></div>',
+                unsafe_allow_html=True)
+    except Exception:
+        pass
+    st.markdown('<div class="kpi-label" style="margin-top:12px;">研究结论 · 候选与全池结果（事实）</div>',
+                unsafe_allow_html=True)
     # ---- TOP标的榜：最近一期 screen_runs 全集 TOP8 + screen_perf 验证列 ----
     st.subheader("🏆 TOP标的榜")
     _tb_asof, _tb_rv, _tb_rows = _topboard_data(DB)
@@ -1786,6 +1806,8 @@ elif tab == "🔍 选股":
                 f"{_top['symbol']} {_top['name']} {_top['total']:.1f} 分"
                 + (f"（{' · '.join(_gate_tags(_top['gates']))}）" if _top["gates"] else ""))
     # ---- 板块新闻面：X 博主证据账折算的板块情绪 ----
+    st.markdown('<div class="kpi-label" style="margin-top:12px;">研究证据 · 新闻面（观察，不构成交易依据）</div>',
+                unsafe_allow_html=True)
     st.subheader("📰 板块新闻面")
     try:
         from engine.screen import load_map as _load_wmap
@@ -1832,6 +1854,8 @@ elif tab == "🔍 选股":
     # 模块E裁决（2026-10-26 用户拍板删除）：原「📰 持仓资讯」外链目录
     # （已被证据制板块新闻面覆盖）已移除，不得回流。
     # ---- 技术形态：每个标的指标面板 ----
+    st.markdown('<div class="kpi-label" style="margin-top:12px;">研究证据 · 技术形态（观察）</div>',
+                unsafe_allow_html=True)
     st.subheader("📐 技术形态")
     import time as _time
     _ts = int(_time.time())

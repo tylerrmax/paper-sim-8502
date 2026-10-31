@@ -1515,9 +1515,9 @@ if tab == "🏠 工作台":
             _nm = SYMBOL_CN.get(_eb[0][1], "")
             _items.append(("P1", "block", f"<b>风控拦截</b>：{_eb[0][1]} {_nm} BUY 被环境闸拦截（{_eb[0][0]}）"))
         if _has_stop:
-            _bs = "；".join(f"{_s} 现价 {_px_fmt(_s, _l)} < 止损参考 {_px_fmt(_s, _r)}"
+            _bs = "；".join(f"{_s} 现价 {_px_fmt(_s, _l)} < 母板止损参考 {_px_fmt(_s, _r)}"
                             for _w, _s, _qty, _l, _r, _md in _breach_rows[:3])
-            _items.append(("P1", "block", f"<b>破止损持仓</b>：{_bs}"))
+            _items.append(("P1", "block", f"<b>破止损仍持仓</b>：{_bs}"))
         if pending_orders:
             _items.append(("P2", "wait", f"<b>待建条件单</b>：{pending_orders} 个待处理（模拟执行，券商人工下单）"))
         if pending_signals:

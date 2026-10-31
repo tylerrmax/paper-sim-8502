@@ -982,6 +982,319 @@ def _stop_breaches(acct_id):
     return out
 
 
+def _detail_chart_html(sym, bars, sub_kind, price_lines, markers):
+    """个股详情图（批D-1）：Lightweight-Charts v4 双图同步——主图
+    日K + MA20/60 + 关键位线（成本橙虚线/止损红虚线/计划线点线）+
+    成交标记；副图单选一层（成交量/MACD/RSI），与主图时间轴同步。
+    JS 复用 engine/tv_charts 内嵌的 LWC v4.2.0，不引新库；
+    指标序列由调用方按 engine.indicators 既有口径算好后传入。"""
+    import json as _json
+    from engine.tv_charts import _LWC_JS
+    closes = [b[4] for b in bars]
+
+    def _ma(period):
+        out = []
+        for i in range(len(closes)):
+            if i >= period - 1:
+                out.append({"time": bars[i][0],
+                            "value": round(sum(closes[i - period + 1:i + 1])
+                                           / period, 4)})
+        return out
+
+    payload = {"kind": sub_kind}
+    if sub_kind == "成交量":
+        payload["vol"] = [
+            {"time": d, "value": v or 0,
+             "color": "rgba(246,70,93,0.5)" if c >= o
+             else "rgba(46,189,133,0.5)"}
+            for d, o, h, l, c, v in bars]
+    elif sub_kind == "MACD":
+        from engine.indicators import macd as _mf
+        _dif, _dea, _hist = _mf(closes)
+        payload["hist"] = [
+            {"time": bars[i][0], "value": _hist[i],
+             "color": "rgba(246,70,93,0.55)" if _hist[i] >= 0
+             else "rgba(46,189,133,0.55)"}
+            for i in range(len(bars)) if _hist[i] is not None]
+        payload["dif"] = [{"time": bars[i][0], "value": _dif[i]}
+                           for i in range(len(bars)) if _dif[i] is not None]
+        payload["dea"] = [{"time": bars[i][0], "value": _dea[i]}
+                           for i in range(len(bars)) if _dea[i] is not None]
+    elif sub_kind == "RSI":
+        from engine.indicators import rsi as _rf
+        _rs = _rf(closes)
+        payload["rsi"] = [{"time": bars[i][0], "value": _rs[i]}
+                           for i in range(len(bars)) if _rs[i] is not None]
+    j_c = _json.dumps([{"time": d, "open": o, "high": h, "low": l,
+                        "close": c} for d, o, h, l, c, v in bars])
+    j_ma20, j_ma60 = _json.dumps(_ma(20)), _json.dumps(_ma(60))
+    j_pl, j_mk, j_sub = (_json.dumps(price_lines), _json.dumps(markers),
+                         _json.dumps(payload))
+    return f"""<div id="dm_{sym}" style="height:440px;"></div>
+<div id="ds_{sym}" style="height:130px;"></div>
+<script>{_LWC_JS}</script>
+<script>
+(function() {{
+  var LC = LightweightCharts;
+  var base = {{
+    layout: {{ background: {{ color: '#0d1117' }}, textColor: '#8a8f9c',
+               fontFamily: 'ui-monospace, monospace', fontSize: 11,
+               attributionLogo: false }},
+    grid: {{ vertLines: {{ color: 'rgba(30,37,50,0.5)' }},
+             horzLines: {{ color: 'rgba(30,37,50,0.5)' }} }},
+    rightPriceScale: {{ borderColor: '#1e2532' }},
+  }};
+  var elM = document.getElementById('dm_{sym}');
+  var elS = document.getElementById('ds_{sym}');
+  var main = LC.createChart(elM, Object.assign({{}}, base, {{
+    width: elM.clientWidth, height: 440,
+    timeScale: {{ visible: false, borderColor: '#1e2532' }},
+    crosshair: {{ mode: LC.CrosshairMode.Normal }},
+  }}));
+  var cs = main.addCandlestickSeries({{
+    upColor: '#f6465d', downColor: '#2ebd85',
+    wickUpColor: '#f6465d', wickDownColor: '#2ebd85',
+    borderVisible: false }});
+  cs.setData({j_c});
+  var ma20 = main.addLineSeries({{ color: '#4a90d9', lineWidth: 1,
+    title: 'MA20', priceLineVisible: false, lastValueVisible: false,
+    crosshairMarkerVisible: false }});
+  ma20.setData({j_ma20});
+  var ma60 = main.addLineSeries({{ color: '#8a8f9c', lineWidth: 1,
+    title: 'MA60', priceLineVisible: false, lastValueVisible: false,
+    crosshairMarkerVisible: false }});
+  ma60.setData({j_ma60});
+  var pls = {j_pl};
+  pls.forEach(function(p) {{
+    cs.createPriceLine({{ price: p.price, title: p.title, color: p.color,
+      lineWidth: 1, lineStyle: p.style, axisLabelVisible: true }});
+  }});
+  var mks = {j_mk};
+  if (mks.length) cs.setMarkers(mks);
+  var sub = LC.createChart(elS, Object.assign({{}}, base, {{
+    width: elS.clientWidth, height: 130,
+    timeScale: {{ borderColor: '#1e2532', timeVisible: false }},
+  }}));
+  var P = {j_sub};
+  if (P.kind === '成交量') {{
+    var vol = sub.addHistogramSeries({{ priceFormat: {{ type: 'volume' }} }});
+    vol.setData(P.vol);
+  }} else if (P.kind === 'MACD') {{
+    var hh = sub.addHistogramSeries({{ priceLineVisible: false,
+      lastValueVisible: false }});
+    hh.setData(P.hist);
+    var d1 = sub.addLineSeries({{ color: '#4a90d9', lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+      crosshairMarkerVisible: false }});
+    d1.setData(P.dif);
+    var d2 = sub.addLineSeries({{ color: '#ff9800', lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+      crosshairMarkerVisible: false }});
+    d2.setData(P.dea);
+  }} else if (P.kind === 'RSI') {{
+    var rl = sub.addLineSeries({{ color: '#a371f7', lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+      crosshairMarkerVisible: false }});
+    rl.setData(P.rsi);
+    [70, 30].forEach(function(v) {{
+      rl.createPriceLine({{ price: v, title: '', color: '#525a68',
+        lineWidth: 1, lineStyle: 2, axisLabelVisible: true }});
+    }});
+  }}
+  main.timeScale().fitContent();
+  var syncing = false;
+  function link(src, dst) {{
+    src.timeScale().subscribeVisibleLogicalRangeChange(function(r) {{
+      if (syncing || !r) return;
+      syncing = true;
+      dst.timeScale().setVisibleLogicalRange(r);
+      syncing = false;
+    }});
+  }}
+  link(main, sub); link(sub, main);
+  window.addEventListener('resize', function() {{
+    main.applyOptions({{ width: elM.clientWidth }});
+    sub.applyOptions({{ width: elS.clientWidth }});
+  }});
+}})();
+</script>"""
+
+
+def _render_acct_detail(acct, sym):
+    """账户页个股详情（批D-1）：一次一只持仓票——大图（成本/止损/
+    计划线+成交标记）、三数字、成交记录与待建单/拦截状态。
+    只读边界：除返回按钮外无任何可变状态控件，不写库、不建单。"""
+    if st.button("← 返回账户页", key="detail_back"):
+        st.session_state.pop("acct_detail", None)
+        st.rerun()
+    _pr = q("SELECT qty, avg_cost, last_price, market_value FROM positions"
+            " WHERE account=? AND symbol=? AND qty>0", (acct, sym))
+    if not _pr:
+        st.session_state.pop("acct_detail", None)
+        st.rerun()
+        return
+    _qty, _avg, _plast, _mv = _pr[0]
+    bars = q("SELECT date,open,high,low,close,volume FROM market_data"
+             " WHERE symbol=? ORDER BY date DESC LIMIT 250", (sym,))
+    bars = bars[::-1]
+    _last = bars[-1][4] if bars else _plast
+    _prev = bars[-2][4] if len(bars) > 1 else None
+    _stt, _sr = _stop_state(sym, _last)
+    # 页头：名称代码 + 大价格 + 涨跌（红绿只表涨跌）+ 右侧口径小字
+    _chg = (_last - _prev) if (_last is not None and _prev) else None
+    _pct = (_chg / _prev * 100) if _chg is not None else None
+    _cc = UP_C if (_chg or 0) >= 0 else DOWN_C
+    _chg_s = (("+" if _chg >= 0 else "-") + _px_fmt(sym, abs(_chg))
+              if _chg is not None else "—")
+    _adj = ("不复权" if sym.startswith("HK")
+            else "现货" if acct == "sim_crypto" else "前复权")
+    _chip = {"breach": ' <span style="background:rgba(246,70,93,.15);'
+                       'color:#f6465d;border-radius:4px;padding:1px 6px;'
+                       'font-size:12px;">🔴 破止损</span>',
+             "near": ' <span style="background:rgba(255,152,0,.15);'
+                     'color:#ff9800;border-radius:4px;padding:1px 6px;'
+                     'font-size:12px;">🟡 接近止损</span>'}.get(_stt, "")
+    st.markdown(
+        f'<div style="display:flex;justify-content:space-between;'
+        f'align-items:flex-end;margin-top:4px;">'
+        f'<div><span style="font-size:22px;font-weight:700;">'
+        f'{sym_name(sym)}</span>{_chip}<br>'
+        f'<span style="color:#8a8f9c;font-size:12px;">'
+        f'{ACCT_CN.get(acct, acct)} · 持仓详情</span></div>'
+        f'<div style="text-align:right;color:#8a8f9c;font-size:12px;">'
+        f'日线 · {_adj} · 数据日期 {bars[-1][0] if bars else "—"}</div></div>'
+        f'<div style="display:flex;align-items:baseline;gap:10px;'
+        f'margin:2px 0 6px;">'
+        f'<span style="font-size:30px;font-weight:700;">'
+        f'{_px_fmt(sym, _last)}</span>'
+        f'<span style="color:{_cc};font-size:15px;">{_chg_s}'
+        f'{" (" + format(_pct, "+.2f") + "%)" if _pct is not None else ""}'
+        f'</span></div>', unsafe_allow_html=True)
+    # 主图 + 副图（数据不足时不画图、不虚构）
+    if len(bars) >= 30:
+        _plan = {}
+        try:
+            _run = q("SELECT results_json FROM screen_runs"
+                     " ORDER BY id DESC LIMIT 1")
+            if _run:
+                import json as _json
+                for _r in _json.loads(_run[0][0]):
+                    if _r.get("symbol") == sym:
+                        _plan = _r
+                        break
+        except Exception:
+            _plan = {}
+        _pls = []
+        if _avg:
+            _pls.append({"price": round(_avg, 4), "color": "#ff9800",
+                         "style": 2,
+                         "title": f"成本 {_px_fmt(sym, _avg)}"})
+        if _sr:
+            _pls.append({"price": round(_sr, 4), "color": "#f6465d",
+                         "style": 2,
+                         "title": f"止损参考 {_px_fmt(sym, _sr)}"})
+        if _plan.get("plan_trigger") and _plan.get("plan_target"):
+            _pls.append({"price": round(_plan["plan_trigger"], 4),
+                         "color": "#4a90d9", "style": 1,
+                         "title": f"触发 {_px_fmt(sym, _plan['plan_trigger'])}"})
+            _pls.append({"price": round(_plan["plan_target"], 4),
+                         "color": "#2ebd85", "style": 1,
+                         "title": f"目标 {_px_fmt(sym, _plan['plan_target'])}"})
+        _fm = q("SELECT date,side,qty FROM fills WHERE account=?"
+                " AND symbol=? ORDER BY date", (acct, sym))
+        _win = bars[0][0]
+        _mks = [{"time": d,
+                 "position": "belowBar" if sd == "BUY" else "aboveBar",
+                 "shape": "arrowUp" if sd == "BUY" else "arrowDown",
+                 "color": "#f6465d" if sd == "BUY" else "#2ebd85",
+                 "text": ("买 " if sd == "BUY" else "卖 ") + f"{qty:g}"}
+                for d, sd, qty in _fm if d >= _win]
+        _sub = st.radio("副图", ["成交量", "MACD", "RSI"], horizontal=True,
+                        key="detail_sub")
+        st.components.v1.html(
+            _detail_chart_html(sym, bars, _sub, _pls, _mks),
+            height=578, scrolling=False)
+    else:
+        st.info(f"K线数据不足（{len(bars)} 根），暂不展示图表。")
+    # 图下三数字（不做卡片：分隔线 + 标签 + 右对齐大数字）
+    _upl_pct = ((_last - _avg) / _avg * 100) if (_last and _avg) else 0
+    _upl_abs = ((_last - _avg) * _qty) if (_last and _avg) else 0
+    _t = st.columns(3)
+
+    def _trio(col, label, value, color=""):
+        col.markdown(
+            f'<div style="border-top:1px solid #1e2532;padding-top:8px;">'
+            f'<div style="color:#8a8f9c;font-size:12px;">{label}</div>'
+            f'<div style="text-align:right;font-size:20px;font-weight:600;'
+            f'{color}">{value}</div></div>', unsafe_allow_html=True)
+
+    _trio(_t[0], "持仓成本", _px_fmt(sym, _avg))
+    _trio(_t[1], "止损参考", _px_fmt(sym, _sr) if _sr else "—")
+    _trio(_t[2], "浮盈亏",
+          f"{_upl_pct:+.2f}%（{_upl_abs:+,.2f}）",
+          color=f"color:{UP_C if _upl_abs >= 0 else DOWN_C};")
+    st.caption(f"数量 {_qty:g} · 市值 {_mv:,.2f} · 现价 "
+               f"{_px_fmt(sym, _last)}")
+    # 页尾：成交记录（真实 fills，可溯源）
+    st.subheader("成交记录")
+    _fl = q("SELECT date,side,qty,price,fee,pnl FROM fills"
+            " WHERE account=? AND symbol=? ORDER BY date DESC, id DESC"
+            " LIMIT 50", (acct, sym))
+    if _fl:
+        st.table([{"日期": d, "方向": "买入" if sd == "BUY" else "卖出",
+                   "数量": f"{qty:g}", "成交价": _px_fmt(sym, px),
+                   "费用": f"{fee:.2f}", "盈亏": f"{pnl:+.2f}"}
+                  for d, sd, qty, px, fee, pnl in _fl])
+    else:
+        st.write("暂无成交记录")
+    # 页尾：待建单及拦截状态（与交易页同一待执行口径与校验，仅展示，
+    # 无跳过/建单等可变状态控件）
+    st.subheader("待建单与拦截状态")
+    _pend = q("""SELECT s.date, s.side, s.price FROM signals s
+                 LEFT JOIN fills f ON s.date=f.signal_date
+                   AND s.account=f.account AND s.symbol=f.symbol
+                   AND s.side=f.side
+                 LEFT JOIN approvals ap ON ap.date=s.date
+                   AND ap.account=s.account AND ap.symbol=s.symbol
+                   AND ap.side=s.side
+                 WHERE s.account=? AND s.symbol=? AND f.id IS NULL
+                   AND s.date >= date('now','-7 days')
+                   AND (ap.decision IS NULL OR ap.decision <> 'skipped')
+                 ORDER BY s.date DESC""", (acct, sym))
+    if not _pend:
+        st.write("无待建单")
+    else:
+        from engine.order_validate import validate_order
+        for _d, _sd, _px in _pend:
+            if _sd == "BUY":
+                from engine.pipeline import suggest_buy_qty_from_db
+                _qe = suggest_buy_qty_from_db(DB, acct, sym, _px, CFG)
+            else:
+                _qe = _qty
+            _ok, _errs, _warns = validate_order(acct, sym, _sd, _qe,
+                                                 _px, _d)
+            if _ok:
+                st.markdown(f"**{_sd}** @{_px_fmt(sym, _px)} · {_d} · "
+                            f'<span style="background:rgba(46,189,133,.15);'
+                            f'color:#2ebd85;border-radius:4px;'
+                            f'padding:1px 6px;font-size:12px;">待建单</span>',
+                            unsafe_allow_html=True)
+            else:
+                if any("无持仓" in e for e in _errs):
+                    _tag = "无效·无仓"
+                elif any("已过期" in e for e in _errs):
+                    _tag = "已过期"
+                else:
+                    _tag = "已拦截"
+                st.markdown(f"**{_sd}** @{_px_fmt(sym, _px)} · {_d} · "
+                            f'<span style="background:rgba(246,70,93,.15);'
+                            f'color:#f6465d;border-radius:4px;'
+                            f'padding:1px 6px;font-size:12px;">{_tag}</span>',
+                            unsafe_allow_html=True)
+                if _errs:
+                    st.caption(_errs[0])
+
+
 render_ticker()
 # 标的代码→中文名（展示用，查不到时回退显示代码）
 
@@ -1681,96 +1994,118 @@ elif tab == "💰 账户":
     acct_map = {"A股": "sim_a", "港股": "sim_hk", "加密货币": "sim_crypto"}
     acct = acct_map[acct_choice]
 
-    # 导出对账单
-    if st.button("📥 导出对账单CSV", key="export_stmt"):
-        import csv, io
-        out = io.StringIO()
-        w = csv.writer(out)
-        w.writerow(["日期", "账户", "标的", "方向", "数量", "价格", "费用", "盈亏"])
-        for r in q("SELECT date,account,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 500", (acct,)):
-            r = list(r); r[1] = ACCT_CN.get(r[1], r[1])
-            w.writerow(r)
-        st.download_button("下载CSV", out.getvalue(), f"对账单_{ACCT_CN.get(acct, acct)}.csv", "text/csv", key="dl_stmt")
-
-    # 持仓（§4 定列）：代码 | 名称 | 数量 | 成本 | 现价 | 浮盈% |
-    # 止损参考 | 状态；状态与工作台/验证页同源（_stop_state：破止损/
-    # 接近止损（距参考 ≤5%）/正常），禁止三处数字不一致。
-    st.subheader("当前持仓")
-    pos = q("SELECT symbol,qty,avg_cost,last_price,market_value FROM positions WHERE account=? AND qty>0", (acct,))
-    if pos:
-        rows = []
-        for s, qty, avg, last, mv in pos:
-            upl_pct = (last - avg) / avg * 100 if last and avg else 0
-            _stt, _sr = _stop_state(s, last)
-            _stt_s = {"breach": "🔴 破止损", "near": "🟡 接近止损",
-                      "ok": "正常", "none": "—"}.get(_stt, "—")
-            rows.append({"代码": s[2:] if s.startswith("HK") else s,
-                         "名称": SYMBOL_CN.get(s, ""),
-                         "数量": f"{qty:g}", "成本": _px_fmt(s, avg),
-                         "现价": _px_fmt(s, last),
-                         "浮盈%": f"{upl_pct:+.1f}%",
-                         "止损参考": _px_fmt(s, _sr) if _sr else "—",
-                         "状态": _stt_s})
-        st.table(rows)
-
+    _det = st.session_state.get("acct_detail")
+    if _det and _det[0] == acct:
+        _render_acct_detail(acct, _det[1])
     else:
-        st.write("空仓")
+        # 导出对账单
+        if st.button("📥 导出对账单CSV", key="export_stmt"):
+            import csv, io
+            out = io.StringIO()
+            w = csv.writer(out)
+            w.writerow(["日期", "账户", "标的", "方向", "数量", "价格", "费用", "盈亏"])
+            for r in q("SELECT date,account,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 500", (acct,)):
+                r = list(r); r[1] = ACCT_CN.get(r[1], r[1])
+                w.writerow(r)
+            st.download_button("下载CSV", out.getvalue(), f"对账单_{ACCT_CN.get(acct, acct)}.csv", "text/csv", key="dl_stmt")
 
-    # 持仓K线：固定为实盘4只（2026-10-25用户指定：中国船舶换科德数控，加港股两只）
-    # 成本为用户2026-09-28确认的实盘成本，只作价格线与相对成本对照，不进模拟账
-    st.subheader("持仓K线")
-    from engine.tv_charts import kline_html
-    _KLINE_WATCH = [("002446", "sim_a", 11.2), ("688305", "sim_a", 64.0),
-                    ("HK9660", "sim_hk", 7.9), ("HK0354", "sim_hk", 5.2)]
-    for _sym, _sacct, _cost in _KLINE_WATCH:
-        _bars = q("SELECT date,open,high,low,close,volume FROM market_data"
-                  " WHERE symbol=? ORDER BY date DESC LIMIT 120", (_sym,))
-        if len(_bars) < 20:
-            st.write(f"**{sym_name(_sym)}**：数据不足（{len(_bars)}根）")
-            continue
-        _bars = _bars[::-1]
-        _last = _bars[-1][4]
-        _pct = (_last - _cost) / _cost * 100 if _cost else 0
-        _pls = [{"price": round(_cost, 4), "title": f"实盘成本 {_cost:.2f}",
-                 "color": "#1890ff"}]
-        _sm = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "
-                "ORDER BY date DESC LIMIT 20", (_sacct, _sym))
-        _marks = []
-        for _d, _sd in _sm:
-            if _sd == "BUY":
-                _marks.append({"time": _d, "position": "belowBar", "shape": "arrowUp",
-                               "text": "买", "color": "#2ebd85"})
+        # 持仓（§4 定列）：代码 | 名称 | 数量 | 成本 | 现价 | 浮盈% |
+        # 止损参考 | 状态；状态与工作台/验证页同源（_stop_state：破止损/
+        # 接近止损（距参考 ≤5%）/正常），禁止三处数字不一致。
+        st.subheader("当前持仓")
+        pos = q("SELECT symbol,qty,avg_cost,last_price,market_value FROM positions WHERE account=? AND qty>0", (acct,))
+        if pos:
+            rows = []
+            for s, qty, avg, last, mv in pos:
+                upl_pct = (last - avg) / avg * 100 if last and avg else 0
+                _stt, _sr = _stop_state(s, last)
+                _stt_s = {"breach": "🔴 破止损", "near": "🟡 接近止损",
+                          "ok": "正常", "none": "—"}.get(_stt, "—")
+                rows.append({"代码": s[2:] if s.startswith("HK") else s,
+                             "名称": SYMBOL_CN.get(s, ""),
+                             "数量": f"{qty:g}", "成本": _px_fmt(s, avg),
+                             "现价": _px_fmt(s, last),
+                             "浮盈%": f"{upl_pct:+.1f}%",
+                             "止损参考": _px_fmt(s, _sr) if _sr else "—",
+                             "状态": _stt_s})
+            # 点选行进入个股详情（批D-1）：选择状态被消费一次，
+            # 返回后原选择仍在也不回弹；取消选择后守卫复位。
+            _raw_order = [r[0] for r in pos]
+            st.dataframe(rows, key="pos_df", hide_index=True,
+                         on_select="rerun", selection_mode="single-row",
+                         use_container_width=True)
+            _sel = (st.session_state.get("pos_df") or {}
+                    ).get("selection", {}).get("rows", [])
+            if _sel:
+                _ti = _sel[0]
+                _tgt = _raw_order[_ti] if 0 <= _ti < len(_raw_order) \
+                    else None
+                if _tgt and st.session_state.get(
+                        "_pos_consumed") != (acct, _tgt):
+                    st.session_state["_pos_consumed"] = (acct, _tgt)
+                    st.session_state["acct_detail"] = (acct, _tgt)
+                    st.rerun()
             else:
-                _marks.append({"time": _d, "position": "aboveBar", "shape": "arrowDown",
-                               "text": "卖", "color": "#f6465d"})
-        st.write(f"**{sym_name(_sym)}** 实盘成本 {_cost:.2f} · 现价 {_last:.2f} · "
-                 f"相对成本 {_pct:+.1f}%")
-        st.components.v1.html(
-            kline_html(f"watch_{_sym}", _bars, price_lines=_pls,
-                       markers=_marks, height=420),
-            height=430)
+                st.session_state["_pos_consumed"] = None
 
-    # 近期成交
-    st.subheader("近期成交")
-    fl = q("SELECT date,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 20", (acct,))
-    if fl:
-        st.table([{"日期": d, "标的": sym_name(s), "方向": sd, "数量": qty, "成交价": px, "费用": fee, "盈亏": pnl}
-                  for d, s, sd, qty, px, fee, pnl in fl])
-    else:
-        st.write("暂无成交")
+        else:
+            st.write("空仓")
 
-    # 净值曲线（UI批B 自工作台移入，归账户页职责）：纵轴为数据域
-    # 自动缩放时必须明示范围，避免波动视觉误导（批C W-4 约束）。
-    _nhist = q("SELECT date,nav FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date", (acct,))
-    if _nhist:
-        st.subheader("净值曲线")
-        import pandas as pd
-        _ndf = pd.DataFrame(_nhist, columns=["date", "nav"])
-        _ndf["date"] = pd.to_datetime(_ndf["date"])
-        _ndf = _ndf.set_index("date")
-        _nmin, _nmax = float(_ndf["nav"].min()), float(_ndf["nav"].max())
-        st.caption(f"纵轴数据域：{_nmin:,.2f} – {_nmax:,.2f}（自动缩放，非零起点）")
-        st.line_chart(_ndf["nav"])
+        # 持仓K线：固定为实盘4只（2026-10-25用户指定：中国船舶换科德数控，加港股两只）
+        # 成本为用户2026-09-28确认的实盘成本，只作价格线与相对成本对照，不进模拟账
+        st.subheader("持仓K线")
+        from engine.tv_charts import kline_html
+        _KLINE_WATCH = [("002446", "sim_a", 11.2), ("688305", "sim_a", 64.0),
+                        ("HK9660", "sim_hk", 7.9), ("HK0354", "sim_hk", 5.2)]
+        for _sym, _sacct, _cost in _KLINE_WATCH:
+            _bars = q("SELECT date,open,high,low,close,volume FROM market_data"
+                      " WHERE symbol=? ORDER BY date DESC LIMIT 120", (_sym,))
+            if len(_bars) < 20:
+                st.write(f"**{sym_name(_sym)}**：数据不足（{len(_bars)}根）")
+                continue
+            _bars = _bars[::-1]
+            _last = _bars[-1][4]
+            _pct = (_last - _cost) / _cost * 100 if _cost else 0
+            _pls = [{"price": round(_cost, 4), "title": f"实盘成本 {_cost:.2f}",
+                     "color": "#1890ff"}]
+            _sm = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "
+                    "ORDER BY date DESC LIMIT 20", (_sacct, _sym))
+            _marks = []
+            for _d, _sd in _sm:
+                if _sd == "BUY":
+                    _marks.append({"time": _d, "position": "belowBar", "shape": "arrowUp",
+                                   "text": "买", "color": "#2ebd85"})
+                else:
+                    _marks.append({"time": _d, "position": "aboveBar", "shape": "arrowDown",
+                                   "text": "卖", "color": "#f6465d"})
+            st.write(f"**{sym_name(_sym)}** 实盘成本 {_cost:.2f} · 现价 {_last:.2f} · "
+                     f"相对成本 {_pct:+.1f}%")
+            st.components.v1.html(
+                kline_html(f"watch_{_sym}", _bars, price_lines=_pls,
+                           markers=_marks, height=420),
+                height=430)
+
+        # 近期成交
+        st.subheader("近期成交")
+        fl = q("SELECT date,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 20", (acct,))
+        if fl:
+            st.table([{"日期": d, "标的": sym_name(s), "方向": sd, "数量": qty, "成交价": px, "费用": fee, "盈亏": pnl}
+                      for d, s, sd, qty, px, fee, pnl in fl])
+        else:
+            st.write("暂无成交")
+
+        # 净值曲线（UI批B 自工作台移入，归账户页职责）：纵轴为数据域
+        # 自动缩放时必须明示范围，避免波动视觉误导（批C W-4 约束）。
+        _nhist = q("SELECT date,nav FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date", (acct,))
+        if _nhist:
+            st.subheader("净值曲线")
+            import pandas as pd
+            _ndf = pd.DataFrame(_nhist, columns=["date", "nav"])
+            _ndf["date"] = pd.to_datetime(_ndf["date"])
+            _ndf = _ndf.set_index("date")
+            _nmin, _nmax = float(_ndf["nav"].min()), float(_ndf["nav"].max())
+            st.caption(f"纵轴数据域：{_nmin:,.2f} – {_nmax:,.2f}（自动缩放，非零起点）")
+            st.line_chart(_ndf["nav"])
 
 # ================================================================
 # 🏦 机构专用席位连续净买监控（方案1 影子监控 · 只读）：龙虎榜机构专用

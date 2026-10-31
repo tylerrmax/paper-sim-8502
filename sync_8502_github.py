@@ -31,6 +31,7 @@ SRC = os.environ.get("SYNC8502_SRC",
 # 公开仓库：代码（不含敏感数据）
 FILES = [
     "app.py",
+    ".streamlit/config.toml",
     "requirements.txt",
     "README.md",
     ".gitignore",

@@ -2188,6 +2188,36 @@ elif tab == "💰 账户":
                 w.writerow(r)
             st.download_button("下载CSV", out.getvalue(), f"对账单_{ACCT_CN.get(acct, acct)}.csv", "text/csv", key="dl_stmt")
 
+        # ===== UI-R1 阶段C 账户页：顶部四项资产摘要 + 风险分布 =====
+        _cur_s = {"sim_a": "¥", "sim_hk": "HK$", "sim_crypto": "$"}.get(acct, "")
+        _sum = q("SELECT nav, pnl_day, cash, position_value FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (acct,))
+        if _sum:
+            _nv, _pd, _cash, _pv = _sum[0]
+            _expo_a = (_pv / _nv * 100) if _nv else 0.0
+            _cap_a = 100 if acct == "sim_crypto" else 70
+            _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+            for _col, _lab, _val in (
+                    (_sc1, "账户净值", f"{_cur_s}{_nv:,.2f}"),
+                    (_sc2, "当日盈亏", f"{(_pd or 0):+,.2f}"),
+                    (_sc3, "可用现金", f"{_cur_s}{(_cash or 0):,.2f}"),
+                    (_sc4, "持仓敞口", f"{_expo_a:.1f}% / 上限 {_cap_a}%")):
+                _col.markdown(f'<div class="kpi-card"><div class="kpi-label">{_lab}</div>'
+                              f'<div class="kpi-value num" style="font-size:19px;">{_val}</div></div>',
+                              unsafe_allow_html=True)
+            _posr = q("SELECT symbol, market_value FROM positions WHERE account=? AND qty>0", (acct,))
+            _tot_mv = sum(r[1] or 0 for r in _posr)
+            _max_mv = max([r[1] or 0 for r in _posr], default=0)
+            _conc_a = (_max_mv / _tot_mv * 100) if _tot_mv else 0.0
+            _cov = sum(1 for r in _posr if stop_ref_of(r[0]))
+            _nbr = len(_stop_breaches(acct))
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">风险分布</div>'
+                f'<div style="font-size:13.5px;">敞口 <span class="num">{_expo_a:.1f}%</span>（上限 {_cap_a}%） · '
+                f'最大单标的集中度 <span class="num">{_conc_a:.1f}%</span>（占持仓市值） · '
+                f'止损覆盖 <span class="num">{_cov}/{len(_posr)}</span> 只持仓有母板止损参考 · '
+                f'破止损 <span class="num" style="color:{"#f6465d" if _nbr else "#2ebd85"};">{_nbr}</span> 只</div></div>',
+                unsafe_allow_html=True)
+
         # 持仓（§4 定列）：代码 | 名称 | 数量 | 成本 | 现价 | 浮盈% |
         # 止损参考 | 状态；状态与工作台/验证页同源（_stop_state：破止损/
         # 接近止损（距参考 ≤5%）/正常），禁止三处数字不一致。

@@ -1,8 +1,12 @@
+# 8502 主题固定（UI 批A G-1，2026-10-31）：界面 CSS 按深色终端设计，
+# 主题不得跟随访客浏览器浅/深偏好漂移，否则标题与表格文字不可读。
+# 2026-10-31 发布前合并（用户指令）：保留公开仓旧版的 font 与
+# [server] headless 两项，其余为本次批准的主题色值，不引入其他变更。
 [theme]
 base = "dark"
-primaryColor = "#c5ccd6"
-backgroundColor = "#0b0e14"
-secondaryBackgroundColor = "#131823"
+primaryColor = "#1890ff"
+backgroundColor = "#0b0e13"
+secondaryBackgroundColor = "#10141b"
 textColor = "#e8ecf1"
 font = "sans serif"
 

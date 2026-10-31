@@ -380,6 +380,13 @@ section[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { di
 .status-bar.danger { border-color: rgba(246,70,93,.6); }
 .status-bar .sb-label { color: #8a8f9c; font-weight: 700; }
 .status-bar .sb-ver { margin-left: auto; color: #8a8f9c; }
+/* 顶栏吸顶（P3 实测通过，2026-10-31）：状态条与系统阻断条的元素
+   容器 sticky，滚动时常驻顶部——风险不随滚动消失（§1/§2.1）。
+   选择器经真实 DOM 实测：滚动容器为 stMain，:has 定位容器。 */
+[data-testid="stElementContainer"]:has(.status-bar) {
+  position: sticky; top: 0px; z-index: 1000; background: #0b0e13; }
+[data-testid="stElementContainer"]:has(.blocked-banner) {
+  position: sticky; top: 56px; z-index: 999; background: #0b0e13; }
 /* 验证状态徽标：达标 / 未达标 / 样本不足 / 数据异常 */
 .vs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
 .vs-pass { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
@@ -753,7 +760,11 @@ with st.expander("账户策略", expanded=False):
 
 # 阻断原因展示（2026-10-18起：有阻断时必须清晰显示）
 if blocked:
-    st.error("⛔ 系统阻断：" + "；".join(block_reasons[:5]))
+    # P3：改 markdown 自有类 blocked-banner 以便吸顶（见 CSS），
+    # 呈现与原 st.error 一致的 danger 横幅，文本口径不变。
+    st.markdown('<div class="alert-banner danger blocked-banner">'
+                "⛔ 系统阻断：" + "；".join(block_reasons[:5]) + "</div>",
+                unsafe_allow_html=True)
 
 # 数据健康四态（安全补充③，2026-10-30）：由各市场最新 bar 日期
 # 与参照日期的真实差距判定（engine.data_health），非正常态带数据
@@ -1053,8 +1064,11 @@ if tab == "🏠 工作台":
             st.session_state["main_nav"] = page
         _jc = st.columns(2)
         if blocked:
+            def _goto_blocked():
+                st.session_state["main_nav"] = "📝 交易"
+                st.session_state["trade_focus"] = "first_blocked"
             _jc[0].button("系统阻断 → 去交易页处理", key="jump_block_trade",
-                          on_click=_goto, args=("📝 交易",))
+                          on_click=_goto_blocked)
         if _has_stop:
             _jc[1].button("破止损持仓 → 去账户页", key="jump_stop_acct",
                           on_click=_goto, args=("💰 账户",))
@@ -1469,7 +1483,8 @@ elif tab == "📝 交易":
                     _reason += f"；{errs[1]}"
                 _fc1, _fc2 = st.columns([3, 1])
                 with _fc1:
-                    st.markdown(f'<span style="background:rgba(246,70,93,.15);'
+                    st.markdown(f'<span id="blk-{s}"></span>'
+                                f'<span style="background:rgba(246,70,93,.15);'
                                 f'color:#f6465d;border-radius:4px;padding:1px 6px;'
                                 f'font-size:12px;">{_tag}</span> '
                                 f"**{sym_name(s)}** {sd} @{_px_fmt(s, px)} "
@@ -1519,7 +1534,8 @@ elif tab == "📝 交易":
                 nm = sym_name(s)
                 c1, c2, c3 = st.columns([3, 1, 1])
                 with c1:
-                    st.markdown(f'<div style="padding:8px 0;"><b>{nm}</b> '
+                    st.markdown(f'<span id="ord-{s}"></span>'
+                                f'<div style="padding:8px 0;"><b>{nm}</b> '
                                 f'<span style="color:{color};font-weight:bold;">{direction}</span> '
                                 f'<span class="num">{_px_fmt(s, px)}</span> '
                                 f'<span style="color:#666;font-size:12px;">{d}</span></div>',
@@ -1640,6 +1656,19 @@ elif tab == "📝 交易":
             for d, k, txt in _ev[:15]), unsafe_allow_html=True)
     else:
         st.write("暂无事件")
+
+    # 行级深链（P3 实测项）：工作台「系统阻断」跳转时定位第一条
+    # 被拦截行并闪烁描边；一次性消费，失败静默（页级跳转已达成）。
+    _focus = st.session_state.pop("trade_focus", None)
+    if _focus == "first_blocked":
+        st.components.v1.html(
+            "<script>"
+            "const el = window.parent.document.querySelector('[id^=\"blk-\"]')"
+            " || window.parent.document.querySelector('[id^=\"ord-\"]');"
+            "if (el) { el.scrollIntoView({block: 'center'});"
+            " el.style.outline = '2px solid #f6465d';"
+            " setTimeout(() => { el.style.outline = ''; }, 3000); }"
+            "</script>", height=0)
 
 # ================================================================
 # 💰 持仓与账本：持仓 + 成交 + 净值

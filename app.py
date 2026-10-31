@@ -2443,6 +2443,45 @@ elif tab == "🏦 机构影子":
 elif tab == "🛡 验证":
     st.markdown('<div class="section-head">🛡 验证与风控</div>', unsafe_allow_html=True)
 
+    # ===== UI-R1 阶段C 验证页：顶部四块（健康/账本/门禁/运行证据） =====
+    _HEALTH_TXT = {0: "正常", 1: "延迟/降级", 2: "断连/异常"}
+    try:
+        import json as _json_v
+        _fp_v = q("SELECT COUNT(*), MAX(id) FROM fills")[0]
+        _gate_st = {}
+        try:
+            with open(os.path.join(BASE, ".release_gate_state.json"), encoding="utf-8") as _gf:
+                _gate_st = _json_v.load(_gf)
+        except Exception:
+            _gate_st = {}
+        _ledger_ok = (bool(_gate_st) and _gate_st.get("fills_count") == _fp_v[0]
+                      and _gate_st.get("max_id") == _fp_v[1])
+        _gate_last = "无记录"
+        try:
+            with open(os.path.join(BASE, "reports", "release_gate_log.jsonl"), encoding="utf-8") as _lf:
+                _ll = [ln for ln in _lf if ln.strip()]
+            if _ll:
+                _lj = _json_v.loads(_ll[-1])
+                _gate_last = f"{_lj.get('event', '')} · {_lj.get('ts', '')}"
+        except Exception:
+            pass
+        _dr_max = q("SELECT MAX(date) FROM daily_report")[0][0]
+        _v1, _v2, _v3, _v4 = st.columns(4)
+        _v1.markdown(f'<div class="kpi-card"><div class="kpi-label">数据健康</div>'
+                     f'<div style="font-size:15px;">{_HEALTH_TXT.get(_hworst, "未知")}</div></div>',
+                     unsafe_allow_html=True)
+        _v2.markdown(f'<div class="kpi-card"><div class="kpi-label">账本核对</div>'
+                     f'<div style="font-size:15px;">{"一致" if _ledger_ok else "待核验"} · fills {_fp_v[0]} 笔</div></div>',
+                     unsafe_allow_html=True)
+        _v3.markdown(f'<div class="kpi-card"><div class="kpi-label">发布门禁</div>'
+                     f'<div style="font-size:15px;">最近：{_gate_last}</div></div>',
+                     unsafe_allow_html=True)
+        _v4.markdown(f'<div class="kpi-card"><div class="kpi-label">运行证据</div>'
+                     f'<div style="font-size:15px;">日报至 {_dr_max or "—"}</div></div>',
+                     unsafe_allow_html=True)
+    except Exception:
+        st.caption("验证页顶部状态读取失败（不影响下方明细）")
+
     # 页内账户切换：上方为单账户详情，下方仪表盘为跨账户摘要
     acct = st.radio("账户", accts, format_func=lambda x: ACCT_CN.get(x, x),
                     horizontal=True, key="verify_acct")
@@ -2688,6 +2727,53 @@ elif tab == "🛡 验证":
         st.error(f"仪表盘读取失败：{e}")
     # ---- 验收报告（2026-10-31 新增）：判分/查收类报告直发本页 ----
     # 定时任务把报告写入 reports/public/*.md，随每日同步上公网，不走聊天推送。
+    # ===== UI-R1 阶段C 验证页：五列检查表 + 异常证据时间线 =====
+    st.subheader("系统检查表")
+    try:
+        _ck = []
+        _fp2 = q("SELECT COUNT(*), MAX(id) FROM fills")[0]
+        _ck.append({"检查项": "账本指纹", "标准": "与发布水位一致",
+                    "当前值": f"fills {_fp2[0]} · max_id {_fp2[1]}",
+                    "结论": "通过" if _ledger_ok else "待核验",
+                    "证据来源": "sim.db / .release_gate_state.json"})
+        _md2 = q("SELECT MAX(date) FROM market_data WHERE market IN ('a','hk')")[0][0]
+        _dr2 = q("SELECT MAX(date) FROM daily_report")[0][0]
+        _ck.append({"检查项": "行情新鲜度", "标准": "数据至最近日报日",
+                    "当前值": f"行情 {_md2} · 日报 {_dr2}",
+                    "结论": "通过" if _md2 and _dr2 and _md2 >= _dr2 else "待核验",
+                    "证据来源": "market_data / daily_report"})
+        _sc2 = q("SELECT MAX(asof) FROM screen_runs")[0][0]
+        _ck.append({"检查项": "选股运行", "标准": "夜跑每期一跑",
+                    "当前值": f"最近一期 {_sc2}",
+                    "结论": "通过" if _sc2 else "待核验",
+                    "证据来源": "screen_runs"})
+        _il2 = q("SELECT MAX(date) FROM inst_lhb_fetch_days WHERE state != 'failed'")[0][0]
+        _ck.append({"检查项": "机构抓取", "标准": "每交易日抓取（影子）",
+                    "当前值": f"最近成功 {_il2}",
+                    "结论": "通过" if _il2 else "待核验",
+                    "证据来源": "inst_lhb_fetch_days"})
+        _ck.append({"检查项": "数据健康", "标准": "四态为正常",
+                    "当前值": _HEALTH_TXT.get(_hworst, "未知"),
+                    "结论": "通过" if _hworst == 0 else "待核验",
+                    "证据来源": "engine.data_health"})
+        st.table(_ck)
+    except Exception as _cke:
+        st.caption(f"检查表生成失败：{_cke}")
+    st.subheader("异常与拦截证据（只追加 · 可追溯）")
+    try:
+        _tl = q("SELECT COALESCE(trade_date, substr(ts,1,10)), symbol, side, rule, reason"
+                " FROM risk_block_events ORDER BY ts DESC LIMIT 8")
+        if _tl:
+            st.markdown("".join(
+                f'<div style="font-size:13px;padding:5px 0;border-bottom:1px solid #1e2532;">'
+                f'<span style="color:#8b9bab;">{d}</span> · {s} {sd} · '
+                f'<span style="color:#f6465d;">{rule}</span> · {reason or ""}</div>'
+                for d, s, sd, rule, reason in _tl), unsafe_allow_html=True)
+        else:
+            st.write("暂无拦截记录")
+    except Exception:
+        st.write("拦截记录读取失败")
+
     st.subheader("📄 验收报告")
     try:
         import glob as _glob

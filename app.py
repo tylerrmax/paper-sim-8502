@@ -825,7 +825,7 @@ st.markdown(
     % (_bar_cls, " ".join(_hbadges), _vertxt), unsafe_allow_html=True)
 
 # ============ 导航（顶部横排；左侧栏已移除） ============
-tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "🏦 机构专用席位连续净买监控", "📝 交易", "💰 账户", "🛡 验证"],
+tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "🏦 机构影子", "📝 交易", "💰 账户", "🛡 验证"],
                horizontal=True, label_visibility="collapsed", key="main_nav")
 
 # 控制（本地模式可用；云端只读时不渲染）
@@ -951,6 +951,26 @@ def _stop_state(sym, last):
     return "ok", sr
 
 
+def _stop_breaches(acct_id):
+    """破止损持仓清单（W-4：工作台/账户/验证三处同源）：按账户单独
+    计算，返回 [(symbol, qty, last, stop_ref, data_date)]；现价取
+    market_data 最新收盘并带数据日期，缺数据不下「无风险」结论。"""
+    out = []
+    try:
+        rows = q("""SELECT p.symbol, p.qty, m.close, t.md FROM positions p
+                    JOIN (SELECT symbol, MAX(date) md FROM market_data
+                          GROUP BY symbol) t ON p.symbol = t.symbol
+                    JOIN market_data m ON m.symbol = t.symbol AND m.date = t.md
+                    WHERE p.account = ? AND p.qty > 0""", (acct_id,))
+    except Exception:
+        return out
+    for _s, _qty, _last, _md in rows:
+        _stt, _sr = _stop_state(_s, _last)
+        if _stt == "breach":
+            out.append((_s, _qty, _last, _sr, _md))
+    return out
+
+
 render_ticker()
 # 标的代码→中文名（展示用，查不到时回退显示代码）
 
@@ -1012,19 +1032,16 @@ if tab == "🏠 工作台":
         alerts.append(("warn", "⏸ 系统已暂停：新信号不会成交。已挂在券商的条件单请在券商端自行检查/撤销。"))
     # 破止损持仓检查（P1-5：唯一口径 = 母板止损参考 stop_ref；
     # 此前用成本-5%口径与母板冲突，同标的在不同页面结论相反）
-    try:
-        _bs = q("""SELECT p.symbol, p.qty, p.avg_cost, m.close FROM positions p
-                   JOIN (SELECT symbol, MAX(date) md FROM market_data GROUP BY symbol) t
-                   ON p.symbol=t.symbol
-                   JOIN market_data m ON m.symbol=t.symbol AND m.date=t.md
-                   WHERE p.account=? AND p.qty>0""", (acct,))
-        for _s, _q, _avg, _last in _bs:
-            _sr = stop_ref_of(_s)
-            if _sr and _last and _last < _sr:
-                _has_stop = True
-                alerts.append(("danger", f"🔴 破止损仍持仓：{_s} 现价 {_px_fmt(_s, _last)} < 母板止损参考 {_px_fmt(_s, _sr)} | 持仓 {_q:g}"))
-    except Exception:
-        pass
+    # W-4（批C）：三账户分别计算、逐账户标注，绝不跨账户混算；
+    # 与账户页状态列、验证页破止损列表共用 _stop_breaches 同源，
+    # 现价带数据日期，缺数据不下无风险结论。
+    for _wa in ("sim_a", "sim_hk", "sim_crypto"):
+        for _s, _q, _last, _sr, _md in _stop_breaches(_wa):
+            _has_stop = True
+            alerts.append(("danger",
+                           f"🔴 破止损仍持仓：{ACCT_CN.get(_wa, _wa)} {_s} "
+                           f"现价 {_px_fmt(_s, _last)} < 母板止损参考 "
+                           f"{_px_fmt(_s, _sr)} | 持仓 {_q:g}（数据日 {_md}）"))
     for _lvl, _msg in alerts[:3]:
         st.markdown(f'<div class="alert-banner {_lvl}">{_msg}</div>', unsafe_allow_html=True)
     if len(alerts) > 3:
@@ -1135,29 +1152,30 @@ if tab == "🏠 工作台":
     # 互联互通资金（北向/南向）：成交额 + 北向持股市值，净买额 2024-08 起停止披露
     _ns = _fetch_ns_flow()
     if _ns:
-        def _ns_delta(cur, prev):
-            if cur is None or not prev:
-                return ""
-            chg = (cur - prev) / prev * 100
-            arrow = "▲" if chg >= 0 else "▼"
-            return f'<span style="color:#8a8f9c;font-size:13px;">较前日 {arrow} {abs(chg):.1f}%</span>'
-        nc1, nc2 = st.columns(2)
-        with nc1:
-            amt = f"{_ns['north_amt']:,.0f} 亿" if _ns.get("north_amt") is not None else "—"
-            hold = f"持股市值 {_ns['north_hold']:.2f} 万亿" if _ns.get("north_hold") else ""
-            st.markdown(
-                f'<div class="kpi-card"><div class="kpi-label">北向资金（沪股通+深股通）· 成交额 {_ns.get("north_date", "")}</div>'
-                f'<div class="kpi-value">{amt}</div>'
-                f'<div style="margin-top:4px;">{_ns_delta(_ns.get("north_amt"), _ns.get("north_prev"))}'
-                f'<span style="color:#8a8f9c;font-size:13px;">{hold}</span></div></div>',
-                unsafe_allow_html=True)
-        with nc2:
-            amt = f"{_ns['south_amt']:,.0f} 亿" if _ns.get("south_amt") is not None else "—"
-            st.markdown(
-                f'<div class="kpi-card"><div class="kpi-label">南向资金（港股通）· 成交额 {_ns.get("south_date", "")}</div>'
-                f'<div class="kpi-value">{amt}</div>'
-                f'<div style="margin-top:4px;">{_ns_delta(_ns.get("south_amt"), _ns.get("south_prev"))}</div></div>',
-                unsafe_allow_html=True)
+        with st.expander("市场辅助 · 互联互通资金（北向/南向）", expanded=False):
+            def _ns_delta(cur, prev):
+                if cur is None or not prev:
+                    return ""
+                chg = (cur - prev) / prev * 100
+                arrow = "▲" if chg >= 0 else "▼"
+                return f'<span style="color:#8a8f9c;font-size:13px;">较前日 {arrow} {abs(chg):.1f}%</span>'
+            nc1, nc2 = st.columns(2)
+            with nc1:
+                amt = f"{_ns['north_amt']:,.0f} 亿" if _ns.get("north_amt") is not None else "—"
+                hold = f"持股市值 {_ns['north_hold']:.2f} 万亿" if _ns.get("north_hold") else ""
+                st.markdown(
+                    f'<div class="kpi-card"><div class="kpi-label">北向资金（沪股通+深股通）· 成交额 {_ns.get("north_date", "")}</div>'
+                    f'<div class="kpi-value">{amt}</div>'
+                    f'<div style="margin-top:4px;">{_ns_delta(_ns.get("north_amt"), _ns.get("north_prev"))}'
+                    f'<span style="color:#8a8f9c;font-size:13px;">{hold}</span></div></div>',
+                    unsafe_allow_html=True)
+            with nc2:
+                amt = f"{_ns['south_amt']:,.0f} 亿" if _ns.get("south_amt") is not None else "—"
+                st.markdown(
+                    f'<div class="kpi-card"><div class="kpi-label">南向资金（港股通）· 成交额 {_ns.get("south_date", "")}</div>'
+                    f'<div class="kpi-value">{amt}</div>'
+                    f'<div style="margin-top:4px;">{_ns_delta(_ns.get("south_amt"), _ns.get("south_prev"))}</div></div>',
+                    unsafe_allow_html=True)
 
     # UI批B 信息架构收敛（§1/§2.4）：工作台只留风险+待办+核心数字+
     # 关注列表。原误置的「该账户暂无数据」蓝条（W-3）删除；净值曲线
@@ -1214,6 +1232,7 @@ elif tab == "🔍 选股":
         st.caption(f"最近一期落库评分（asof {_tb_asof} · {_tb_rv}）按总分 "
                    "TOP8；验证列 = screen_perf 样本外前向收益（S/A 样本）")
         _tb_table = []
+        _tb_detail = []
         for _i, r in enumerate(_tb_rows, 1):
             def _px(v):
                 return _px_fmt(r.get("symbol"), v) \
@@ -1244,19 +1263,26 @@ elif tab == "🔍 选股":
             else:
                 _verify = (f"n={_p['n']} · 5日 {_p['avg5'] * 100:+.2f}% · "
                            f"20日 — · 5日胜率 {_p['win5'] * 100:.0f}%")
+            # 主表瘦身（§5.2）：只留决策列；技术/新闻/母板分项、目标位
+            # 与样本外验证移入下方「TOP 明细」折叠，默认不横铺。
             _tb_table.append({
                 "#": _i, "代码": r.get("symbol") or "—",
                 "名称": r.get("name") or "—",
                 "评级": r.get("grade") or "—",
                 "总分": (f"{r['total']:.1f}" if isinstance(r.get("total"), (int, float)) else "—"),
+                "触发价": _px(r.get("plan_trigger")),
+                "止损位": _px(r.get("plan_stop")),
+                "距触发": _dist, "状态标签": _note})
+            _tb_detail.append({
+                "代码": r.get("symbol") or "—",
                 "技术": (f"{r['tech']:.1f}" if isinstance(r.get("tech"), (int, float)) else "—"),
                 "新闻": (f"{r['news']:.1f}" if isinstance(r.get("news"), (int, float)) else "—"),
                 "母板": (f"{r['board']:.1f}" if isinstance(r.get("board"), (int, float)) else "—"),
-                "触发价": _px(r.get("plan_trigger")),
-                "止损位": _px(r.get("plan_stop")),
                 "目标位": _px(r.get("plan_target")),
-                "距触发": _dist, "验证（样本外）": _verify, "标注": _note})
+                "验证（样本外）": _verify})
         st.table(_tb_table)
+        with st.expander("TOP 明细（分项分数 · 目标位 · 样本外验证）", expanded=False):
+            st.table(_tb_detail)
     else:
         st.caption("暂无 screen_runs 落库记录（夜跑评分后生成）")
     # ---- 多重校验·优质标的：技术面45 + 新闻面35 + 母板面20，硬闸门封顶，只列 S/A ----
@@ -1721,7 +1747,7 @@ elif tab == "💰 账户":
 # 🏦 机构专用席位连续净买监控（方案1 影子监控 · 只读）：龙虎榜机构专用
 # 席位净买/连续天数；不生成信号、不建意图、不影响交易主链。
 # ================================================================
-elif tab == "🏦 机构专用席位连续净买监控":
+elif tab == "🏦 机构影子":
     st.markdown('<div class="section-head">🏦 机构专用席位连续净买监控（影子 · 只读）</div>',
                 unsafe_allow_html=True)
     st.caption("口径：龙虎榜「机构专用」席位——匿名聚合席位，非机构家数；"
@@ -1761,8 +1787,12 @@ elif tab == "🏦 机构专用席位连续净买监控":
                             "连续净买交易日": b["consec_net_buy_days"],
                             "连续出现交易日": b["consec_appear_days"],
                             "天数确定性": "确定" if b["streak_certain"]
-                            else "不确定（序列含抓取失败日）",
+                            else "⚠ 不确定（序列含未登记日/抓取失败日）",
                         } for b in _board])
+                        if any(not b["streak_certain"] for b in _board):
+                            st.caption("⚠ 不确定：连续天数序列含未登记交易日或"
+                                       "抓取失败日，天数可能中断或被低估，"
+                                       "引用时按不确定处理（I-1）。")
                     else:
                         st.write("当日无符合条件的标的。")
                     _day_rows = _con.execute(
@@ -1770,18 +1800,20 @@ elif tab == "🏦 机构专用席位连续净买监控":
                         "seat_buy_records,seat_sell_records,window"
                         " FROM inst_lhb_daily WHERE date=?"
                         " ORDER BY inst_net DESC", (_latest_ok,)).fetchall()
-                    st.markdown("**当日聚合全表（%s · 共 %d 只 · 供复算核对）**"
-                                % (_latest_ok, len(_day_rows)))
-                    st.table([{
-                        "代码": r[0], "名称": r[1] or "",
-                        "买入(万)": f"{(r[2] or 0) / 10000:,.0f}",
-                        "卖出(万)": f"{(r[3] or 0) / 10000:,.0f}",
-                        "净买(万)": f"{(r[4] or 0) / 10000:,.0f}",
-                        "买席位记录": r[5], "卖席位记录": r[6],
-                        "窗口": "累计" if r[7] == "cum" else "一日",
-                    } for r in _day_rows])
-                    st.caption("窗口=累计：该股当日只有多日累计类事件，金额为累计口径，"
-                               "与一日类不相加（聚合规则见 engine/inst_lhb）。")
+                    # 全表默认折叠（§6）：影子榜默认开，全表只供复算时展开。
+                    with st.expander("当日聚合全表（%s · 共 %d 只 · 供复算核对）"
+                                     % (_latest_ok, len(_day_rows)),
+                                     expanded=False):
+                        st.table([{
+                            "代码": r[0], "名称": r[1] or "",
+                            "买入(万)": f"{(r[2] or 0) / 10000:,.0f}",
+                            "卖出(万)": f"{(r[3] or 0) / 10000:,.0f}",
+                            "净买(万)": f"{(r[4] or 0) / 10000:,.0f}",
+                            "买席位记录": r[5], "卖席位记录": r[6],
+                            "窗口": "累计" if r[7] == "cum" else "一日",
+                        } for r in _day_rows])
+                        st.caption("窗口=累计：该股当日只有多日累计类事件，金额为累计口径，"
+                                   "与一日类不相加（聚合规则见 engine/inst_lhb）。")
         finally:
             _con.close()
     except Exception:  # noqa: BLE001 — 影子视图故障隔离，不影响交易功能
@@ -1815,76 +1847,83 @@ elif tab == "🛡 验证":
         tg = g["targets"]
 
         rt = d.get("round_trips") or 0
-        # 阻断原因优先展示
-        blockers = []
-        if rt < tg["sample_min"]:
-            blockers.append(f"样本不足：当前 {rt} 笔，需要 {tg['sample_min']}-{tg['sample_max']} 笔")
-        if blockers:
-            for b in blockers:
-                st.markdown(f'<div class="alert-banner warn">⛔ 阻断：{b}</div>',
-                            unsafe_allow_html=True)
+        if rt == 0:
+            # 样本为 0：整表替换（§7）——不展示空的盈亏比/期望值
+            # 卡片，一句说清状态；风控指标与破止损检查在下方照常。
+            st.markdown('<div class="alert-banner warn">样本不足，'
+                        '毕业统计未启用（当前 0 笔 round-trip，'
+                        f'毕业线 {tg["sample_min"]}-{tg["sample_max"]} 笔）</div>',
+                        unsafe_allow_html=True)
+        else:
+            # 阻断原因优先展示
+            blockers = []
+            if rt < tg["sample_min"]:
+                blockers.append(f"样本不足：当前 {rt} 笔，需要 {tg['sample_min']}-{tg['sample_max']} 笔")
+            if blockers:
+                for b in blockers:
+                    st.markdown(f'<div class="alert-banner warn">⛔ 阻断：{b}</div>',
+                                unsafe_allow_html=True)
 
-        k1, k2, k3 = st.columns(3)
-        with k1:
-            stt = _vs_state(rt, tg["sample_min"], True) if rt >= tg["sample_min"] else "insufficient"
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">样本（round-trip） {vs_badge(stt)}</div>'
-                        f'<div class="kpi-value">{rt} 笔</div>'
-                        f'<div class="kpi-label">目标 {tg["sample_min"]}-{tg["sample_max"]} 笔</div></div>',
-                        unsafe_allow_html=True)
-        with k2:
-            wlr = d.get("win_loss_ratio")
-            stt = _vs_state(wlr, tg["win_loss_ratio"], True, rt, tg["sample_min"])
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">盈亏比（平均盈利/平均亏损） {vs_badge(stt)}</div>'
-                        f'<div class="kpi-value">{wlr:.2f}' if wlr is not None else
-                        f'<div class="kpi-card"><div class="kpi-label">盈亏比 {vs_badge(stt)}</div>'
-                        f'<div class="kpi-value">—',
-                        unsafe_allow_html=True)
-            if wlr is not None:
-                st.markdown(f'</div><div class="kpi-label">硬线 ≥ {tg["win_loss_ratio"]}</div></div>',
+            k1, k2, k3 = st.columns(3)
+            with k1:
+                stt = _vs_state(rt, tg["sample_min"], True) if rt >= tg["sample_min"] else "insufficient"
+                st.markdown(f'<div class="kpi-card"><div class="kpi-label">样本（round-trip） {vs_badge(stt)}</div>'
+                            f'<div class="kpi-value">{rt} 笔</div>'
+                            f'<div class="kpi-label">目标 {tg["sample_min"]}-{tg["sample_max"]} 笔</div></div>',
                             unsafe_allow_html=True)
-        with k3:
-            pf = d.get("profit_factor")
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">盈利因子 PF（参考）</div>'
-                        f'<div class="kpi-value">{pf:.2f}' if pf is not None else
-                        f'<div class="kpi-card"><div class="kpi-label">盈利因子 PF（参考）</div>'
-                        f'<div class="kpi-value">—',
-                        unsafe_allow_html=True)
-            st.markdown('</div></div>', unsafe_allow_html=True)
+            with k2:
+                wlr = d.get("win_loss_ratio")
+                stt = _vs_state(wlr, tg["win_loss_ratio"], True, rt, tg["sample_min"])
+                st.markdown(f'<div class="kpi-card"><div class="kpi-label">盈亏比（平均盈利/平均亏损） {vs_badge(stt)}</div>'
+                            f'<div class="kpi-value">{wlr:.2f}' if wlr is not None else
+                            f'<div class="kpi-card"><div class="kpi-label">盈亏比 {vs_badge(stt)}</div>'
+                            f'<div class="kpi-value">—',
+                            unsafe_allow_html=True)
+                if wlr is not None:
+                    st.markdown(f'</div><div class="kpi-label">硬线 ≥ {tg["win_loss_ratio"]}</div></div>',
+                                unsafe_allow_html=True)
+            with k3:
+                pf = d.get("profit_factor")
+                st.markdown(f'<div class="kpi-card"><div class="kpi-label">盈利因子 PF（参考）</div>'
+                            f'<div class="kpi-value">{pf:.2f}' if pf is not None else
+                            f'<div class="kpi-card"><div class="kpi-label">盈利因子 PF（参考）</div>'
+                            f'<div class="kpi-value">—',
+                            unsafe_allow_html=True)
+                st.markdown('</div></div>', unsafe_allow_html=True)
 
-        k4, k5, k6 = st.columns(3)
-        with k4:
-            mdd = d.get("max_drawdown")
-            stt = _vs_state(mdd, tg["max_drawdown"], False, rt, tg["sample_min"])
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">最大回撤 {vs_badge(stt)}</div>'
-                        f'<div class="kpi-value">{mdd*100:.2f}%' if mdd is not None else
-                        f'<div class="kpi-card"><div class="kpi-label">最大回撤 {vs_badge(stt)}</div>'
-                        f'<div class="kpi-value">—',
-                        unsafe_allow_html=True)
-            if mdd is not None:
-                st.markdown(f'</div><div class="kpi-label">硬线 ≤ {tg["max_drawdown"]*100:.0f}%</div></div>',
+            k4, k5, k6 = st.columns(3)
+            with k4:
+                mdd = d.get("max_drawdown")
+                stt = _vs_state(mdd, tg["max_drawdown"], False, rt, tg["sample_min"])
+                st.markdown(f'<div class="kpi-card"><div class="kpi-label">最大回撤 {vs_badge(stt)}</div>'
+                            f'<div class="kpi-value">{mdd*100:.2f}%' if mdd is not None else
+                            f'<div class="kpi-card"><div class="kpi-label">最大回撤 {vs_badge(stt)}</div>'
+                            f'<div class="kpi-value">—',
                             unsafe_allow_html=True)
-        with k5:
-            exp = d.get("expectancy")
-            stt = _vs_state(exp, 0, True, rt, tg["sample_min"])
-            # 期望值硬线是 >0，用 >=0 近似，=0 算未达标
-            if exp is not None and exp <= 0:
-                stt = "fail" if not (rt < tg["sample_min"]) else "insufficient"
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">期望值 {vs_badge(stt)}</div>'
-                        f'<div class="kpi-value">{exp:.2f}' if exp is not None else
-                        f'<div class="kpi-card"><div class="kpi-label">期望值 {vs_badge(stt)}</div>'
-                        f'<div class="kpi-value">—',
-                        unsafe_allow_html=True)
-            if exp is not None:
-                st.markdown('</div><div class="kpi-label">硬线 > 0</div></div>',
+                if mdd is not None:
+                    st.markdown(f'</div><div class="kpi-label">硬线 ≤ {tg["max_drawdown"]*100:.0f}%</div></div>',
+                                unsafe_allow_html=True)
+            with k5:
+                exp = d.get("expectancy")
+                stt = _vs_state(exp, 0, True, rt, tg["sample_min"])
+                # 期望值硬线是 >0，用 >=0 近似，=0 算未达标
+                if exp is not None and exp <= 0:
+                    stt = "fail" if not (rt < tg["sample_min"]) else "insufficient"
+                st.markdown(f'<div class="kpi-card"><div class="kpi-label">期望值 {vs_badge(stt)}</div>'
+                            f'<div class="kpi-value">{exp:.2f}' if exp is not None else
+                            f'<div class="kpi-card"><div class="kpi-label">期望值 {vs_badge(stt)}</div>'
+                            f'<div class="kpi-value">—',
                             unsafe_allow_html=True)
-        with k6:
-            vr = d.get("val_return")
-            st.markdown(f'<div class="kpi-card"><div class="kpi-label">验证期收益</div>'
-                        f'<div class="kpi-value">{vr*100:+.2f}%</div></div>' if vr is not None else
-                        f'<div class="kpi-card"><div class="kpi-label">验证期收益</div>'
-                        f'<div class="kpi-value">—</div></div>',
-                        unsafe_allow_html=True)
-
+                if exp is not None:
+                    st.markdown('</div><div class="kpi-label">硬线 > 0</div></div>',
+                                unsafe_allow_html=True)
+            with k6:
+                vr = d.get("val_return")
+                st.markdown(f'<div class="kpi-card"><div class="kpi-label">验证期收益</div>'
+                            f'<div class="kpi-value">{vr*100:+.2f}%</div></div>' if vr is not None else
+                            f'<div class="kpi-card"><div class="kpi-label">验证期收益</div>'
+                            f'<div class="kpi-value">—</div></div>',
+                            unsafe_allow_html=True)
         excl = d.get("excluded_round_trips", 0)
         if excl:
             st.warning(f"⚠ 有 {excl} 笔成交因策略错配被剔除出毕业样本（历史保留，见 graduation_exclusions 表）")
@@ -1936,11 +1975,10 @@ elif tab == "🛡 验证":
     breached = q("""SELECT p.symbol, p.qty, p.avg_cost, p.last_price
                     FROM positions p WHERE p.account=? AND p.qty>0""", (acct,))
     found = False
-    for s, qty_, avg_, last_ in breached:
-        _sr = stop_ref_of(s)
-        if _sr and last_ and last_ < _sr:
-            st.error(f"🔴 {s} 现价 {last_:.2f} 已跌破母板止损参考 {_sr:.2f}，仍持有 {qty_} 股")
-            found = True
+    for s, qty_, last_, _sr, _md in _stop_breaches(acct):
+        st.error(f"🔴 {s} 现价 {_px_fmt(s, last_)} 已跌破母板止损参考 "
+                 f"{_px_fmt(s, _sr)}，仍持有 {qty_:g}（数据日 {_md}）")
+        found = True
     if not found:
         st.success("✅ 无破止损持仓")
     # 浮亏提示：成本 -5% 仅提示浮亏幅度，不再冒充止损判定（P1-5 更名）

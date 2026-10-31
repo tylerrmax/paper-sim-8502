@@ -1874,7 +1874,7 @@ elif tab == "📝 交易":
                     horizontal=True, key="trade_acct")
 
     # 待建条件单
-    st.subheader("待建条件单")
+    st.subheader("订单管理")
     sigs = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
                 LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
                   AND s.symbol=f.symbol AND s.side=f.side
@@ -1905,41 +1905,40 @@ elif tab == "📝 交易":
                 qty_est = pos[0][0] if pos else 0
             ok, errs, warns = validate_order(acct, s, sd, qty_est, px, d)
             validated.append((d, s, sd, px, ok, errs, warns))
-        # 拦截：有校验失败的先提示
-        failed = [v for v in validated if not v[4]]
-        if failed:
-            st.warning(f"⛔ {len(failed)} 条信号校验未通过，已拦截（不生成订单指引）")
-            st.caption("校验不通过无法建单。不再处理这条就点「跳过/隔离」：跳过后不再计入待办，模拟盘也不会成交。")
-            for d, s, sd, px, ok, errs, warns in failed:
-                # 无效/过期标签（§3.1）：无持仓 SELL 与过期信号一眼可辨，
-                # 避免被反复当成可建单；拦截原因一行说完（首因+项数）。
-                if any("无持仓" in e for e in errs):
-                    _tag = "无效·无仓"
-                elif any("已过期" in e for e in errs):
-                    _tag = "已过期"
-                else:
-                    _tag = "已拦截"
-                _reason = errs[0] if errs else ""
-                if len(errs) > 2:
-                    _reason += f"（共 {len(errs)} 项）"
-                elif len(errs) == 2:
-                    _reason += f"；{errs[1]}"
-                _fc1, _fc2 = st.columns([3, 1])
-                with _fc1:
-                    st.markdown(f'<span id="blk-{s}"></span>'
-                                f'<span style="background:rgba(246,70,93,.15);'
-                                f'color:#f6465d;border-radius:4px;padding:1px 6px;'
-                                f'font-size:12px;">{_tag}</span> '
-                                f"**{sym_name(s)}** {sd} @{_px_fmt(s, px)} "
-                                f'<span style="color:#666;font-size:12px;">{d}</span>',
-                                unsafe_allow_html=True)
-                    st.caption(_reason)
-                with _fc2:
-                    if st.button("⏭ 跳过/隔离", key=f"block_skip_{d}_{s}_{sd}"):
-                        _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
-                        if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
-                            st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
-                        st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+
+        # ===== UI-R1 阶段C 交易页：执行状态栏（状态在先，明细在后） =====
+        _n_ok = sum(1 for v in validated if v[4])
+        _n_fail = len(validated) - _n_ok
+        _tag_n = {"无效·无仓": 0, "已过期": 0, "已拦截": 0}
+        for _v in validated:
+            if _v[4]:
+                continue
+            if any("无持仓" in e for e in _v[5]):
+                _tag_n["无效·无仓"] += 1
+            elif any("已过期" in e for e in _v[5]):
+                _tag_n["已过期"] += 1
+            else:
+                _tag_n["已拦截"] += 1
+        try:
+            from engine import regime as _regime_tr
+            _env_tr = _regime_tr.load_market_env(db_path=DB)
+            _env_chip = _r1_chip({"attack": "ok", "cautious": "wait"}.get(
+                _env_tr.get("state"), "block"), _env_tr.get("label") or "环境未知")
+        except Exception:
+            _env_chip = _r1_chip("wait", "环境未知")
+        _risk_txt = ("；".join(f"{k} {v}" for k, v in _tag_n.items() if v)
+                     if _n_fail else "无拦截")
+        st.markdown(
+            f'<div class="kpi-card"><div class="kpi-label">执行状态</div>'
+            f'<div style="font-size:13.5px;">环境：{_env_chip} · '
+            f'可执行：{_r1_chip("info" if _n_ok else "mut", f"可处理 {_n_ok} 条")} · '
+            f'待建单 {len(sigs)} 条（近 7 天）<br>'
+            f'风控结果：{_r1_chip("block", "已拦截 " + str(_n_fail) + " 条") if _n_fail else _r1_chip("ok", "无拦截")} '
+            f'<span style="color:#8b9bab;font-size:12px;">{_risk_txt if _n_fail else ""}</span></div></div>',
+            unsafe_allow_html=True)
+        st.markdown('<div class="kpi-label" style="margin-top:10px;">可处理订单（校验通过 · 券商人工建单）</div>',
+                    unsafe_allow_html=True)
+
         valid_sigs = [v for v in validated if v[4]]
         if not valid_sigs:
             st.info("无可执行订单")
@@ -1995,6 +1994,94 @@ elif tab == "📝 交易":
                         if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
                             st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
                         st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+
+
+        st.markdown('<div class="kpi-label" style="margin-top:14px;">风控拦截（不可处理 · 原因与处理方式逐条标注）</div>',
+                    unsafe_allow_html=True)
+        failed = [v for v in validated if not v[4]]
+        if failed:
+            st.warning(f"⛔ {len(failed)} 条信号校验未通过，已拦截（不生成订单指引）")
+            st.caption("校验不通过无法建单。不再处理这条就点「跳过/隔离」：跳过后不再计入待办，模拟盘也不会成交。")
+            for d, s, sd, px, ok, errs, warns in failed:
+                # 无效/过期标签（§3.1）：无持仓 SELL 与过期信号一眼可辨，
+                # 避免被反复当成可建单；拦截原因一行说完（首因+项数）。
+                if any("无持仓" in e for e in errs):
+                    _tag = "无效·无仓"
+                elif any("已过期" in e for e in errs):
+                    _tag = "已过期"
+                else:
+                    _tag = "已拦截"
+                _reason = errs[0] if errs else ""
+                if len(errs) > 2:
+                    _reason += f"（共 {len(errs)} 项）"
+                elif len(errs) == 2:
+                    _reason += f"；{errs[1]}"
+                _fc1, _fc2 = st.columns([3, 1])
+                with _fc1:
+                    st.markdown(f'<span id="blk-{s}"></span>'
+                                f'<span style="background:rgba(246,70,93,.15);'
+                                f'color:#f6465d;border-radius:4px;padding:1px 6px;'
+                                f'font-size:12px;">{_tag}</span> '
+                                f"**{sym_name(s)}** {sd} @{_px_fmt(s, px)} "
+                                f'<span style="color:#666;font-size:12px;">{d}</span>',
+                                unsafe_allow_html=True)
+                    st.caption(_reason)
+                with _fc2:
+                    if st.button("⏭ 跳过/隔离", key=f"block_skip_{d}_{s}_{sd}"):
+                        _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
+                        if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
+                            st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
+                        st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+
+    # 成交记录（独立区，与事件流分开；fills 同源只读）
+    st.subheader("成交记录")
+    _fills_tr = q("SELECT date, symbol, side, qty, price, pnl FROM fills WHERE account=? ORDER BY date DESC, id DESC LIMIT 15", (acct,))
+    if _fills_tr:
+        st.table([{"日期": d, "标的": sym_name(s),
+                   "方向": "买入" if sd == "BUY" else "卖出",
+                   "数量": f"{qty:g}", "成交价": _px_fmt(s, px),
+                   "盈亏": (f"{pnl:+,.2f}" if pnl is not None else "—")}
+                  for d, s, sd, qty, px, pnl in _fills_tr])
+    else:
+        st.write("暂无成交记录")
+
+    # 事件流（§3.2：自工作台移入交易页）：日期 | 色点类型 | 一句话，
+    # 默认近 15 条；类型色：信号灰、审批蓝、成交绿、拦截/阻断红。
+    # 拦截事件读 risk_block_events 落库记录（V-3 只读展示，不改账本）。
+    st.subheader("事件流")
+    _EV_DOT = {"成交": "#2ebd85", "信号": "#8a8f9c",
+               "审批": "#1890ff", "拦截": "#f6465d"}
+    _ev = []
+    for d, a, s, sd, qty, px in q(
+            "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 8"):
+        _ev.append((d, "成交", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} {qty:g} @ {_px_fmt(s, px)}"))
+    for d, a, s, sd in q(
+            "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 8"):
+        _ev.append((d, "信号", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd}"))
+    for d, a, s, sd, dc in q(
+            "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 8"):
+        _dc_cn = "批准" if dc == "approved" else ("跳过" if dc == "skipped" else dc)
+        _ev.append((d, "审批", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} · {_dc_cn}"))
+    try:
+        for d, a, s, sd, reason in q(
+                "SELECT COALESCE(trade_date, substr(ts,1,10)), account, symbol,"
+                " side, reason FROM risk_block_events ORDER BY ts DESC LIMIT 8"):
+            _ev.append((d or "—", "拦截",
+                        f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} · {reason or ''}"))
+    except Exception:
+        pass
+    _ev.sort(key=lambda e: e[0], reverse=True)
+    if _ev:
+        st.markdown("".join(
+            f'<div style="display:flex;gap:10px;align-items:baseline;padding:5px 0;'
+            f'border-bottom:1px solid #1e2532;">'
+            f'<span style="color:#8a8f9c;font-size:12px;min-width:86px;">{d}</span>'
+            f'<span style="color:{_EV_DOT[k]};font-size:12px;">●</span>'
+            f'<span style="color:{_EV_DOT[k]};font-size:12px;font-weight:700;min-width:32px;">{k}</span>'
+            f'<span style="font-size:13px;">{txt}</span></div>'
+            for d, k, txt in _ev[:15]), unsafe_allow_html=True)
+    else:
+        st.write("暂无事件")
 
     # 券商回执录入（四态按钮反馈：已提交→执行中→已生效/失败）
     st.subheader("🧾 券商回执录入")
@@ -2061,44 +2148,6 @@ elif tab == "📝 交易":
                   for d, s, sd, px, qty in receipts])
     else:
         st.write("暂无回执")
-
-    # 事件流（§3.2：自工作台移入交易页）：日期 | 色点类型 | 一句话，
-    # 默认近 15 条；类型色：信号灰、审批蓝、成交绿、拦截/阻断红。
-    # 拦截事件读 risk_block_events 落库记录（V-3 只读展示，不改账本）。
-    st.subheader("事件流")
-    _EV_DOT = {"成交": "#2ebd85", "信号": "#8a8f9c",
-               "审批": "#1890ff", "拦截": "#f6465d"}
-    _ev = []
-    for d, a, s, sd, qty, px in q(
-            "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 8"):
-        _ev.append((d, "成交", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} {qty:g} @ {_px_fmt(s, px)}"))
-    for d, a, s, sd in q(
-            "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 8"):
-        _ev.append((d, "信号", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd}"))
-    for d, a, s, sd, dc in q(
-            "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 8"):
-        _dc_cn = "批准" if dc == "approved" else ("跳过" if dc == "skipped" else dc)
-        _ev.append((d, "审批", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} · {_dc_cn}"))
-    try:
-        for d, a, s, sd, reason in q(
-                "SELECT COALESCE(trade_date, substr(ts,1,10)), account, symbol,"
-                " side, reason FROM risk_block_events ORDER BY ts DESC LIMIT 8"):
-            _ev.append((d or "—", "拦截",
-                        f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} · {reason or ''}"))
-    except Exception:
-        pass
-    _ev.sort(key=lambda e: e[0], reverse=True)
-    if _ev:
-        st.markdown("".join(
-            f'<div style="display:flex;gap:10px;align-items:baseline;padding:5px 0;'
-            f'border-bottom:1px solid #1e2532;">'
-            f'<span style="color:#8a8f9c;font-size:12px;min-width:86px;">{d}</span>'
-            f'<span style="color:{_EV_DOT[k]};font-size:12px;">●</span>'
-            f'<span style="color:{_EV_DOT[k]};font-size:12px;font-weight:700;min-width:32px;">{k}</span>'
-            f'<span style="font-size:13px;">{txt}</span></div>'
-            for d, k, txt in _ev[:15]), unsafe_allow_html=True)
-    else:
-        st.write("暂无事件")
 
     # 行级深链（P3 实测项）：工作台「系统阻断」跳转时定位第一条
     # 被拦截行并闪烁描边；一次性消费，失败静默（页级跳转已达成）。

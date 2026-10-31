@@ -486,12 +486,32 @@ def vs_badge(state):
     return m.get(state, '<span class="vs vs-unknown">未知</span>')
 
 def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=None):
-    """判定验证状态：先看样本是否足够，再看是否达标"""
-    # UI批A V-1：样本不足优先判定；样本足够而指标缺失仍判异常，
-    # 不得把「还没数据」显示成「数据坏了」，也不得反之。
-    if sample_n is not None and sample_min is not None and sample_n < sample_min:
-        return "insufficient"
+    """判定验证状态：样本状态优先，再看指标本身。
+
+    样本规则（2026-10-31 批A专项核定，分支表见 ui-audit 专项测试）：
+    - 调用方同时给出 sample_n/sample_min 才做样本检查（KPI 指标卡）；
+      只给其一（样本数量或阈值缺失）→ 数据异常，
+      不得把未知样本量伪造成样本不足或达标；
+    - 两者都不给 = 调用方显式声明样本检查不适用（仅样本卡本身，
+      其值即样本数，已由调用点的 rt>=sample_min 条件把关）；
+    - 样本数为负数或非整数 → 数据异常（计数损坏，不是样本不足）；
+    - 样本不足优先于指标缺失判定；样本充足而指标为 None
+      或 NaN → 数据异常。
+    """
+    if (sample_n is None) != (sample_min is None):
+        return "anomaly"
+    if sample_n is not None:
+        try:
+            _n_int = int(sample_n)
+        except (TypeError, ValueError, OverflowError):
+            return "anomaly"
+        if sample_n < 0 or _n_int != sample_n:
+            return "anomaly"
+        if sample_n < sample_min:
+            return "insufficient"
     if value is None:
+        return "anomaly"
+    if isinstance(value, float) and value != value:  # NaN
         return "anomaly"
     ok = (value >= target) if higher_is_better else (value <= target)
     return "pass" if ok else "fail"
@@ -626,11 +646,20 @@ def render_ticker():
 
     # 紧凑模式（UI批A G-2）：默认只显示有待建单或持仓的标的；
     # 完整行情保留在下方折叠入口，不得无入口截断。
+    # 持仓查询失败不得伪装成「没有持仓」（2026-10-31 批A专项）：
+    # 失败时显式标注关注列表数据不完整，仅按待建单筛选。
+    _held = set()
+    _held_ok = True
     try:
         _held = {r[0] for r in q("SELECT symbol FROM positions WHERE qty>0")}
     except Exception:
-        _held = set()
+        _held_ok = False
     _focus = set(pending) | _held
+    if not _held_ok:
+        st.markdown(
+            '<div class="alert-banner warn">⚠ 持仓行情查询失败：'
+            '关注列表数据不完整（仅按待建单筛选，持仓标的可能未显示），'
+            '完整行情见下方折叠。</div>', unsafe_allow_html=True)
     _total = len(a_syms) + len(hk_syms) + len(crypto_syms)
     if _focus:
         st.markdown(

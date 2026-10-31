@@ -367,8 +367,7 @@ st.markdown("""
 .strategy-badge.buyback { background: rgba(46,189,133,.15); color: #2ebd85; }
 .strategy-badge.ma20 { background: rgba(240,185,11,.15); color: #f0b90b; }
 .strategy-badge.disabled { background: rgba(138,143,156,.15); color: #8a8f9c; }
-/* 左侧栏已移除：导航与控制移至顶部 */
-section[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+/* UI-R1 阶段C：左侧固定导航恢复（旧「左侧栏已移除」隐藏规则就此作废） */
 /* 分区标题 */
 .section-head { font-size: 18px; font-weight: 700; margin: 20px 0 12px 0;
                 padding-bottom: 8px; border-bottom: 2px solid #1e2532; color: #e8ecf1; }
@@ -778,6 +777,21 @@ for a in CFG["accounts"]:
 with st.expander("账户策略", expanded=False):
     st.markdown("".join(_rows), unsafe_allow_html=True)
 
+# ===== UI-R1 阶段C 基础：母板映射加载前置（顶栏/助手先于原定义点执行） =====
+def _load_workbook_map():
+    """母板映射（单一基准）：板块/止损/突破/共振与标的名册同源于此。"""
+    try:
+        import json as _json
+        with open(os.path.join(BASE, "config", "workbook_map.json"),
+                  encoding="utf-8") as _f:
+            return _json.load(_f)
+    except Exception:
+        return {}
+
+
+WORKBOOK_MAP = _load_workbook_map()
+
+
 # ===== UI-R1 阶段C 基础：止损同源助手前置（顶栏 RISK 段与三页共用） =====
 def stop_ref_of(sym):
     """母板止损参考（唯一口径）：无映射/无止损位时返回 None。"""
@@ -976,19 +990,6 @@ if not IS_CLOUD:
 accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY account")]
          or ["sim_a", "sim_hk", "sim_crypto"])
 ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-def _load_workbook_map():
-    """母板映射（单一基准）：板块/止损/突破/共振与标的名册同源于此。"""
-    try:
-        import json as _json
-        with open(os.path.join(BASE, "config", "workbook_map.json"),
-                  encoding="utf-8") as _f:
-            return _json.load(_f)
-    except Exception:
-        return {}
-
-
-WORKBOOK_MAP = _load_workbook_map()
-
 # 标的名册单一来源（P2-10）：从 workbook_map 派生，不再手写第二份名单；
 # BTC 不在母板 Watchlist 内，单独补入。
 SYMBOL_CN = {sym: (meta.get("name") or sym)

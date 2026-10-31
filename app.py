@@ -329,6 +329,26 @@ st.markdown("""
 /* 全局：深色终端底 */
 /* 主题已由 .streamlit/config.toml 固定为深色（UI批A G-1），
    标题色不再随浏览器 prefers-color-scheme 切换，避免深底深字。 */
+/* ===== UI-R1 共享设计系统（阶段C 基础）：令牌与组件类，六页共用 =====
+   令牌：底 #06090d/#0a0f16、面板 #101823、边线 #22303f、正文 #d6dee7、
+   次级 #8b9bab、弱 #5d7185、焦点 #56c8dc、通过 #2ebd85、阻断 #f6465d、
+   待处理 #e8a33d、数据蓝 #4a90d9。状态一律文字+颜色双表达。 */
+.r1-chip { display: inline-block; padding: 2px 9px; border-radius: 5px;
+           font-size: 12px; font-weight: 600; border: 1px solid transparent;
+           white-space: nowrap; }
+.r1-chip.ok { background: rgba(46,189,133,.13); color: #2ebd85; border-color: rgba(46,189,133,.35); }
+.r1-chip.block { background: rgba(246,70,93,.13); color: #f6465d; border-color: rgba(246,70,93,.35); }
+.r1-chip.wait { background: rgba(232,163,61,.13); color: #e8a33d; border-color: rgba(232,163,61,.35); }
+.r1-chip.info { background: rgba(86,200,220,.10); color: #56c8dc; border-color: rgba(86,200,220,.30); }
+.r1-chip.mut { background: #141e2a; color: #8b9bab; border-color: #22303f; }
+.r1-chip.miss { background: transparent; color: #8b9bab; border: 1px dashed #3a4a5c; }
+.r1-seg { display: inline-flex; align-items: center; gap: 6px; }
+.r1-seg-k { color: #5d7185; font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+.r1-seg + .r1-seg { border-left: 1px solid #22303f; padding-left: 12px; margin-left: 4px; }
+.r1-brand { font-size: 17px; font-weight: 800; letter-spacing: 1px; color: #d6dee7; padding: 4px 2px 10px; }
+.r1-brand span { color: #5d7185; font-size: 11px; font-weight: 600; }
+.r1-side-note { color: #5d7185; font-size: 12px; line-height: 1.6; border-top: 1px solid #22303f; padding-top: 10px; margin-top: 14px; }
+[data-testid="stSidebar"] { background: #06090d; border-right: 1px solid #22303f; }
 .main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #e8ecf1; }
 .sub-title { font-size: 13px; color: #8a8f9c; margin-bottom: 16px; }
 /* 统一卡片：深色 */
@@ -758,6 +778,54 @@ for a in CFG["accounts"]:
 with st.expander("账户策略", expanded=False):
     st.markdown("".join(_rows), unsafe_allow_html=True)
 
+# ===== UI-R1 阶段C 基础：止损同源助手前置（顶栏 RISK 段与三页共用） =====
+def stop_ref_of(sym):
+    """母板止损参考（唯一口径）：无映射/无止损位时返回 None。"""
+    meta = WORKBOOK_MAP.get("symbols", {}).get(sym) or {}
+    return meta.get("stop_ref")
+
+
+def _stop_state(sym, last):
+    """止损状态（工作台/账户/验证三处同源）：返回 (state, stop_ref)，
+    state ∈ breach（现价<止损参考）/ near（距止损参考 ≤5%）/ ok /
+    none（无止损参考或无现价，不下结论）。"""
+    sr = stop_ref_of(sym)
+    if not sr or not last:
+        return "none", sr
+    if last < sr:
+        return "breach", sr
+    if (last - sr) / last <= 0.05:
+        return "near", sr
+    return "ok", sr
+
+
+def _stop_breaches(acct_id):
+    """破止损持仓清单（W-4：工作台/账户/验证三处同源）：按账户单独
+    计算，返回 [(symbol, qty, last, stop_ref, data_date)]；现价取
+    market_data 最新收盘并带数据日期，缺数据不下「无风险」结论。"""
+    out = []
+    try:
+        rows = q("""SELECT p.symbol, p.qty, m.close, t.md FROM positions p
+                    JOIN (SELECT symbol, MAX(date) md FROM market_data
+                          GROUP BY symbol) t ON p.symbol = t.symbol
+                    JOIN market_data m ON m.symbol = t.symbol AND m.date = t.md
+                    WHERE p.account = ? AND p.qty > 0""", (acct_id,))
+    except Exception:
+        return out
+    for _s, _qty, _last, _md in rows:
+        _stt, _sr = _stop_state(_s, _last)
+        if _stt == "breach":
+            out.append((_s, _qty, _last, _sr, _md))
+    return out
+
+
+def _r1_chip(kind, text):
+    """UI-R1 状态标签（文字+颜色双表达，六页共用）：
+    ok 正常/通过 · block 阻断/破止损 · wait 待人工/待核验 ·
+    info 信息/积累 · mut 观察 · miss 缺失/不可计算。"""
+    return '<span class="r1-chip %s">%s</span>' % (kind, text)
+
+
 # 阻断原因展示（2026-10-18起：有阻断时必须清晰显示）
 if blocked:
     # P3：改 markdown 自有类 blocked-banner 以便吸顶（见 CSS），
@@ -830,14 +898,50 @@ except Exception:
     _vertxt = "运行版本 未标记（实际加载版本未验证）"
 _bar_cls = "status-bar" + (" danger" if _hworst >= 2
                            else " warn" if _hworst == 1 else "")
+# UI-R1 阶段C 基础：顶栏三段摘要 MARKET | RISK | SYSTEM（与原型同构；
+# 数据与各页同源：环境=regime 母板真源、破止损=_stop_breaches、
+# 健康=engine.data_health、版本=运行时标识，不另造口径）
+try:
+    from engine import regime as _regime_bar
+    _env_bar = _regime_bar.load_market_env(db_path=DB)
+    _env_chip = _r1_chip({"attack": "ok", "cautious": "wait"}.get(
+        _env_bar.get("state"), "block"), _env_bar.get("label") or "环境未知")
+except Exception:
+    _env_chip = _r1_chip("wait", "环境未知")
+try:
+    _nbr_bar = sum(len(_stop_breaches(_a))
+                   for _a in ("sim_a", "sim_hk", "sim_crypto"))
+    _risk_seg = ('破止损 <b style="color:#f6465d;">%d</b>' % _nbr_bar
+                 if _nbr_bar else "破止损 0")
+except Exception:
+    _risk_seg = "破止损 未知"
 st.markdown(
-    '<div class="%s"><span class="sb-label">数据健康</span>%s'
+    '<div class="%s">'
+    '<span class="r1-seg"><span class="r1-seg-k">MARKET</span>%s</span>'
+    '<span class="r1-seg"><span class="r1-seg-k">RISK</span>%s</span>'
+    '<span class="r1-seg"><span class="r1-seg-k">SYSTEM</span>'
+    '<span class="sb-label">数据健康</span>%s</span>'
     '<span class="sb-ver">%s</span></div>'
-    % (_bar_cls, " ".join(_hbadges), _vertxt), unsafe_allow_html=True)
+    % (_bar_cls, _env_chip, _risk_seg, " ".join(_hbadges), _vertxt),
+    unsafe_allow_html=True)
 
-# ============ 导航（顶部横排；左侧栏已移除） ============
-tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "🏦 机构影子", "📝 交易", "💰 账户", "🛡 验证"],
-               horizontal=True, label_visibility="collapsed", key="main_nav")
+# ============ 导航（UI-R1：左侧固定编号导航，顺序与原型一致） ============
+# 选项值仍为原页签名（含 emoji），_goto 跳转与各页 elif 比较不受影响；
+# 编号仅经 format_func 显示。
+_R1_NAV = ["🏠 工作台", "📝 交易", "💰 账户", "🔍 选股", "🏦 机构影子", "🛡 验证"]
+_R1_NAV_LABEL = {"🏠 工作台": "01 工作台", "📝 交易": "02 交易",
+                 "💰 账户": "03 账户", "🔍 选股": "04 选股",
+                 "🏦 机构影子": "05 机构", "🛡 验证": "06 验证"}
+with st.sidebar:
+    st.markdown('<div class="r1-brand">8502 '
+                '<span>/ TRADING WORKSTATION</span></div>',
+                unsafe_allow_html=True)
+    tab = st.radio("板块", _R1_NAV,
+                   format_func=lambda _t: _R1_NAV_LABEL.get(_t, _t),
+                   label_visibility="collapsed", key="main_nav")
+    st.markdown('<div class="r1-side-note">模拟交易决策系统<br>'
+                '真实委托由用户在券商端人工执行并回填回执</div>',
+                unsafe_allow_html=True)
 
 # 控制（本地模式可用；云端只读时不渲染）
 if not IS_CLOUD:
@@ -892,10 +996,6 @@ SYMBOL_CN = {sym: (meta.get("name") or sym)
 SYMBOL_CN.setdefault("BTCUSDT", "比特币")
 
 
-def stop_ref_of(sym):
-    """母板止损参考（唯一口径）：无映射/无止损位时返回 None。"""
-    meta = WORKBOOK_MAP.get("symbols", {}).get(sym) or {}
-    return meta.get("stop_ref")
 def sym_name(code):
     """标的显示名：代码+中文名，如 '002446 盛路通信'"""
     return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
@@ -946,40 +1046,6 @@ def _gate_tags(gates):
     if gs and not tags:
         tags.append("闸门封顶")
     return tags
-
-
-def _stop_state(sym, last):
-    """止损状态（工作台/账户/验证三处同源）：返回 (state, stop_ref)，
-    state ∈ breach（现价<止损参考）/ near（距止损参考 ≤5%）/ ok /
-    none（无止损参考或无现价，不下结论）。"""
-    sr = stop_ref_of(sym)
-    if not sr or not last:
-        return "none", sr
-    if last < sr:
-        return "breach", sr
-    if (last - sr) / last <= 0.05:
-        return "near", sr
-    return "ok", sr
-
-
-def _stop_breaches(acct_id):
-    """破止损持仓清单（W-4：工作台/账户/验证三处同源）：按账户单独
-    计算，返回 [(symbol, qty, last, stop_ref, data_date)]；现价取
-    market_data 最新收盘并带数据日期，缺数据不下「无风险」结论。"""
-    out = []
-    try:
-        rows = q("""SELECT p.symbol, p.qty, m.close, t.md FROM positions p
-                    JOIN (SELECT symbol, MAX(date) md FROM market_data
-                          GROUP BY symbol) t ON p.symbol = t.symbol
-                    JOIN market_data m ON m.symbol = t.symbol AND m.date = t.md
-                    WHERE p.account = ? AND p.qty > 0""", (acct_id,))
-    except Exception:
-        return out
-    for _s, _qty, _last, _md in rows:
-        _stt, _sr = _stop_state(_s, _last)
-        if _stt == "breach":
-            out.append((_s, _qty, _last, _sr, _md))
-    return out
 
 
 def _detail_chart_html(sym, bars, sub_kind, price_lines, markers):

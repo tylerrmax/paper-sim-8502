@@ -327,8 +327,9 @@ st.set_page_config(page_title="独立交易终端", layout="wide", page_icon="�
 st.markdown("""
 <style>
 /* 全局：深色终端底 */
-.main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #1a1a2e; }
-@media (prefers-color-scheme: dark) { .main-title { color: #e8ecf1; } }
+/* 主题已由 .streamlit/config.toml 固定为深色（UI批A G-1），
+   标题色不再随浏览器 prefers-color-scheme 切换，避免深底深字。 */
+.main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #e8ecf1; }
 .sub-title { font-size: 13px; color: #8a8f9c; margin-bottom: 16px; }
 /* 统一卡片：深色 */
 .kpi-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
@@ -370,6 +371,15 @@ section[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { di
 .qs-close { background: rgba(24,144,255,.14); color: #1890ff; border: 1px solid rgba(24,144,255,.35); }
 .qs-stale { background: rgba(240,185,11,.14); color: #f0b90b; border: 1px solid rgba(240,185,11,.35); }
 .qs-unknown { background: rgba(138,143,156,.14); color: #8a8f9c; border: 1px solid rgba(138,143,156,.35); }
+.qs-bad { background: rgba(246,70,93,.16); color: #f6465d; border: 1px solid rgba(246,70,93,.45); }
+/* 状态条（UI批A G-3）：数据健康徽标 + 运行版本一行呈现 */
+.status-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+              background: #10141b; border: 1px solid #1e2532; border-radius: 8px;
+              padding: 8px 12px; margin-bottom: 12px; font-size: 12px; color: #e8ecf1; }
+.status-bar.warn { border-color: rgba(240,185,11,.55); }
+.status-bar.danger { border-color: rgba(246,70,93,.6); }
+.status-bar .sb-label { color: #8a8f9c; font-weight: 700; }
+.status-bar .sb-ver { margin-left: auto; color: #8a8f9c; }
 /* 验证状态徽标：达标 / 未达标 / 样本不足 / 数据异常 */
 .vs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
 .vs-pass { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
@@ -476,11 +486,33 @@ def vs_badge(state):
     return m.get(state, '<span class="vs vs-unknown">未知</span>')
 
 def _vs_state(value, target, higher_is_better=True, sample_n=None, sample_min=None):
-    """判定验证状态：先看样本是否足够，再看是否达标"""
+    """判定验证状态：样本状态优先，再看指标本身。
+
+    样本规则（2026-10-31 批A专项核定，分支表见 ui-audit 专项测试）：
+    - 调用方同时给出 sample_n/sample_min 才做样本检查（KPI 指标卡）；
+      只给其一（样本数量或阈值缺失）→ 数据异常，
+      不得把未知样本量伪造成样本不足或达标；
+    - 两者都不给 = 调用方显式声明样本检查不适用（仅样本卡本身，
+      其值即样本数，已由调用点的 rt>=sample_min 条件把关）；
+    - 样本数为负数或非整数 → 数据异常（计数损坏，不是样本不足）；
+    - 样本不足优先于指标缺失判定；样本充足而指标为 None
+      或 NaN → 数据异常。
+    """
+    if (sample_n is None) != (sample_min is None):
+        return "anomaly"
+    if sample_n is not None:
+        try:
+            _n_int = int(sample_n)
+        except (TypeError, ValueError, OverflowError):
+            return "anomaly"
+        if sample_n < 0 or _n_int != sample_n:
+            return "anomaly"
+        if sample_n < sample_min:
+            return "insufficient"
     if value is None:
         return "anomaly"
-    if sample_n is not None and sample_min is not None and sample_n < sample_min:
-        return "insufficient"
+    if isinstance(value, float) and value != value:  # NaN
+        return "anomaly"
     ok = (value >= target) if higher_is_better else (value <= target)
     return "pass" if ok else "fail"
 
@@ -612,8 +644,34 @@ def render_ticker():
                 f'<td style="padding:6px 8px;">待建单</td></tr>'
                 f'{rows}</table></div>')
 
-    st.markdown(_table(a_syms, "A股") + _table(hk_syms, "港股") + _table(crypto_syms, "加密"),
-                unsafe_allow_html=True)
+    # 紧凑模式（UI批A G-2）：默认只显示有待建单或持仓的标的；
+    # 完整行情保留在下方折叠入口，不得无入口截断。
+    # 持仓查询失败不得伪装成「没有持仓」（2026-10-31 批A专项）：
+    # 失败时显式标注关注列表数据不完整，仅按待建单筛选。
+    _held = set()
+    _held_ok = True
+    try:
+        _held = {r[0] for r in q("SELECT symbol FROM positions WHERE qty>0")}
+    except Exception:
+        _held_ok = False
+    _focus = set(pending) | _held
+    if not _held_ok:
+        st.markdown(
+            '<div class="alert-banner warn">⚠ 持仓行情查询失败：'
+            '关注列表数据不完整（仅按待建单筛选，持仓标的可能未显示），'
+            '完整行情见下方折叠。</div>', unsafe_allow_html=True)
+    _total = len(a_syms) + len(hk_syms) + len(crypto_syms)
+    if _focus:
+        st.markdown(
+            _table([s for s in a_syms if s in _focus], "A股 · 关注")
+            + _table([s for s in hk_syms if s in _focus], "港股 · 关注")
+            + _table([s for s in crypto_syms if s in _focus], "加密 · 关注"),
+            unsafe_allow_html=True)
+    else:
+        st.caption("当前无待建单或持仓标的，完整行情见下方折叠。")
+    with st.expander(f"📊 全部行情（共 {_total} 只）", expanded=False):
+        st.markdown(_table(a_syms, "A股") + _table(hk_syms, "港股")
+                    + _table(crypto_syms, "加密"), unsafe_allow_html=True)
 
 
 # ============ 顶栏：系统状态 + 策略 ============
@@ -665,29 +723,36 @@ with st.expander("账户策略", expanded=False):
 if blocked:
     st.error("⛔ 系统阻断：" + "；".join(block_reasons[:5]))
 
-# 数据健康四态指示（安全补充③，2026-10-30）：由各市场最新 bar 日期
+# 数据健康四态（安全补充③，2026-10-30）：由各市场最新 bar 日期
 # 与参照日期的真实差距判定（engine.data_health），非正常态带数据
-# 时间与失效标注；后端冻结由 pipeline/regime 强制，本行只是同步显示。
+# 时间与失效标注；后端冻结由 pipeline/regime 强制，本条只是同步显示。
+# UI批A G-3/W-2：与运行版本合并为状态条，徽标呈现四态，
+# 非正常态整条警示色，不得弱化为与正常态同级的小字 caption。
+_hbadges = []
+_hworst = 0  # 0 正常 / 1 延迟 / 2 断连或异常
 try:
     from engine import data_health as _dh
     _ref_stock = q("SELECT MAX(date) FROM market_data"
                    " WHERE market IN ('a','hk')")[0][0]
     _today = datetime.now().strftime("%Y-%m-%d")
-    _hparts = []
+    _SEV = {"normal": 0, "delayed": 1, "disconnected": 2, "anomalous": 2}
+    _CLS = {"normal": "qs-live", "delayed": "qs-stale",
+            "disconnected": "qs-bad", "anomalous": "qs-bad"}
     for _mkt, _label in (("a", "A股"), ("hk", "港股"), ("crypto", "加密")):
         _last = q("SELECT MAX(date) FROM market_data WHERE market=?",
                   (_mkt,))[0][0]
         _ref = _today if _mkt == "crypto" else _ref_stock
         _state, _reason = _dh.classify(last_bar_date=_last, ref_date=_ref)
-        _icon = {"normal": "🟢", "delayed": "🟡",
-                 "disconnected": "🔴", "anomalous": "🔴"}[_state]
-        _txt = "%s %s %s" % (_icon, _label, _dh.LABELS[_state])
+        _hworst = max(_hworst, _SEV.get(_state, 2))
+        _txt = "%s %s" % (_label, _dh.LABELS[_state])
         if _state != _dh.NORMAL:
-            _txt += "（%s）" % _dh.label_stale(_state, _last)
-        _hparts.append(_txt)
-    st.caption("数据健康：" + " · ".join(_hparts))
+            _txt += " · " + _dh.label_stale(_state, _last)
+        _hbadges.append('<span class="qs %s">%s</span>'
+                        % (_CLS.get(_state, "qs-unknown"), _txt))
 except Exception:
-    st.caption("数据健康：未知（判定失败，不影响后端冻结口径）")
+    _hworst = 2
+    _hbadges.append('<span class="qs qs-unknown">数据健康 未知'
+                    '（判定失败，不影响后端冻结口径）</span>')
 
 # 运行版本标识（2026-10-31 专项整改 P2-04，只读展示）：优先读
 # 应用目录的 git 检出 HEAD（云端克隆检出的即实际加载的代码），
@@ -716,12 +781,16 @@ def _runtime_version():
 
 try:
     _ver, _ver_src = _runtime_version()
-    if _ver:
-        st.caption("运行版本：%s（来源：%s）" % (_ver[:12], _ver_src))
-    else:
-        st.caption("运行版本：未标记（实际加载版本未验证）")
+    _vertxt = ("运行版本 %s（来源：%s）" % (_ver[:12], _ver_src)) if _ver \
+        else "运行版本 未标记（实际加载版本未验证）"
 except Exception:
-    st.caption("运行版本：未标记（实际加载版本未验证）")
+    _vertxt = "运行版本 未标记（实际加载版本未验证）"
+_bar_cls = "status-bar" + (" danger" if _hworst >= 2
+                           else " warn" if _hworst == 1 else "")
+st.markdown(
+    '<div class="%s"><span class="sb-label">数据健康</span>%s'
+    '<span class="sb-ver">%s</span></div>'
+    % (_bar_cls, " ".join(_hbadges), _vertxt), unsafe_allow_html=True)
 
 # ============ 导航（顶部横排；左侧栏已移除） ============
 tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "🏦 机构专用席位连续净买监控", "📝 交易", "💰 账户", "🛡 验证"],
@@ -839,6 +908,27 @@ if tab == "🏠 工作台":
     except Exception as _e:
         st.caption(f"市场环境暂不可用：{_e}")
 
+    # ---- 风险警报区（UI批A W-1：前移至市场环境之后、核心数据之前） ----
+    alerts = []
+    if status != "running":
+        alerts.append(("warn", "⏸ 系统已暂停：新信号不会成交。已挂在券商的条件单请在券商端自行检查/撤销。"))
+    # 破止损持仓检查（P1-5：唯一口径 = 母板止损参考 stop_ref；
+    # 此前用成本-5%口径与母板冲突，同标的在不同页面结论相反）
+    try:
+        _bs = q("""SELECT p.symbol, p.qty, p.avg_cost, m.close FROM positions p
+                   JOIN (SELECT symbol, MAX(date) md FROM market_data GROUP BY symbol) t
+                   ON p.symbol=t.symbol
+                   JOIN market_data m ON m.symbol=t.symbol AND m.date=t.md
+                   WHERE p.account=? AND p.qty>0""", (acct,))
+        for _s, _q, _avg, _last in _bs:
+            _sr = stop_ref_of(_s)
+            if _sr and _last and _last < _sr:
+                alerts.append(("danger", f"🔴 破止损仍持仓：{_s} 现价{_last:.2f} < 母板止损参考 {_sr:.2f}"))
+    except Exception:
+        pass
+    for _lvl, _msg in alerts:
+        st.markdown(f'<div class="alert-banner {_lvl}">{_msg}</div>', unsafe_allow_html=True)
+
     # ---- 核心数据（验证终端优势沿用）：总资产/当日盈亏/持仓市值/可用资金 ----
     # 交易所标准：红涨绿跌，数字 vibrant
     st.markdown("**核心数据**")
@@ -929,38 +1019,9 @@ if tab == "🏠 工作台":
             padding:12px 16px;margin-bottom:16px;">✅ 今日无待办</div>''',
             unsafe_allow_html=True)
 
-    # ---- 1. 风险警报区 ----
-    alerts = []
-    if status != "running":
-        alerts.append(("warn", "⏸ 系统已暂停：新信号不会成交。已挂在券商的条件单请在券商端自行检查/撤销。"))
-    # 破止损持仓检查（P1-5：唯一口径 = 母板止损参考 stop_ref；
-    # 此前用成本-5%口径与母板冲突，同标的在不同页面结论相反）
-    try:
-        _bs = q("""SELECT p.symbol, p.qty, p.avg_cost, m.close FROM positions p
-                   JOIN (SELECT symbol, MAX(date) md FROM market_data GROUP BY symbol) t
-                   ON p.symbol=t.symbol
-                   JOIN market_data m ON m.symbol=t.symbol AND m.date=t.md
-                   WHERE p.account=? AND p.qty>0""", (acct,))
-        for _s, _q, _avg, _last in _bs:
-            _sr = stop_ref_of(_s)
-            if _sr and _last and _last < _sr:
-                alerts.append(("danger", f"🔴 破止损仍持仓：{_s} 现价{_last:.2f} < 母板止损参考 {_sr:.2f}"))
-    except Exception:
-        pass
-    for _lvl, _msg in alerts:
-        st.markdown(f'<div class="alert-banner {_lvl}">{_msg}</div>', unsafe_allow_html=True)
-
-    # ---- 2. 系统状态 + 行情新鲜度（四态） ----
-    latest_a = q("SELECT MAX(date) FROM market_data WHERE symbol NOT LIKE 'HK%' AND symbol NOT LIKE '%USDT'")
-    latest_hk = q("SELECT MAX(date) FROM market_data WHERE symbol LIKE 'HK%'")
-    latest_c = q("SELECT MAX(date) FROM market_data WHERE symbol LIKE '%USDT'")
-    def _fresh_card(label, rows):
-        d = rows[0][0] if rows and rows[0][0] else ""
-        st_, ts = quote_state("", "", d)
-        badge = QS_BADGE[st_]
-        val = ts if ts else "无数据"
-        return (f'<div class="status-card"><div class="sc-label">{label} {badge}</div>'
-                f'<div class="sc-value nodata" style="font-size:18px">{val}</div></div>')
+    # 风险警报区已前移至市场环境卡之后（UI批A W-1），此处不再重复。
+    # 原「系统状态+行情新鲜度」_fresh_card 定义从未被调用（死代码），
+    # 其四态判定已由页眉状态条（G-3）统一呈现，UI批A W-2 一并删除。
     # 互联互通资金（北向/南向）：成交额 + 北向持股市值，净买额 2024-08 起停止披露
     _ns = _fetch_ns_flow()
     if _ns:
@@ -1668,10 +1729,20 @@ elif tab == "🛡 验证":
         pos_ratio = pv / nav if nav else 0
         c1, c2, c3 = st.columns(3)
         with c1:
-            ok = pos_ratio <= 0.7
+            # V-2（2026-10-31 批准实施）：仓位上限与执行端口径同源——
+            # 读 strategy.yaml risk 段同一组键，账户映射与
+            # engine.order_validate._position_cap 逐字一致
+            # （sim_a/sim_hk 股票 70%，sim_crypto 加密 100%），
+            # 不再写死 70% 对加密账户误报超限。
+            _risk = CFG.get("risk") or {}
+            if acct in ("sim_a", "sim_hk"):
+                _cap_pct = float(_risk.get("max_stock_position_pct", 70))
+            else:
+                _cap_pct = float(_risk.get("max_crypto_position_pct", 100))
+            ok = pos_ratio <= _cap_pct / 100.0
             st.markdown(f'<div class="kpi-card"><div class="kpi-label">仓位 {"✅" if ok else "⚠"}</div>'
                         f'<div class="kpi-value {"up" if ok else "down"}">{pos_ratio*100:.1f}%</div>'
-                        f'<div class="kpi-label">上限 70%</div></div>', unsafe_allow_html=True)
+                        f'<div class="kpi-label">上限 {_cap_pct:g}%</div></div>', unsafe_allow_html=True)
         with c2:
             pos_r = q("SELECT symbol,market_value FROM positions WHERE account=? AND qty>0 ORDER BY market_value DESC", (acct,))
             conc = (pos_r[0][1] / nav) if pos_r and nav else 0

@@ -2367,6 +2367,22 @@ elif tab == "🏦 机构影子":
                          % (_latest_ok or "无",
                             _last["date"],
                             "成功" if _last["state"] != "failed" else "失败"))
+                # UI-R1 阶段C：数据可用性条（可信日/抓取时间/样本段）
+                _lk = None
+                if _latest_ok:
+                    _lk = _con.execute(
+                        "SELECT fetched_at, state FROM inst_lhb_fetch_days"
+                        " WHERE date=?", (_latest_ok,)).fetchone()
+                _seg_i = ("前向积累" if (_latest_ok and _latest_ok >= "2026-10-30")
+                          else ("历史回填段" if _latest_ok else "—"))
+                st.markdown(
+                    f'<div class="kpi-card"><div class="kpi-label">数据可用性</div>'
+                    f'<div style="font-size:13.5px;">最近可信交易日 '
+                    f'<b class="num">{_latest_ok or "无"}</b> · 抓取时间 '
+                    f'{(_lk[0] if _lk else "—")} · 数据状态 '
+                    f'{("正常" if _lk and _lk[1] != "failed" else "异常")} · '
+                    f'样本段：{_seg_i}（回填段与前向段分开登记，不混算）</div></div>',
+                    unsafe_allow_html=True)
                 st.markdown("**抓取状态（近 10 个抓取日）**")
                 st.table([{
                     "日期": s["date"],

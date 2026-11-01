@@ -93,12 +93,18 @@ def _fetch_tencent(code, start):
            "?param=%s,day,%s,2100-01-01,640,%s" % (tx, start.isoformat(), fq))
     d = _get_json(url)
     days = d["data"][tx].get(key) or []
+    star = str(code).strip().upper().startswith("688")
     out = []
     for x in days:
         # 腾讯格式: [日期, 开, 收, 高, 低, 量]
+        # 量单位（2026-11-01 双源实测修正，与 market_data 适配器同口径）：
+        # 主板/创业板为手 → ×100 换算为股；科创板原始即股；港股原始即股。
         dt = datetime.strptime(x[0], "%Y-%m-%d").date()
         if dt >= start:
-            out.append((dt, float(x[1]), float(x[3]), float(x[4]), float(x[2]), float(x[5])))
+            vol = float(x[5])
+            if market == "a" and not star:
+                vol *= 100
+            out.append((dt, float(x[1]), float(x[3]), float(x[4]), float(x[2]), vol))
     return out
 
 
@@ -118,6 +124,7 @@ def _fetch_sina_a(code, start):
     for x in d:
         dt = datetime.strptime(x["day"], "%Y-%m-%d").date()
         if dt >= start:
+            # 新浪量原始值即为股，不做换算（2026-11-01 实测修正）
             out.append((dt, float(x["open"]), float(x["high"]),
                         float(x["low"]), float(x["close"]), float(x["volume"])))
     return out

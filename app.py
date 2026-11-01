@@ -1116,10 +1116,58 @@ def _detail_chart_html(sym, bars, sub_kind, price_lines, markers):
     j_c = _json.dumps([{"time": d, "open": o, "high": h, "low": l,
                         "close": c} for d, o, h, l, c, v in bars])
     j_ma20, j_ma60 = _json.dumps(_ma(20)), _json.dumps(_ma(60))
-    j_pl, j_mk, j_sub = (_json.dumps(price_lines), _json.dumps(markers),
+    # D-2：计划价位（触发/目标/止损）超出 K 线数据范围时不进图——LWC
+    # 不为计划线扩展价格轴（实测 600150 目标 52.95 坐标在图外被裁），
+    # 改走右侧独立价格标尺；图内价位仍用图内线，二者不重复。成本线
+    # 非计划价位，维持 D-1 现状。分类以数据范围 [最低, 最高] 为界，
+    # 不用 LWC 边距扩展区，避免边缘价位似显非显。
+    _lo = min(b[3] for b in bars)
+    _hi = max(b[2] for b in bars)
+    _lastc = closes[-1] if closes else None
+    _PLAN_KINDS = {"trigger": "触发", "target": "目标", "stop": "止损"}
+    _chart_lines, _edge = [], []
+    for _p in price_lines:
+        if (_p.get("kind") in _PLAN_KINDS and _lastc
+                and not (_lo <= _p["price"] <= _hi)):
+            _edge.append(_p)
+        else:
+            _chart_lines.append(_p)
+    _rail = ""
+    if _edge:
+        def _ent(p, arrow):
+            _pct = (p["price"] / _lastc - 1) * 100
+            return (f'<div style="margin-bottom:9px;">'
+                    f'<div style="color:{p["color"]};font-size:11px;">'
+                    f'{arrow} {_PLAN_KINDS[p["kind"]]}</div>'
+                    f'<div style="color:#e6e9ee;font-size:15px;'
+                    f'font-weight:700;">{_px_fmt(sym, p["price"])}</div>'
+                    f'<div style="color:#8a8f9c;font-size:11px;">'
+                    f'距现价 {_pct:+.1f}%</div></div>')
+
+        _above = sorted((p for p in _edge if p["price"] > _hi),
+                        key=lambda p: -p["price"])
+        _below = sorted((p for p in _edge if p["price"] < _lo),
+                        key=lambda p: -p["price"])
+        _rail = (
+            '<div style="width:102px;flex:none;height:570px;'
+            'border-left:1px solid #1e2532;padding:2px 0 0 10px;'
+            'display:flex;flex-direction:column;">'
+            '<div style="color:#8a8f9c;font-size:11px;margin-bottom:8px;">'
+            '图外计划价<br>'
+            f'<span style="font-size:10px;">主图 {_px_fmt(sym, _lo)}'
+            f'–{_px_fmt(sym, _hi)}</span></div>'
+            + "".join(_ent(p, "▲") for p in _above)
+            + '<div style="flex:1;"></div>'
+            + "".join(_ent(p, "▼") for p in _below)
+            + '</div>')
+    j_pl, j_mk, j_sub = (_json.dumps(_chart_lines), _json.dumps(markers),
                          _json.dumps(payload))
-    return f"""<div id="dm_{sym}" style="height:440px;"></div>
+    return f"""<div style="display:flex;">
+<div style="flex:1;min-width:0;">
+<div id="dm_{sym}" style="height:440px;"></div>
 <div id="ds_{sym}" style="height:130px;"></div>
+</div>{_rail}
+</div>
 <script>{_LWC_JS}</script>
 <script>
 (function() {{
@@ -1275,18 +1323,18 @@ def _render_acct_detail(acct, sym):
         _pls = []
         if _avg:
             _pls.append({"price": round(_avg, 4), "color": "#ff9800",
-                         "style": 2,
+                         "style": 2, "kind": "cost",
                          "title": f"成本 {_px_fmt(sym, _avg)}"})
         if _sr:
             _pls.append({"price": round(_sr, 4), "color": "#f6465d",
-                         "style": 2,
+                         "style": 2, "kind": "stop",
                          "title": f"止损参考 {_px_fmt(sym, _sr)}"})
         if _plan.get("plan_trigger") and _plan.get("plan_target"):
             _pls.append({"price": round(_plan["plan_trigger"], 4),
-                         "color": "#4a90d9", "style": 1,
+                         "color": "#4a90d9", "style": 1, "kind": "trigger",
                          "title": f"触发 {_px_fmt(sym, _plan['plan_trigger'])}"})
             _pls.append({"price": round(_plan["plan_target"], 4),
-                         "color": "#2ebd85", "style": 1,
+                         "color": "#2ebd85", "style": 1, "kind": "target",
                          "title": f"目标 {_px_fmt(sym, _plan['plan_target'])}"})
         _fm = q("SELECT date,side,qty FROM fills WHERE account=?"
                 " AND symbol=? ORDER BY date", (acct, sym))

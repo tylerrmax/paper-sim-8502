@@ -2121,17 +2121,38 @@ elif tab == "🔍 选股":
     # ---- 市场面：涨跌分布 ----
     st.subheader("📊 涨跌分布")
     adv, dec, flat = 0, 0, 0
+    _up_list, _dn_list = [], []
     for sym in SYMBOL_CN:
         rows = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 2", (sym,))
         if len(rows) == 2 and rows[0][0] and rows[1][0]:
             chg = (rows[0][0] - rows[1][0]) / rows[1][0]
-            if chg > 0.001: adv += 1
-            elif chg < -0.001: dec += 1
+            if chg > 0.001:
+                adv += 1
+                _up_list.append((sym, chg * 100))
+            elif chg < -0.001:
+                dec += 1
+                _dn_list.append((sym, chg * 100))
             else: flat += 1
     c1, c2, c3 = st.columns(3)
     c1.metric("上涨", adv)
     c2.metric("下跌", dec)
     c3.metric("持平", flat)
+    # A1（observe-ux 批）：涨跌名单下钻——与上方计数同一循环、同一行情日，
+    # 行数与 metric 严格一致，按涨跌幅排序。
+    def _bd_rows(_lst):
+        return "".join(
+            f'<div style="font-size:13px;padding:3px 2px;border-bottom:1px solid #1e2532;">'
+            f'<b>{_s}</b> {SYMBOL_CN.get(_s, "")}'
+            f'<span class="num" style="float:right;color:{"#f6465d" if _p >= 0 else "#2ebd85"};">'
+            f'{_p:+.2f}%</span></div>' for _s, _p in _lst)
+    if _up_list:
+        _up_list.sort(key=lambda x: -x[1])
+        with st.expander(f"上涨 {adv} 只 · 名单（按涨幅排序）", expanded=False):
+            st.markdown(_bd_rows(_up_list), unsafe_allow_html=True)
+    if _dn_list:
+        _dn_list.sort(key=lambda x: x[1])
+        with st.expander(f"下跌 {dec} 只 · 名单（按跌幅排序）", expanded=False):
+            st.markdown(_bd_rows(_dn_list), unsafe_allow_html=True)
     # 模块E裁决（2026-10-26 用户拍板删除）：原「📰 持仓资讯」外链目录
     # （已被证据制板块新闻面覆盖）已移除，不得回流。
     # ---- 技术形态：每个标的指标面板 ----
@@ -2140,10 +2161,13 @@ elif tab == "🔍 选股":
     st.subheader("📐 技术形态")
     import time as _time
     _ts = int(_time.time())
-    for sym in sorted(SYMBOL_CN.keys()):
-        bars = q("SELECT date,open,high,low,close,volume FROM market_data WHERE symbol=? ORDER BY date", (sym,))
+    # A2（observe-ux 批）：先同口径算齐全部条目（指标算法与原逻辑逐行
+    # 不变），再按交易相关度编排展示：持仓 → 待建/待审 → 评分TOP8 优先，
+    # 其余默认折叠（Streamlit expander 不可嵌套，用开关折叠）。
+    def _tf_entry(_sym):
+        bars = q("SELECT date,open,high,low,close,volume FROM market_data WHERE symbol=? ORDER BY date", (_sym,))
         if len(bars) < 30:
-            continue
+            return None
         closes = [r[4] for r in bars]
         highs = [r[2] for r in bars]
         lows = [r[3] for r in bars]
@@ -2166,11 +2190,48 @@ elif tab == "🔍 选股":
         elif align < -0.5: tags.append("均线空头")
         if last_c and upper[-1] and last_c > upper[-1]: tags.append("破上轨")
         if last_c and lower[-1] and last_c < lower[-1]: tags.append("破下轨")
-        with st.expander(f"{sym_name(sym)} @ {last_c:.2f} | {' '.join(tags)}", expanded=False):
+        return {"sym": _sym, "bars": bars, "last_c": last_c, "tags": tags}
+    _tf_all = [e for e in (_tf_entry(s) for s in sorted(SYMBOL_CN.keys())) if e]
+    try:
+        _tf_held = {r[0] for r in q("SELECT symbol FROM positions WHERE qty>0")}
+    except Exception:
+        _tf_held = set()
+    try:
+        _tf_pend = {r[0] for r in q("SELECT symbol FROM signals WHERE status='待执行'")}
+    except Exception:
+        _tf_pend = set()
+    _tf_top = []
+    try:
+        import json as _json_tf
+        _sr_tf = q("SELECT results_json FROM screen_runs ORDER BY asof DESC, id DESC LIMIT 1")
+        if _sr_tf:
+            _tf_top = [x.get("symbol") for x in sorted(
+                _json_tf.loads(_sr_tf[0][0]),
+                key=lambda x: -(x.get("total") or 0))[:8]]
+    except Exception:
+        _tf_top = []
+    _tf_topset = set(_tf_top)
+    _tf_pri = ([e for e in _tf_all if e["sym"] in _tf_held]
+               + [e for e in _tf_all if e["sym"] in _tf_pend
+                  and e["sym"] not in _tf_held]
+               + [e for e in _tf_all if e["sym"] in _tf_topset
+                  and e["sym"] not in _tf_held and e["sym"] not in _tf_pend])
+    _tf_pri_syms = {e["sym"] for e in _tf_pri}
+    _tf_rest = [e for e in _tf_all if e["sym"] not in _tf_pri_syms]
+    def _tf_render(_e):
+        with st.expander(f"{sym_name(_e['sym'])} @ {_e['last_c']:.2f} | {' '.join(_e['tags'])}", expanded=False):
             # 专业K线（Lightweight Charts，多均线+成交量）
             from engine.tv_charts import kline_html
-            html = kline_html(sym, bars, height=380)
+            html = kline_html(_e["sym"], _e["bars"], height=380)
             st.components.v1.html(html, height=400, scrolling=False)
+    st.caption("已按持仓 / 待建待审 / 评分TOP8 优先排序；其余默认折叠。")
+    for _e in _tf_pri:
+        _tf_render(_e)
+    if _tf_rest:
+        if st.checkbox(f"更多形态（其余 {len(_tf_rest)} 只）", value=False,
+                       key="tf_more"):
+            for _e in _tf_rest:
+                _tf_render(_e)
 
 elif tab == "📝 交易":
     st.markdown('<div class="section-head">📝 交易执行</div>', unsafe_allow_html=True)
@@ -2664,6 +2725,20 @@ elif tab == "🏦 机构影子":
                     f'{("正常" if _lk and _lk[1] != "failed" else "异常")} · '
                     f'样本段：{_seg_i}（回填段与前向段分开登记，不混算）</div></div>',
                     unsafe_allow_html=True)
+                # A3（observe-ux 批）：今日数字摘要——与下方影子榜同一
+                # 查询（shadow_board min_net_buy_days=2），不另算口径。
+                _board = (_inst.shadow_board(_con, min_net_buy_days=2)
+                          if _latest_ok else [])
+                _n_cert = sum(1 for b in _board if b["streak_certain"])
+                _n_uncert = len(_board) - _n_cert
+                st.markdown(
+                    f'<div class="kpi-card"><div class="kpi-label">今日摘要</div>'
+                    f'<div style="font-size:13.5px;">连续净买 ≥2 交易日且天数确定 '
+                    f'<b class="num">{_n_cert}</b> 只'
+                    + (f'（另 {_n_uncert} 只天数不确定）' if _n_uncert else '')
+                    + f' · 最近成功抓取日 <b class="num">'
+                      f'{_latest_ok or "无"}</b></div></div>',
+                    unsafe_allow_html=True)
                 st.markdown("**抓取状态（近 10 个抓取日）**")
                 st.table([{
                     "日期": s["date"],
@@ -2673,7 +2748,6 @@ elif tab == "🏦 机构影子":
                     "失败原因": s["reason"] if s["state"] == "failed" else "—",
                 } for s in _status])
                 if _latest_ok:
-                    _board = _inst.shadow_board(_con, min_net_buy_days=2)
                     st.markdown("**影子榜（%s · 当日净买为正且连续净买 ≥2 交易日）**"
                                 % _latest_ok)
                     if _board:

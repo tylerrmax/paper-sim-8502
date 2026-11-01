@@ -1116,20 +1116,28 @@ def _detail_chart_html(sym, bars, sub_kind, price_lines, markers):
     j_c = _json.dumps([{"time": d, "open": o, "high": h, "low": l,
                         "close": c} for d, o, h, l, c, v in bars])
     j_ma20, j_ma60 = _json.dumps(_ma(20)), _json.dumps(_ma(60))
-    # D-2：计划价位（触发/目标/止损）超出 K 线数据范围时不进图——LWC
+    # D-2：计划价位（触发/目标）超出 K 线数据范围时不进图——LWC
     # 不为计划线扩展价格轴（实测 600150 目标 52.95 坐标在图外被裁），
-    # 改走右侧独立价格标尺；图内价位仍用图内线，二者不重复。其中
-    # kind=stop 仅由调用方在计划有效且 plan_stop 与母板止损参考同值
-    # 时桥接标记（计划自带止损价）；kind=mbstop 的母板止损参考线、
-    # kind=cost 的成本线均非计划价位，不参与分类，维持 D-1 现状。
-    # 分类以数据范围 [最低, 最高] 为界，不用 LWC 边距扩展区。
+    # 改走右侧独立价格标尺；图内价位仍用图内线，二者不重复。计划
+    # 止损（plan_stop）与母板止损参考同源同值，但系统无显式计划
+    # 有效标记，止损参考线（kind=mbstop）不桥接为计划价位（二审
+    # 定版），与成本线同维持 D-1 现状。分类以数据范围为界。
+    # 数值防错（二审）：现价与计划价位须为有限正数才参与分类与
+    # 百分比计算；异常值（NaN/inf/≤0/None）不进标尺、不生成百分比，
+    # 回落图内线（与 D-1 行为一致），不改原始数据。
+    import math as _math
+
+    def _ok_num(v):
+        return (isinstance(v, (int, float)) and _math.isfinite(v) and v > 0)
+
     _lo = min(b[3] for b in bars)
     _hi = max(b[2] for b in bars)
     _lastc = closes[-1] if closes else None
-    _PLAN_KINDS = {"trigger": "触发", "target": "目标", "stop": "止损"}
+    _PLAN_KINDS = {"trigger": "触发", "target": "目标"}
     _chart_lines, _edge = [], []
     for _p in price_lines:
-        if (_p.get("kind") in _PLAN_KINDS and _lastc
+        if (_p.get("kind") in _PLAN_KINDS and _ok_num(_lastc)
+                and _ok_num(_p.get("price"))
                 and not (_lo <= _p["price"] <= _hi)):
             _edge.append(_p)
         else:
@@ -1334,21 +1342,16 @@ def _render_acct_detail(acct, sym):
                          "style": 2, "kind": "cost",
                          "title": f"成本 {_px_fmt(sym, _avg)}"})
         if _sr:
-            # 母板止损参考线（D-1）：来源 workbook_map.stop_ref，非计划
-            # 价位本身，kind=mbstop 不参与 D-2 分类；仅当计划有效且其
-            # plan_stop 与本线同值时，经下方桥接才按计划止损分类。
+            # 母板止损参考线（D-1）：来源 workbook_map.stop_ref，kind=
+            # mbstop，不参与 D-2 计划价位分类（二审定版，不桥接）。
             _pls.append({"price": round(_sr, 4), "color": "#f6465d",
                          "style": 2, "kind": "mbstop",
                          "title": f"止损参考 {_px_fmt(sym, _sr)}"})
         if _plan.get("plan_trigger") and _plan.get("plan_target"):
-            # 计划桥接（D-2 初审修正）：plan_stop 是计划自带的止损价
-            # （screen._trade_plan：止损=母板 stop_ref，与 _sr 同源同值）；
-            # 计划有效且同值时，把止损参考线标记为计划止损参与分类。
-            if _plan.get("plan_stop") is not None:
-                for _p in _pls:
-                    if (_p.get("kind") == "mbstop"
-                            and _p["price"] == round(_plan["plan_stop"], 4)):
-                        _p["kind"] = "stop"
+            # 注（D-2 二审）：plan_stop 与母板 stop_ref 同源同值仅证明
+            # 数值一致；系统无显式「计划有效」标记（仅有字段完备性门，
+            # 见 screen._trade_plan/_plan_note 与本处 D-1 门），故止损
+            # 参考线不桥接为计划止损，维持 mbstop 的 D-1 行为。
             _pls.append({"price": round(_plan["plan_trigger"], 4),
                          "color": "#4a90d9", "style": 1, "kind": "trigger",
                          "title": f"触发 {_px_fmt(sym, _plan['plan_trigger'])}"})

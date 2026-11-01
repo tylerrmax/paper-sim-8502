@@ -1666,9 +1666,8 @@ elif tab == "🔍 选股":
     # 第二个决策入口，违反唯一入口原则。本页只呈现每日自动筛选结果：
     # 顶部市场环境状态（模块A三态+对账）→ 候选名单与全池结果。
     from engine.screen import RULE_VERSION as _SCREEN_RV
-    st.caption("自动筛选 · 运行时点（asof）：%s · 规则版本 %s · 结果与 "
-               "screen_runs 落库一致（页面不提供手动筛选入口）"
-               % (datetime.now().strftime("%Y-%m-%d"), _SCREEN_RV))
+    st.caption("自动筛选 · 规则 %s · 数据 = 夜跑落库（screen_runs）"
+               % (_SCREEN_RV,))
     # 环境闸只说一次（§5.1）：页首一句结论（状态 · B31 · 指数 vs MA20 ·
     # 指数日）；TOP 表标注只用短标签，下方各区不再重复长文。
     try:
@@ -1714,7 +1713,7 @@ elif tab == "🔍 选股":
                 f'<div class="kpi-card"><div class="kpi-label">选股摘要</div>'
                 f'<div style="font-size:13.5px;">评分覆盖 <span class="num">{len(_sres)}</span> 只（母板观察池全集） · '
                 f'{_gdist} · 数据 asof <span class="num">{_srow[0][0]}</span><br>'
-                f'<span style="color:#8b9bab;font-size:12px;">本页只呈现每日自动筛选结果，不提供手动筛选或下单入口；候选是否可买由环境闸与风控决定。</span></div></div>',
+                f'<span style="color:#8b9bab;font-size:12px;">无手动筛选/下单入口；可否买看环境闸与风控。</span></div></div>',
                 unsafe_allow_html=True)
     except Exception:
         pass
@@ -1724,8 +1723,7 @@ elif tab == "🔍 选股":
     st.subheader("🏆 TOP标的榜")
     _tb_asof, _tb_rv, _tb_rows = _topboard_data(DB)
     if _tb_rows:
-        st.caption(f"最近一期落库评分（asof {_tb_asof} · {_tb_rv}）按总分 "
-                   "TOP8；验证列 = screen_perf 样本外前向收益（S/A 样本）")
+        st.caption("按总分 TOP8 · 验证列 = 样本外前向收益（screen_perf）")
         _tb_table = []
         _tb_detail = []
         for _i, r in enumerate(_tb_rows, 1):
@@ -2044,7 +2042,7 @@ elif tab == "📝 交易":
         failed = [v for v in validated if not v[4]]
         if failed:
             st.warning(f"⛔ {len(failed)} 条信号校验未通过，已拦截（不生成订单指引）")
-            st.caption("校验不通过无法建单。不再处理这条就点「跳过/隔离」：跳过后不再计入待办，模拟盘也不会成交。")
+            st.caption("校验未通过，不生成订单指引；「跳过/隔离」后不再计入待办。")
             for d, s, sd, px, ok, errs, warns in failed:
                 # 无效/过期标签（§3.1）：无持仓 SELL 与过期信号一眼可辨，
                 # 避免被反复当成可建单；拦截原因一行说完（首因+项数）。
@@ -2368,10 +2366,9 @@ elif tab == "💰 账户":
 elif tab == "🏦 机构影子":
     st.markdown('<div class="section-head">🏦 机构专用席位连续净买监控（影子 · 只读）</div>',
                 unsafe_allow_html=True)
-    st.caption("口径：龙虎榜「机构专用」席位——匿名聚合席位，非机构家数；"
-               "机构专用席位净买不等于具名机构真实建仓。本页仅作影子监控与"
-               "盘后评估，不生成信号、不创建交易意图、不改变策略参数。"
-               "数据源：东方财富龙虎榜公开数据（夜间抓取）。")
+    st.caption("口径：龙虎榜「机构专用」匿名聚合席位，非机构家数；"
+               "席位净买 ≠ 具名机构建仓。仅影子监控：不生成信号、"
+               "不创建交易意图、不改变策略参数。数据源：东财龙虎榜（夜间抓取）。")
     try:
         from engine import inst_lhb as _inst
         _con = sqlite3.connect(DB)
@@ -2424,9 +2421,7 @@ elif tab == "🏦 机构影子":
                             else "⚠ 不确定（序列含未登记日/抓取失败日）",
                         } for b in _board])
                         if any(not b["streak_certain"] for b in _board):
-                            st.caption("⚠ 不确定：连续天数序列含未登记交易日或"
-                                       "抓取失败日，天数可能中断或被低估，"
-                                       "引用时按不确定处理（I-1）。")
+                            st.caption("⚠ 不确定：序列含未登记/失败日，天数可能被低估（I-1）。")
                     else:
                         st.write("当日无符合条件的标的。")
                     _day_rows = _con.execute(
@@ -2446,8 +2441,7 @@ elif tab == "🏦 机构影子":
                             "买席位记录": r[5], "卖席位记录": r[6],
                             "窗口": "累计" if r[7] == "cum" else "一日",
                         } for r in _day_rows])
-                        st.caption("窗口=累计：该股当日只有多日累计类事件，金额为累计口径，"
-                                   "与一日类不相加（聚合规则见 engine/inst_lhb）。")
+                        st.caption("窗口=累计：多日累计金额，与一日类不相加。")
         finally:
             _con.close()
     except Exception:  # noqa: BLE001 — 影子视图故障隔离，不影响交易功能
@@ -2682,12 +2676,10 @@ elif tab == "🛡 验证":
     except Exception:
         _n, _m5, _avg5, _hit5 = 0, None, None, None
     if _n and _m5:
-        st.caption(f"多重校验绩效（样本外）：S/A 累计 {_n} 条，已满 5 日 {_m5} 条，"
-                   f"5 日平均相对收益 {_avg5 * 100:+.2f}%，命中率 {_hit5 / _m5 * 100:.0f}%"
-                   "（相对全池平均，tools/screen_perf.py 回填）")
+        st.caption(f"多重校验绩效（样本外）：S/A {_n} 条 · 满 5 日 {_m5} 条 · "
+                   f"5 日平均相对收益 {_avg5 * 100:+.2f}% · 命中率 {_hit5 / _m5 * 100:.0f}%")
     else:
-        st.caption("多重校验绩效：样本积累中（S/A 名单自 screen_runs 落库起逐期追踪，"
-                   "5/20 日后收益由 tools/screen_perf.py 回填，暂无已到期样本）")
+        st.caption("多重校验绩效：样本积累中，暂无到期样本。")
 
     # ---- 跨账户摘要（5指标 × 3账户） ----
     st.subheader("跨账户摘要")
@@ -2740,8 +2732,7 @@ elif tab == "🛡 验证":
             r.append(f"{vr*100:+.1f}%" if vr is not None else "—")
         rows.append(r)
         st.table([dict(zip(hdr, row)) for row in rows])
-        st.caption(f"硬线：样本{tg['sample_min']}-{tg['sample_max']}笔 · 盈亏比≥{tg['win_loss_ratio']} · "
-                   f"回撤≤{tg['max_drawdown']*100:.0f}% · 期望值>0")
+        # 毕业硬线不在此处重复（页首标准行 + 各 KPI 卡硬线标签已呈现）
     except Exception as e:
         st.error(f"仪表盘读取失败：{e}")
     # ---- 验收报告（2026-10-31 新增）：判分/查收类报告直发本页 ----

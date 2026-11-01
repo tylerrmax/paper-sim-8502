@@ -840,13 +840,42 @@ def _r1_chip(kind, text):
     return '<span class="r1-chip %s">%s</span>' % (kind, text)
 
 
-# 阻断原因展示（2026-10-18起：有阻断时必须清晰显示）
+# 阻断摘要（R1 去噪改动1：全站唯一一条短摘要，可跳转；
+# 逐票长原因只在交易页拦截区呈现，工作台队列只留对应 P 项短句）
 if blocked:
-    # P3：改 markdown 自有类 blocked-banner 以便吸顶（见 CSS），
-    # 呈现与原 st.error 一致的 danger 横幅，文本口径不变。
-    st.markdown('<div class="alert-banner danger blocked-banner">'
-                "⛔ 系统阻断：" + "；".join(block_reasons[:5]) + "</div>",
-                unsafe_allow_html=True)
+    import re as _re_blk
+    _n_nohold = sum(1 for _r in block_reasons
+                    if _r.startswith("SELL信号无持仓"))
+    _n_exp = 0
+    for _r in block_reasons:
+        _m_blk = _re_blk.match(r"(\d+)个信号已过期", _r)
+        if _m_blk:
+            _n_exp = int(_m_blk.group(1))
+    # 其余原因（新鲜度硬检查等）只留类别短标签（如「新闻面断更」）：
+    # 类别必须在顶部可见（2026-10-25 P0-4 审计不变量），长句不进顶栏。
+    _other_labels = []
+    for _r in block_reasons:
+        if _r.startswith("SELL信号无持仓") or _re_blk.match(r"\d+个信号已过期", _r):
+            continue
+        _lab = _r.split("：")[0].split(":")[0].strip()
+        if _lab and _lab not in _other_labels:
+            _other_labels.append(_lab)
+    _blk_parts = []
+    if _n_nohold:
+        _blk_parts.append(f"无持仓 SELL {_n_nohold}")
+    if _n_exp:
+        _blk_parts.append(f"过期信号 {_n_exp}")
+    _blk_parts.extend(_other_labels)
+    _bc1, _bc2 = st.columns([5, 1])
+    _bc1.markdown('<div class="alert-banner danger blocked-banner">'
+                  "⛔ 阻断 · " + " · ".join(_blk_parts) + "</div>",
+                  unsafe_allow_html=True)
+
+    def _goto_blocked_top():
+        st.session_state["main_nav"] = "📝 交易"
+        st.session_state["trade_focus"] = "first_blocked"
+    _bc2.button("去交易页 →", key="top_goto_blocked",
+                on_click=_goto_blocked_top)
 
 # 数据健康四态（安全补充③，2026-10-30）：由各市场最新 bar 日期
 # 与参照日期的真实差距判定（engine.data_health），非正常态带数据
@@ -910,33 +939,25 @@ try:
         else "运行版本 未标记（实际加载版本未验证）"
 except Exception:
     _vertxt = "运行版本 未标记（实际加载版本未验证）"
-_bar_cls = "status-bar" + (" danger" if _hworst >= 2
-                           else " warn" if _hworst == 1 else "")
-# UI-R1 阶段C 基础：顶栏三段摘要 MARKET | RISK | SYSTEM（与原型同构；
-# 数据与各页同源：环境=regime 母板真源、破止损=_stop_breaches、
-# 健康=engine.data_health、版本=运行时标识，不另造口径）
+# R1 去噪改动2：顶栏减载——MARKET/RISK 段移出（环境只在工作台
+# 市场环境卡、破止损只在工作台组合风险卡与队列）；顶栏只留
+# 数据日期 + 数据健康小标签 + 运行版本。延迟（含加密延迟）不再
+# 整条泛黄：danger 仅用于断连/异常或系统阻断，延迟只在健康
+# 小标签内呈现。
+_bar_cls = "status-bar" + (" danger" if (_hworst >= 2 or blocked) else "")
 try:
-    from engine import regime as _regime_bar
-    _env_bar = _regime_bar.load_market_env(db_path=DB)
-    _env_chip = _r1_chip({"attack": "ok", "cautious": "wait"}.get(
-        _env_bar.get("state"), "block"), _env_bar.get("label") or "环境未知")
+    _data_date = q("SELECT MAX(date) FROM market_data"
+                   " WHERE market IN ('a','hk')")[0][0] or "—"
 except Exception:
-    _env_chip = _r1_chip("wait", "环境未知")
-try:
-    _nbr_bar = sum(len(_stop_breaches(_a))
-                   for _a in ("sim_a", "sim_hk", "sim_crypto"))
-    _risk_seg = ('破止损 <b style="color:#f6465d;">%d</b>' % _nbr_bar
-                 if _nbr_bar else "破止损 0")
-except Exception:
-    _risk_seg = "破止损 未知"
+    _data_date = "—"
 st.markdown(
     '<div class="%s">'
-    '<span class="r1-seg"><span class="r1-seg-k">MARKET</span>%s</span>'
-    '<span class="r1-seg"><span class="r1-seg-k">RISK</span>%s</span>'
+    '<span class="r1-seg"><span class="r1-seg-k">DATA</span>'
+    '<span class="sb-label">数据日期</span> %s</span>'
     '<span class="r1-seg"><span class="r1-seg-k">SYSTEM</span>'
     '<span class="sb-label">数据健康</span>%s</span>'
     '<span class="sb-ver">%s</span></div>'
-    % (_bar_cls, _env_chip, _risk_seg, " ".join(_hbadges), _vertxt),
+    % (_bar_cls, _data_date, " ".join(_hbadges), _vertxt),
     unsafe_allow_html=True)
 
 # ============ 导航（UI-R1：左侧固定编号导航，顺序与原型一致） ============
@@ -1456,18 +1477,14 @@ if tab == "🏠 工作台":
             _b31_s = {True: "是", False: "否"}.get((_fld.get("b31") or {}).get("value"), "读取失败")
             _chip = _r1_chip({"attack": "ok", "cautious": "wait"}.get(_env_w.get("state"), "block"),
                              _env_w.get("label") or "环境未知")
-            _auto_w = _env_w.get("auto") or {}
-            _xref = ""
-            if _auto_w.get("known"):
-                _recon_s = {True: "对账一致", False: "对账不一致"}.get(_env_w.get("reconciled"), "对账不可用")
-                _xref = (f'<div style="color:#8b9bab;font-size:12px;margin-top:4px;">自动计算：上证 {_auto_w["close"]:,.2f} vs MA20 {_auto_w["ma20"]:,.2f} → '
-                         f'{"站上" if _auto_w["on"] else "未站上"}（指数日 {_auto_w.get("last_date")}） · 与母板B31 {_recon_s}</div>')
+            # R1 去噪改动3：环境卡只留结论一行 + 宽度一行；上证 vs
+            # MA20 的对账长句只在选股页页首出现，全站不写第二遍。
             st.markdown(
                 f'<div class="kpi-card"><div class="kpi-label">市场环境</div>'
                 f'<div style="font-size:15px;">环境门禁：{_chip}'
                 f'<span style="color:#8b9bab;font-size:12px;">（母板 B31＝{_b31_s}）</span></div>'
                 f'<div style="font-size:13px;margin-top:4px;">市场宽度（母板 16 只）：涨 {_adv} · 跌 {_dec} · 平 {_flat}</div>'
-                f'{_xref}</div>', unsafe_allow_html=True)
+                f'</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="kpi-card"><div class="kpi-label">市场环境</div>'
                         '市场环境暂不可用（读取失败，不下结论）</div>',
@@ -1480,7 +1497,8 @@ if tab == "🏠 工作台":
             f'<div style="font-size:15px;">风险状态：{_risk_chip}</div>'
             f'<div style="font-size:13px;margin-top:4px;">A股敞口：<span class="num">{_expo:.1f}%</span>（上限 70%） · '
             f'组合回撤：<span class="num">{_dd:.1f}%</span><br>'
-            f'最大单标的集中度：<span class="num">{_conc:.1f}%</span>（占 A股账户净值）</div></div>'
+            f'最大单标的集中度：<span class="num">{_conc:.1f}%</span>（占 A股账户净值）<br>'
+            f'破止损：<span class="num" style="color:{"#f6465d" if _has_stop else "#2ebd85"};">{len(_breach_rows)}</span> 只（明细在账户页）</div></div>'
             if (_expo is not None and _dd is not None and _conc is not None) else
             '<div class="kpi-card"><div class="kpi-label">组合风险</div>风险数据不完整，不下结论</div>',
             unsafe_allow_html=True)
@@ -1952,13 +1970,14 @@ elif tab == "📝 交易":
             _env_chip = _r1_chip("wait", "环境未知")
         _risk_txt = ("；".join(f"{k} {v}" for k, v in _tag_n.items() if v)
                      if _n_fail else "无拦截")
+        # R1 去噪改动4：执行状态一行——环境门禁 + 可处理 N + 已拦截 N，
+        # 拦截构成同行小字附注，不另起第二行、不复制全局阻断长文。
         st.markdown(
             f'<div class="kpi-card"><div class="kpi-label">执行状态</div>'
             f'<div style="font-size:13.5px;">环境：{_env_chip} · '
-            f'可执行：{_r1_chip("info" if _n_ok else "mut", f"可处理 {_n_ok} 条")} · '
-            f'待建单 {len(sigs)} 条（近 7 天）<br>'
-            f'风控结果：{_r1_chip("block", "已拦截 " + str(_n_fail) + " 条") if _n_fail else _r1_chip("ok", "无拦截")} '
-            f'<span style="color:#8b9bab;font-size:12px;">{_risk_txt if _n_fail else ""}</span></div></div>',
+            f'可处理 <b>{_n_ok}</b> 条 · '
+            f'已拦截 <b style="color:{"#f6465d" if _n_fail else "#2ebd85"};">{_n_fail}</b> 条'
+            f'<span style="color:#8b9bab;font-size:12px;">{"（" + _risk_txt + "）" if _n_fail else ""}</span></div></div>',
             unsafe_allow_html=True)
         st.markdown('<div class="kpi-label" style="margin-top:10px;">可处理订单（校验通过 · 券商人工建单）</div>',
                     unsafe_allow_html=True)

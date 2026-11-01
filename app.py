@@ -329,6 +329,26 @@ st.markdown("""
 /* 全局：深色终端底 */
 /* 主题已由 .streamlit/config.toml 固定为深色（UI批A G-1），
    标题色不再随浏览器 prefers-color-scheme 切换，避免深底深字。 */
+/* ===== UI-R1 共享设计系统（阶段C 基础）：令牌与组件类，六页共用 =====
+   令牌：底 #06090d/#0a0f16、面板 #101823、边线 #22303f、正文 #d6dee7、
+   次级 #8b9bab、弱 #5d7185、焦点 #56c8dc、通过 #2ebd85、阻断 #f6465d、
+   待处理 #e8a33d、数据蓝 #4a90d9。状态一律文字+颜色双表达。 */
+.r1-chip { display: inline-block; padding: 2px 9px; border-radius: 5px;
+           font-size: 12px; font-weight: 600; border: 1px solid transparent;
+           white-space: nowrap; }
+.r1-chip.ok { background: rgba(46,189,133,.13); color: #2ebd85; border-color: rgba(46,189,133,.35); }
+.r1-chip.block { background: rgba(246,70,93,.13); color: #f6465d; border-color: rgba(246,70,93,.35); }
+.r1-chip.wait { background: rgba(232,163,61,.13); color: #e8a33d; border-color: rgba(232,163,61,.35); }
+.r1-chip.info { background: rgba(86,200,220,.10); color: #56c8dc; border-color: rgba(86,200,220,.30); }
+.r1-chip.mut { background: #141e2a; color: #8b9bab; border-color: #22303f; }
+.r1-chip.miss { background: transparent; color: #8b9bab; border: 1px dashed #3a4a5c; }
+.r1-seg { display: inline-flex; align-items: center; gap: 6px; }
+.r1-seg-k { color: #5d7185; font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+.r1-seg + .r1-seg { border-left: 1px solid #22303f; padding-left: 12px; margin-left: 4px; }
+.r1-brand { font-size: 17px; font-weight: 800; letter-spacing: 1px; color: #d6dee7; padding: 4px 2px 10px; }
+.r1-brand span { color: #5d7185; font-size: 11px; font-weight: 600; }
+.r1-side-note { color: #5d7185; font-size: 12px; line-height: 1.6; border-top: 1px solid #22303f; padding-top: 10px; margin-top: 14px; }
+[data-testid="stSidebar"] { background: #06090d; border-right: 1px solid #22303f; }
 .main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #e8ecf1; }
 .sub-title { font-size: 13px; color: #8a8f9c; margin-bottom: 16px; }
 /* 统一卡片：深色 */
@@ -347,8 +367,7 @@ st.markdown("""
 .strategy-badge.buyback { background: rgba(46,189,133,.15); color: #2ebd85; }
 .strategy-badge.ma20 { background: rgba(240,185,11,.15); color: #f0b90b; }
 .strategy-badge.disabled { background: rgba(138,143,156,.15); color: #8a8f9c; }
-/* 左侧栏已移除：导航与控制移至顶部 */
-section[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+/* UI-R1 阶段C：左侧固定导航恢复（旧「左侧栏已移除」隐藏规则就此作废） */
 /* 分区标题 */
 .section-head { font-size: 18px; font-weight: 700; margin: 20px 0 12px 0;
                 padding-bottom: 8px; border-bottom: 2px solid #1e2532; color: #e8ecf1; }
@@ -758,6 +777,69 @@ for a in CFG["accounts"]:
 with st.expander("账户策略", expanded=False):
     st.markdown("".join(_rows), unsafe_allow_html=True)
 
+# ===== UI-R1 阶段C 基础：母板映射加载前置（顶栏/助手先于原定义点执行） =====
+def _load_workbook_map():
+    """母板映射（单一基准）：板块/止损/突破/共振与标的名册同源于此。"""
+    try:
+        import json as _json
+        with open(os.path.join(BASE, "config", "workbook_map.json"),
+                  encoding="utf-8") as _f:
+            return _json.load(_f)
+    except Exception:
+        return {}
+
+
+WORKBOOK_MAP = _load_workbook_map()
+
+
+# ===== UI-R1 阶段C 基础：止损同源助手前置（顶栏 RISK 段与三页共用） =====
+def stop_ref_of(sym):
+    """母板止损参考（唯一口径）：无映射/无止损位时返回 None。"""
+    meta = WORKBOOK_MAP.get("symbols", {}).get(sym) or {}
+    return meta.get("stop_ref")
+
+
+def _stop_state(sym, last):
+    """止损状态（工作台/账户/验证三处同源）：返回 (state, stop_ref)，
+    state ∈ breach（现价<止损参考）/ near（距止损参考 ≤5%）/ ok /
+    none（无止损参考或无现价，不下结论）。"""
+    sr = stop_ref_of(sym)
+    if not sr or not last:
+        return "none", sr
+    if last < sr:
+        return "breach", sr
+    if (last - sr) / last <= 0.05:
+        return "near", sr
+    return "ok", sr
+
+
+def _stop_breaches(acct_id):
+    """破止损持仓清单（W-4：工作台/账户/验证三处同源）：按账户单独
+    计算，返回 [(symbol, qty, last, stop_ref, data_date)]；现价取
+    market_data 最新收盘并带数据日期，缺数据不下「无风险」结论。"""
+    out = []
+    try:
+        rows = q("""SELECT p.symbol, p.qty, m.close, t.md FROM positions p
+                    JOIN (SELECT symbol, MAX(date) md FROM market_data
+                          GROUP BY symbol) t ON p.symbol = t.symbol
+                    JOIN market_data m ON m.symbol = t.symbol AND m.date = t.md
+                    WHERE p.account = ? AND p.qty > 0""", (acct_id,))
+    except Exception:
+        return out
+    for _s, _qty, _last, _md in rows:
+        _stt, _sr = _stop_state(_s, _last)
+        if _stt == "breach":
+            out.append((_s, _qty, _last, _sr, _md))
+    return out
+
+
+def _r1_chip(kind, text):
+    """UI-R1 状态标签（文字+颜色双表达，六页共用）：
+    ok 正常/通过 · block 阻断/破止损 · wait 待人工/待核验 ·
+    info 信息/积累 · mut 观察 · miss 缺失/不可计算。"""
+    return '<span class="r1-chip %s">%s</span>' % (kind, text)
+
+
 # 阻断原因展示（2026-10-18起：有阻断时必须清晰显示）
 if blocked:
     # P3：改 markdown 自有类 blocked-banner 以便吸顶（见 CSS），
@@ -830,14 +912,50 @@ except Exception:
     _vertxt = "运行版本 未标记（实际加载版本未验证）"
 _bar_cls = "status-bar" + (" danger" if _hworst >= 2
                            else " warn" if _hworst == 1 else "")
+# UI-R1 阶段C 基础：顶栏三段摘要 MARKET | RISK | SYSTEM（与原型同构；
+# 数据与各页同源：环境=regime 母板真源、破止损=_stop_breaches、
+# 健康=engine.data_health、版本=运行时标识，不另造口径）
+try:
+    from engine import regime as _regime_bar
+    _env_bar = _regime_bar.load_market_env(db_path=DB)
+    _env_chip = _r1_chip({"attack": "ok", "cautious": "wait"}.get(
+        _env_bar.get("state"), "block"), _env_bar.get("label") or "环境未知")
+except Exception:
+    _env_chip = _r1_chip("wait", "环境未知")
+try:
+    _nbr_bar = sum(len(_stop_breaches(_a))
+                   for _a in ("sim_a", "sim_hk", "sim_crypto"))
+    _risk_seg = ('破止损 <b style="color:#f6465d;">%d</b>' % _nbr_bar
+                 if _nbr_bar else "破止损 0")
+except Exception:
+    _risk_seg = "破止损 未知"
 st.markdown(
-    '<div class="%s"><span class="sb-label">数据健康</span>%s'
+    '<div class="%s">'
+    '<span class="r1-seg"><span class="r1-seg-k">MARKET</span>%s</span>'
+    '<span class="r1-seg"><span class="r1-seg-k">RISK</span>%s</span>'
+    '<span class="r1-seg"><span class="r1-seg-k">SYSTEM</span>'
+    '<span class="sb-label">数据健康</span>%s</span>'
     '<span class="sb-ver">%s</span></div>'
-    % (_bar_cls, " ".join(_hbadges), _vertxt), unsafe_allow_html=True)
+    % (_bar_cls, _env_chip, _risk_seg, " ".join(_hbadges), _vertxt),
+    unsafe_allow_html=True)
 
-# ============ 导航（顶部横排；左侧栏已移除） ============
-tab = st.radio("板块", ["🏠 工作台", "🔍 选股", "🏦 机构影子", "📝 交易", "💰 账户", "🛡 验证"],
-               horizontal=True, label_visibility="collapsed", key="main_nav")
+# ============ 导航（UI-R1：左侧固定编号导航，顺序与原型一致） ============
+# 选项值仍为原页签名（含 emoji），_goto 跳转与各页 elif 比较不受影响；
+# 编号仅经 format_func 显示。
+_R1_NAV = ["🏠 工作台", "📝 交易", "💰 账户", "🔍 选股", "🏦 机构影子", "🛡 验证"]
+_R1_NAV_LABEL = {"🏠 工作台": "01 工作台", "📝 交易": "02 交易",
+                 "💰 账户": "03 账户", "🔍 选股": "04 选股",
+                 "🏦 机构影子": "05 机构", "🛡 验证": "06 验证"}
+with st.sidebar:
+    st.markdown('<div class="r1-brand">8502 '
+                '<span>/ TRADING WORKSTATION</span></div>',
+                unsafe_allow_html=True)
+    tab = st.radio("板块", _R1_NAV,
+                   format_func=lambda _t: _R1_NAV_LABEL.get(_t, _t),
+                   label_visibility="collapsed", key="main_nav")
+    st.markdown('<div class="r1-side-note">模拟交易决策系统<br>'
+                '真实委托由用户在券商端人工执行并回填回执</div>',
+                unsafe_allow_html=True)
 
 # 控制（本地模式可用；云端只读时不渲染）
 if not IS_CLOUD:
@@ -872,19 +990,6 @@ if not IS_CLOUD:
 accts = ([r[0] for r in q("SELECT DISTINCT account FROM daily_report ORDER BY account")]
          or ["sim_a", "sim_hk", "sim_crypto"])
 ACCT_CN = {"sim_a": "A股", "sim_hk": "港股", "sim_crypto": "加密货币"}
-def _load_workbook_map():
-    """母板映射（单一基准）：板块/止损/突破/共振与标的名册同源于此。"""
-    try:
-        import json as _json
-        with open(os.path.join(BASE, "config", "workbook_map.json"),
-                  encoding="utf-8") as _f:
-            return _json.load(_f)
-    except Exception:
-        return {}
-
-
-WORKBOOK_MAP = _load_workbook_map()
-
 # 标的名册单一来源（P2-10）：从 workbook_map 派生，不再手写第二份名单；
 # BTC 不在母板 Watchlist 内，单独补入。
 SYMBOL_CN = {sym: (meta.get("name") or sym)
@@ -892,10 +997,6 @@ SYMBOL_CN = {sym: (meta.get("name") or sym)
 SYMBOL_CN.setdefault("BTCUSDT", "比特币")
 
 
-def stop_ref_of(sym):
-    """母板止损参考（唯一口径）：无映射/无止损位时返回 None。"""
-    meta = WORKBOOK_MAP.get("symbols", {}).get(sym) or {}
-    return meta.get("stop_ref")
 def sym_name(code):
     """标的显示名：代码+中文名，如 '002446 盛路通信'"""
     return f"{code} {SYMBOL_CN[code]}" if code in SYMBOL_CN else code
@@ -948,38 +1049,317 @@ def _gate_tags(gates):
     return tags
 
 
-def _stop_state(sym, last):
-    """止损状态（工作台/账户/验证三处同源）：返回 (state, stop_ref)，
-    state ∈ breach（现价<止损参考）/ near（距止损参考 ≤5%）/ ok /
-    none（无止损参考或无现价，不下结论）。"""
-    sr = stop_ref_of(sym)
-    if not sr or not last:
-        return "none", sr
-    if last < sr:
-        return "breach", sr
-    if (last - sr) / last <= 0.05:
-        return "near", sr
-    return "ok", sr
+def _detail_chart_html(sym, bars, sub_kind, price_lines, markers):
+    """个股详情图（批D-1）：Lightweight-Charts v4 双图同步——主图
+    日K + MA20/60 + 关键位线（成本橙虚线/止损红虚线/计划线点线）+
+    成交标记；副图单选一层（成交量/MACD/RSI），与主图时间轴同步。
+    JS 复用 engine/tv_charts 内嵌的 LWC v4.2.0，不引新库；
+    指标序列由调用方按 engine.indicators 既有口径算好后传入。"""
+    import json as _json
+    from engine.tv_charts import _LWC_JS
+    closes = [b[4] for b in bars]
 
-
-def _stop_breaches(acct_id):
-    """破止损持仓清单（W-4：工作台/账户/验证三处同源）：按账户单独
-    计算，返回 [(symbol, qty, last, stop_ref, data_date)]；现价取
-    market_data 最新收盘并带数据日期，缺数据不下「无风险」结论。"""
-    out = []
-    try:
-        rows = q("""SELECT p.symbol, p.qty, m.close, t.md FROM positions p
-                    JOIN (SELECT symbol, MAX(date) md FROM market_data
-                          GROUP BY symbol) t ON p.symbol = t.symbol
-                    JOIN market_data m ON m.symbol = t.symbol AND m.date = t.md
-                    WHERE p.account = ? AND p.qty > 0""", (acct_id,))
-    except Exception:
+    def _ma(period):
+        out = []
+        for i in range(len(closes)):
+            if i >= period - 1:
+                out.append({"time": bars[i][0],
+                            "value": round(sum(closes[i - period + 1:i + 1])
+                                           / period, 4)})
         return out
-    for _s, _qty, _last, _md in rows:
-        _stt, _sr = _stop_state(_s, _last)
-        if _stt == "breach":
-            out.append((_s, _qty, _last, _sr, _md))
-    return out
+
+    payload = {"kind": sub_kind}
+    if sub_kind == "成交量":
+        payload["vol"] = [
+            {"time": d, "value": v or 0,
+             "color": "rgba(246,70,93,0.5)" if c >= o
+             else "rgba(46,189,133,0.5)"}
+            for d, o, h, l, c, v in bars]
+    elif sub_kind == "MACD":
+        from engine.indicators import macd as _mf
+        _dif, _dea, _hist = _mf(closes)
+        payload["hist"] = [
+            {"time": bars[i][0], "value": _hist[i],
+             "color": "rgba(246,70,93,0.55)" if _hist[i] >= 0
+             else "rgba(46,189,133,0.55)"}
+            for i in range(len(bars)) if _hist[i] is not None]
+        payload["dif"] = [{"time": bars[i][0], "value": _dif[i]}
+                           for i in range(len(bars)) if _dif[i] is not None]
+        payload["dea"] = [{"time": bars[i][0], "value": _dea[i]}
+                           for i in range(len(bars)) if _dea[i] is not None]
+    elif sub_kind == "RSI":
+        from engine.indicators import rsi as _rf
+        _rs = _rf(closes)
+        payload["rsi"] = [{"time": bars[i][0], "value": _rs[i]}
+                           for i in range(len(bars)) if _rs[i] is not None]
+    j_c = _json.dumps([{"time": d, "open": o, "high": h, "low": l,
+                        "close": c} for d, o, h, l, c, v in bars])
+    j_ma20, j_ma60 = _json.dumps(_ma(20)), _json.dumps(_ma(60))
+    j_pl, j_mk, j_sub = (_json.dumps(price_lines), _json.dumps(markers),
+                         _json.dumps(payload))
+    return f"""<div id="dm_{sym}" style="height:440px;"></div>
+<div id="ds_{sym}" style="height:130px;"></div>
+<script>{_LWC_JS}</script>
+<script>
+(function() {{
+  var LC = LightweightCharts;
+  var base = {{
+    layout: {{ background: {{ color: '#0d1117' }}, textColor: '#8a8f9c',
+               fontFamily: 'ui-monospace, monospace', fontSize: 11,
+               attributionLogo: false }},
+    grid: {{ vertLines: {{ color: 'rgba(30,37,50,0.5)' }},
+             horzLines: {{ color: 'rgba(30,37,50,0.5)' }} }},
+    rightPriceScale: {{ borderColor: '#1e2532' }},
+  }};
+  var elM = document.getElementById('dm_{sym}');
+  var elS = document.getElementById('ds_{sym}');
+  var main = LC.createChart(elM, Object.assign({{}}, base, {{
+    width: elM.clientWidth, height: 440,
+    timeScale: {{ visible: false, borderColor: '#1e2532' }},
+    crosshair: {{ mode: LC.CrosshairMode.Normal }},
+  }}));
+  var cs = main.addCandlestickSeries({{
+    upColor: '#f6465d', downColor: '#2ebd85',
+    wickUpColor: '#f6465d', wickDownColor: '#2ebd85',
+    borderVisible: false }});
+  cs.setData({j_c});
+  var ma20 = main.addLineSeries({{ color: '#4a90d9', lineWidth: 1,
+    title: 'MA20', priceLineVisible: false, lastValueVisible: false,
+    crosshairMarkerVisible: false }});
+  ma20.setData({j_ma20});
+  var ma60 = main.addLineSeries({{ color: '#8a8f9c', lineWidth: 1,
+    title: 'MA60', priceLineVisible: false, lastValueVisible: false,
+    crosshairMarkerVisible: false }});
+  ma60.setData({j_ma60});
+  var pls = {j_pl};
+  pls.forEach(function(p) {{
+    cs.createPriceLine({{ price: p.price, title: p.title, color: p.color,
+      lineWidth: 1, lineStyle: p.style, axisLabelVisible: true }});
+  }});
+  var mks = {j_mk};
+  if (mks.length) cs.setMarkers(mks);
+  var sub = LC.createChart(elS, Object.assign({{}}, base, {{
+    width: elS.clientWidth, height: 130,
+    timeScale: {{ borderColor: '#1e2532', timeVisible: false }},
+  }}));
+  var P = {j_sub};
+  if (P.kind === '成交量') {{
+    var vol = sub.addHistogramSeries({{ priceFormat: {{ type: 'volume' }} }});
+    vol.setData(P.vol);
+  }} else if (P.kind === 'MACD') {{
+    var hh = sub.addHistogramSeries({{ priceLineVisible: false,
+      lastValueVisible: false }});
+    hh.setData(P.hist);
+    var d1 = sub.addLineSeries({{ color: '#4a90d9', lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+      crosshairMarkerVisible: false }});
+    d1.setData(P.dif);
+    var d2 = sub.addLineSeries({{ color: '#ff9800', lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+      crosshairMarkerVisible: false }});
+    d2.setData(P.dea);
+  }} else if (P.kind === 'RSI') {{
+    var rl = sub.addLineSeries({{ color: '#a371f7', lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+      crosshairMarkerVisible: false }});
+    rl.setData(P.rsi);
+    [70, 30].forEach(function(v) {{
+      rl.createPriceLine({{ price: v, title: '', color: '#525a68',
+        lineWidth: 1, lineStyle: 2, axisLabelVisible: true }});
+    }});
+  }}
+  main.timeScale().fitContent();
+  var syncing = false;
+  function link(src, dst) {{
+    src.timeScale().subscribeVisibleLogicalRangeChange(function(r) {{
+      if (syncing || !r) return;
+      syncing = true;
+      dst.timeScale().setVisibleLogicalRange(r);
+      syncing = false;
+    }});
+  }}
+  link(main, sub); link(sub, main);
+  window.addEventListener('resize', function() {{
+    main.applyOptions({{ width: elM.clientWidth }});
+    sub.applyOptions({{ width: elS.clientWidth }});
+  }});
+}})();
+</script>"""
+
+
+def _render_acct_detail(acct, sym):
+    """账户页个股详情（批D-1）：一次一只持仓票——大图（成本/止损/
+    计划线+成交标记）、三数字、成交记录与待建单/拦截状态。
+    只读边界：除返回按钮外无任何可变状态控件，不写库、不建单。"""
+    if st.button("← 返回账户页", key="detail_back"):
+        st.session_state.pop("acct_detail", None)
+        st.rerun()
+    _pr = q("SELECT qty, avg_cost, last_price, market_value FROM positions"
+            " WHERE account=? AND symbol=? AND qty>0", (acct, sym))
+    if not _pr:
+        st.session_state.pop("acct_detail", None)
+        st.rerun()
+        return
+    _qty, _avg, _plast, _mv = _pr[0]
+    bars = q("SELECT date,open,high,low,close,volume FROM market_data"
+             " WHERE symbol=? ORDER BY date DESC LIMIT 250", (sym,))
+    bars = bars[::-1]
+    _last = bars[-1][4] if bars else _plast
+    _prev = bars[-2][4] if len(bars) > 1 else None
+    _stt, _sr = _stop_state(sym, _last)
+    # 页头：名称代码 + 大价格 + 涨跌（红绿只表涨跌）+ 右侧口径小字
+    _chg = (_last - _prev) if (_last is not None and _prev) else None
+    _pct = (_chg / _prev * 100) if _chg is not None else None
+    _cc = UP_C if (_chg or 0) >= 0 else DOWN_C
+    _chg_s = (("+" if _chg >= 0 else "-") + _px_fmt(sym, abs(_chg))
+              if _chg is not None else "—")
+    _adj = ("不复权" if sym.startswith("HK")
+            else "现货" if acct == "sim_crypto" else "前复权")
+    _chip = {"breach": ' <span style="background:rgba(246,70,93,.15);'
+                       'color:#f6465d;border-radius:4px;padding:1px 6px;'
+                       'font-size:12px;">🔴 破止损</span>',
+             "near": ' <span style="background:rgba(255,152,0,.15);'
+                     'color:#ff9800;border-radius:4px;padding:1px 6px;'
+                     'font-size:12px;">🟡 接近止损</span>'}.get(_stt, "")
+    st.markdown(
+        f'<div style="display:flex;justify-content:space-between;'
+        f'align-items:flex-end;margin-top:4px;">'
+        f'<div><span style="font-size:22px;font-weight:700;">'
+        f'{sym_name(sym)}</span>{_chip}<br>'
+        f'<span style="color:#8a8f9c;font-size:12px;">'
+        f'{ACCT_CN.get(acct, acct)} · 持仓详情</span></div>'
+        f'<div style="text-align:right;color:#8a8f9c;font-size:12px;">'
+        f'日线 · {_adj} · 数据日期 {bars[-1][0] if bars else "—"}</div></div>'
+        f'<div style="display:flex;align-items:baseline;gap:10px;'
+        f'margin:2px 0 6px;">'
+        f'<span style="font-size:30px;font-weight:700;">'
+        f'{_px_fmt(sym, _last)}</span>'
+        f'<span style="color:{_cc};font-size:15px;">{_chg_s}'
+        f'{" (" + format(_pct, "+.2f") + "%)" if _pct is not None else ""}'
+        f'</span></div>', unsafe_allow_html=True)
+    # 主图 + 副图（数据不足时不画图、不虚构）
+    if len(bars) >= 30:
+        _plan = {}
+        try:
+            _run = q("SELECT results_json FROM screen_runs"
+                     " ORDER BY id DESC LIMIT 1")
+            if _run:
+                import json as _json
+                for _r in _json.loads(_run[0][0]):
+                    if _r.get("symbol") == sym:
+                        _plan = _r
+                        break
+        except Exception:
+            _plan = {}
+        _pls = []
+        if _avg:
+            _pls.append({"price": round(_avg, 4), "color": "#ff9800",
+                         "style": 2,
+                         "title": f"成本 {_px_fmt(sym, _avg)}"})
+        if _sr:
+            _pls.append({"price": round(_sr, 4), "color": "#f6465d",
+                         "style": 2,
+                         "title": f"止损参考 {_px_fmt(sym, _sr)}"})
+        if _plan.get("plan_trigger") and _plan.get("plan_target"):
+            _pls.append({"price": round(_plan["plan_trigger"], 4),
+                         "color": "#4a90d9", "style": 1,
+                         "title": f"触发 {_px_fmt(sym, _plan['plan_trigger'])}"})
+            _pls.append({"price": round(_plan["plan_target"], 4),
+                         "color": "#2ebd85", "style": 1,
+                         "title": f"目标 {_px_fmt(sym, _plan['plan_target'])}"})
+        _fm = q("SELECT date,side,qty FROM fills WHERE account=?"
+                " AND symbol=? ORDER BY date", (acct, sym))
+        _win = bars[0][0]
+        _mks = [{"time": d,
+                 "position": "belowBar" if sd == "BUY" else "aboveBar",
+                 "shape": "arrowUp" if sd == "BUY" else "arrowDown",
+                 "color": "#f6465d" if sd == "BUY" else "#2ebd85",
+                 "text": ("买 " if sd == "BUY" else "卖 ") + f"{qty:g}"}
+                for d, sd, qty in _fm if d >= _win]
+        _sub = st.radio("副图", ["成交量", "MACD", "RSI"], horizontal=True,
+                        key="detail_sub")
+        st.components.v1.html(
+            _detail_chart_html(sym, bars, _sub, _pls, _mks),
+            height=578, scrolling=False)
+    else:
+        st.info(f"K线数据不足（{len(bars)} 根），暂不展示图表。")
+    # 图下三数字（不做卡片：分隔线 + 标签 + 右对齐大数字）
+    _upl_pct = ((_last - _avg) / _avg * 100) if (_last and _avg) else 0
+    _upl_abs = ((_last - _avg) * _qty) if (_last and _avg) else 0
+    _t = st.columns(3)
+
+    def _trio(col, label, value, color=""):
+        col.markdown(
+            f'<div style="border-top:1px solid #1e2532;padding-top:8px;">'
+            f'<div style="color:#8a8f9c;font-size:12px;">{label}</div>'
+            f'<div style="text-align:right;font-size:20px;font-weight:600;'
+            f'{color}">{value}</div></div>', unsafe_allow_html=True)
+
+    _trio(_t[0], "持仓成本", _px_fmt(sym, _avg))
+    _trio(_t[1], "止损参考", _px_fmt(sym, _sr) if _sr else "—")
+    _trio(_t[2], "浮盈亏",
+          f"{_upl_pct:+.2f}%（{_upl_abs:+,.2f}）",
+          color=f"color:{UP_C if _upl_abs >= 0 else DOWN_C};")
+    st.caption(f"数量 {_qty:g} · 市值 {_mv:,.2f} · 现价 "
+               f"{_px_fmt(sym, _last)}")
+    # 页尾：成交记录（真实 fills，可溯源）
+    st.subheader("成交记录")
+    _fl = q("SELECT date,side,qty,price,fee,pnl FROM fills"
+            " WHERE account=? AND symbol=? ORDER BY date DESC, id DESC"
+            " LIMIT 50", (acct, sym))
+    if _fl:
+        st.table([{"日期": d, "方向": "买入" if sd == "BUY" else "卖出",
+                   "数量": f"{qty:g}", "成交价": _px_fmt(sym, px),
+                   "费用": f"{fee:.2f}", "盈亏": f"{pnl:+.2f}"}
+                  for d, sd, qty, px, fee, pnl in _fl])
+    else:
+        st.write("暂无成交记录")
+    # 页尾：待建单及拦截状态（与交易页同一待执行口径与校验，仅展示，
+    # 无跳过/建单等可变状态控件）
+    st.subheader("待建单与拦截状态")
+    _pend = q("""SELECT s.date, s.side, s.price FROM signals s
+                 LEFT JOIN fills f ON s.date=f.signal_date
+                   AND s.account=f.account AND s.symbol=f.symbol
+                   AND s.side=f.side
+                 LEFT JOIN approvals ap ON ap.date=s.date
+                   AND ap.account=s.account AND ap.symbol=s.symbol
+                   AND ap.side=s.side
+                 WHERE s.account=? AND s.symbol=? AND f.id IS NULL
+                   AND s.date >= date('now','-7 days')
+                   AND (ap.decision IS NULL OR ap.decision <> 'skipped')
+                 ORDER BY s.date DESC""", (acct, sym))
+    if not _pend:
+        st.write("无待建单")
+    else:
+        from engine.order_validate import validate_order
+        for _d, _sd, _px in _pend:
+            if _sd == "BUY":
+                from engine.pipeline import suggest_buy_qty_from_db
+                _qe = suggest_buy_qty_from_db(DB, acct, sym, _px, CFG)
+            else:
+                _qe = _qty
+            _ok, _errs, _warns = validate_order(acct, sym, _sd, _qe,
+                                                 _px, _d)
+            if _ok:
+                st.markdown(f"**{_sd}** @{_px_fmt(sym, _px)} · {_d} · "
+                            f'<span style="background:rgba(46,189,133,.15);'
+                            f'color:#2ebd85;border-radius:4px;'
+                            f'padding:1px 6px;font-size:12px;">待建单</span>',
+                            unsafe_allow_html=True)
+            else:
+                if any("无持仓" in e for e in _errs):
+                    _tag = "无效·无仓"
+                elif any("已过期" in e for e in _errs):
+                    _tag = "已过期"
+                else:
+                    _tag = "已拦截"
+                st.markdown(f"**{_sd}** @{_px_fmt(sym, _px)} · {_d} · "
+                            f'<span style="background:rgba(246,70,93,.15);'
+                            f'color:#f6465d;border-radius:4px;'
+                            f'padding:1px 6px;font-size:12px;">{_tag}</span>',
+                            unsafe_allow_html=True)
+                if _errs:
+                    st.caption(_errs[0])
 
 
 render_ticker()
@@ -993,144 +1373,67 @@ acct = "sim_a"  # 默认，页内可覆盖
 # 🏠 工作台：系统状态 + 今日信号 + 账户总览
 # ================================================================
 if tab == "🏠 工作台":
-    st.markdown('<div class="section-head">🏠 工作台</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-head">🏠 工作台 · 交易指挥中心</div>',
+                unsafe_allow_html=True)
 
-    # ---- 市场环境（模块A，母板真源三态）：判定只读母板字段 ----
-    try:
-        from engine import regime as _regime_app
-        _env_w = _regime_app.load_market_env(db_path=DB)
-        _fld = _env_w.get("fields") or {}
-        _b31_s = {True: "是", False: "否"}.get((_fld.get("b31") or {}).get("value"), "读取失败")
-        _rel_s = {True: "已放行", False: "未放行"}.get((_fld.get("release") or {}).get("released"), "读取失败")
-        _b79_s = {True: "是", False: "否"}.get((_fld.get("b79") or {}).get("value"), "读取失败")
-        _state_color = {"attack": "#2ebd85", "cautious": "#f0b90b"}.get(
-            _env_w["state"], "#f6465d")
-        _extra = ""
-        if _env_w["state"] == "cautious":
-            _extra = (f' · 验证期参数：仓位系数 {_env_w.get("buy_coef")}、'
-                      f'总仓位上限 {_env_w.get("total_cap")}')
-        elif _env_w["state"] == "degraded":
-            _extra = f' · 原因：{_env_w.get("degraded_reason")}'
-        elif _env_w.get("reason"):
-            _extra = f' · {_env_w["reason"]}'
-        # 自动计算 + 每日对账状态（判定执行源与对账结果，可查）
-        _xref = ""
-        _auto_w = _env_w.get("auto") or {}
-        if _auto_w.get("known"):
-            _recon_s = {True: "对账一致", False: "对账不一致"}.get(
-                _env_w.get("reconciled"), "对账不可用")
-            _xref = (f'<div style="color:#8a8f9c;font-size:12px;">自动计算：'
-                     f'上证 {_auto_w["close"]:,.2f} vs MA20 {_auto_w["ma20"]:,.2f} → '
-                     f'{"站上" if _auto_w["on"] else "未站上"}（指数日 {_auto_w.get("last_date")}）'
-                     f' · 与母板B31 {_recon_s}</div>')
-        st.markdown(
-            f'<div class="kpi-card"><div class="kpi-label">市场环境（母板真源 · '
-            f'B31={_b31_s} / 放行={_rel_s} / B79={_b79_s}）</div>'
-            f'<div style="font-size:16px;"><b style="color:{_state_color};">'
-            f'{"🟢 " if _env_w["state"] == "attack" else "🟡 " if _env_w["state"] == "cautious" else "⛔ "}'
-            f'{_env_w["label"]}</b>'
-            f'<span style="color:#8a8f9c;font-size:12px;">{_extra}</span></div>'
-            f'{_xref}</div>', unsafe_allow_html=True)
-    except Exception as _e:
-        st.caption(f"市场环境暂不可用：{_e}")
-
-    # ---- 风险警报区（UI批A W-1：前移至市场环境之后、核心数据之前） ----
-    # UI批B §2.1：同屏最多 3 条，多则「+N 条 · 展开」；警报带跳转
-    # （系统阻断 → 交易页、破止损 → 账户页），不在原地堆处理控件。
-    alerts = []
-    _has_stop = False
-    if status != "running":
-        alerts.append(("warn", "⏸ 系统已暂停：新信号不会成交。已挂在券商的条件单请在券商端自行检查/撤销。"))
-    # 破止损持仓检查（P1-5：唯一口径 = 母板止损参考 stop_ref；
-    # 此前用成本-5%口径与母板冲突，同标的在不同页面结论相反）
-    # W-4（批C）：三账户分别计算、逐账户标注，绝不跨账户混算；
-    # 与账户页状态列、验证页破止损列表共用 _stop_breaches 同源，
-    # 现价带数据日期，缺数据不下无风险结论。
-    for _wa in ("sim_a", "sim_hk", "sim_crypto"):
-        for _s, _q, _last, _sr, _md in _stop_breaches(_wa):
-            _has_stop = True
-            alerts.append(("danger",
-                           f"🔴 破止损仍持仓：{ACCT_CN.get(_wa, _wa)} {_s} "
-                           f"现价 {_px_fmt(_s, _last)} < 母板止损参考 "
-                           f"{_px_fmt(_s, _sr)} | 持仓 {_q:g}（数据日 {_md}）"))
-    for _lvl, _msg in alerts[:3]:
-        st.markdown(f'<div class="alert-banner {_lvl}">{_msg}</div>', unsafe_allow_html=True)
-    if len(alerts) > 3:
-        with st.expander(f"+{len(alerts) - 3} 条 · 展开", expanded=False):
-            for _lvl, _msg in alerts[3:]:
-                st.markdown(f'<div class="alert-banner {_lvl}">{_msg}</div>', unsafe_allow_html=True)
-    if blocked or _has_stop:
-        def _goto(page):
-            st.session_state["main_nav"] = page
-        _jc = st.columns(2)
-        if blocked:
-            def _goto_blocked():
-                st.session_state["main_nav"] = "📝 交易"
-                st.session_state["trade_focus"] = "first_blocked"
-            _jc[0].button("系统阻断 → 去交易页处理", key="jump_block_trade",
-                          on_click=_goto_blocked)
-        if _has_stop:
-            _jc[1].button("破止损持仓 → 去账户页", key="jump_stop_acct",
-                          on_click=_goto, args=("💰 账户",))
-
-    # ---- 核心数据（验证终端优势沿用）：总资产/当日盈亏/持仓市值/可用资金 ----
-    # 交易所标准：红涨绿跌，数字 vibrant
-    st.markdown("**核心数据**")
+    # ===== 同源数据（与各页同口径，工作台只做总览与待办分发） =====
     core = {}
     for aid in ["sim_a", "sim_hk", "sim_crypto"]:
         r = q("SELECT nav, pnl_day, cash, position_value, ret_total FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (aid,))
         if r:
             core[aid] = {"nav": r[0][0], "pnl": r[0][1] or 0, "cash": r[0][2] or 0, "pos": r[0][3] or 0, "ret": r[0][4] or 0}
-    # 货币：A股CNY 港股HKD 加密USDT
-    def _fmt(v): return f"{v:,.2f}"
-    # 涨跌色全局唯一口径（G-4）：与行情条同一对色；状态红只用于
-    # 阻断/破止损等状态样式，不与涨跌混用（§2.3 色义分离）
-    def _rg(v): return UP_C if v >= 0 else DOWN_C
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        ra = core.get("sim_a", {}).get("ret", 0)
-        rh = core.get("sim_hk", {}).get("ret", 0)
-        rc = core.get("sim_crypto", {}).get("ret", 0)
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">账户总资产</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#e8eaf0;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">港股 </span>HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</div>
-            <div class="num" style="color:#ddd;font-size:16px;"><span style="font-size:13px;color:#999;">加密货币 </span>${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</div>
-            <div style="font-size:12px;margin-top:4px;">
-                <span style="color:{_rg(ra)};">{ra*100:+.2f}%</span>
-                <span style="color:#666;"> | </span>
-                <span style="color:{_rg(rh)};">{rh*100:+.2f}%</span>
-                <span style="color:#666;"> | </span>
-                <span style="color:{_rg(rc)};">{rc*100:+.2f}%</span>
-            </div>
-            </div>''', unsafe_allow_html=True)
-    with c2:
-        pnl_a = core.get("sim_a", {}).get("pnl", 0)
-        pnl_hk = core.get("sim_hk", {}).get("pnl", 0)
-        pnl_c = core.get("sim_crypto", {}).get("pnl", 0)
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">当日盈亏</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:{_rg(pnl_a)};"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(pnl_a)}</div>
-            <div class="num" style="color:{_rg(pnl_hk)};font-size:14px;">HK${_fmt(pnl_hk)}</div>
-            <div class="num" style="color:{_rg(pnl_c)};font-size:14px;">${_fmt(pnl_c)}</div>
-            </div>''', unsafe_allow_html=True)
-    with c3:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">持仓市值</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#e8eaf0;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("pos", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("pos", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("pos", 0))}</div>
-            </div>''', unsafe_allow_html=True)
-    with c4:
-        st.markdown(f'''<div style="background:#1a1a2e;border:1px solid #1e2532;border-radius:8px;padding:16px;">
-            <div style="color:#888;font-size:13px;">可用资金</div>
-            <div class="num" style="font-size:22px;margin:8px 0;color:#e8eaf0;"><span style="font-size:13px;color:#999;">A股 </span>¥{_fmt(core.get("sim_a", {}).get("cash", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">HK${_fmt(core.get("sim_hk", {}).get("cash", 0))}</div>
-            <div class="num" style="color:#888;font-size:14px;">${_fmt(core.get("sim_crypto", {}).get("cash", 0))}</div>
-            </div>''', unsafe_allow_html=True)
 
-    # ---- 今日待办（最优先）：一眼知道要做什么 ----
-    # 待建条件单
+    def _fmt(v): return f"{v:,.2f}"
+    def _rg(v): return UP_C if v >= 0 else DOWN_C
+
+    # 市场环境（模块A，母板真源三态）：判定只读母板字段
+    _env_w = None
+    try:
+        from engine import regime as _regime_app
+        _env_w = _regime_app.load_market_env(db_path=DB)
+    except Exception:
+        _env_w = None
+
+    # 组合风险（A股账户：敞口/回撤/集中度，源 = daily_report + positions）
+    _expo = _dd = _conc = None
+    try:
+        _na = core.get("sim_a", {})
+        if _na.get("nav"):
+            _expo = _na["pos"] / _na["nav"] * 100
+        _navs = [r[0] for r in q("SELECT nav FROM daily_report WHERE account='sim_a' AND symbol='TOTAL' ORDER BY date")]
+        if _navs:
+            _peak = max(_navs)
+            _dd = (_navs[-1] - _peak) / _peak * 100 if _peak else 0.0
+        _mvs = []
+        for _s, _qty in q("SELECT symbol, qty FROM positions WHERE account='sim_a' AND qty>0"):
+            _lr = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 1", (_s,))
+            if _lr:
+                _mvs.append(_qty * _lr[0][0])
+        if _mvs and _na.get("nav"):
+            _conc = max(_mvs) / _na["nav"] * 100
+    except Exception:
+        pass
+
+    # 市场宽度（母板 16 只最近两日收盘涨跌计数）
+    _adv = _dec = _flat = 0
+    try:
+        for _s in (WORKBOOK_MAP.get("symbols") or {}):
+            _cs = q("SELECT close FROM market_data WHERE symbol=? ORDER BY date DESC LIMIT 2", (_s,))
+            if len(_cs) == 2 and _cs[1][0]:
+                if _cs[0][0] > _cs[1][0]: _adv += 1
+                elif _cs[0][0] < _cs[1][0]: _dec += 1
+                else: _flat += 1
+    except Exception:
+        pass
+
+    # 破止损（三账户同源 _stop_breaches）
+    _breach_rows = []
+    for _wa in ("sim_a", "sim_hk", "sim_crypto"):
+        for _s, _q, _last, _sr, _md in _stop_breaches(_wa):
+            _breach_rows.append((_wa, _s, _q, _last, _sr, _md))
+    _has_stop = bool(_breach_rows)
+
+    # 待办计数（口径沿用批B：待建条件单 / 待审批信号）
     pending_orders = q("""SELECT COUNT(*) FROM signals s
         LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
           AND s.symbol=f.symbol AND s.side=f.side
@@ -1138,31 +1441,173 @@ if tab == "🏠 工作台":
           AND ap.symbol=s.symbol AND ap.side=s.side
         WHERE f.id IS NULL AND s.date >= date('now','-7 days')
           AND (ap.decision IS NULL OR ap.decision <> 'skipped')""")[0][0] or 0
-    # 待审批信号
     pending_signals = q("""SELECT COUNT(*) FROM signals s
         LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account
           AND ap.symbol=s.symbol AND ap.side=s.side
         LEFT JOIN fills f ON f.date=s.date AND f.account=s.account
           AND f.symbol=s.symbol AND f.side=s.side
         WHERE s.date>=date('now','-60 days') AND ap.date IS NULL AND f.date IS NULL""")[0][0] or 0
-    # UI批B §2.3：两个待办入口常驻；数字为 0 时灰显不可点，
-    # 文案只写「待建条件单 0」，不写「去处理」。
-    _any_todo = pending_orders > 0 or pending_signals > 0
-    st.markdown(f'''<div style="background:#1a1a2e;border:1px solid {"#f0b90b" if _any_todo else "#1e2532"};border-radius:8px;
-        padding:12px 16px 4px;margin-bottom:8px;"><b>📋 今日待办</b></div>''',
-        unsafe_allow_html=True)
 
-    def _goto_trade():
-        st.session_state["main_nav"] = "📝 交易"
-    _tc = st.columns(2)
-    _tc[0].button(f"待建条件单 {pending_orders} 个 → 去处理" if pending_orders else "待建条件单 0",
-                  on_click=_goto_trade, key="todo_orders", disabled=not pending_orders)
-    _tc[1].button(f"待审批信号 {pending_signals} 个 → 去处理" if pending_signals else "待审批信号 0",
-                  on_click=_goto_trade, key="todo_signals", disabled=not pending_signals)
+    # ===== 顶部三块：市场环境 / 组合风险 / 系统状态 =====
+    _p1, _p2, _p3 = st.columns(3)
+    with _p1:
+        if _env_w:
+            _fld = _env_w.get("fields") or {}
+            _b31_s = {True: "是", False: "否"}.get((_fld.get("b31") or {}).get("value"), "读取失败")
+            _chip = _r1_chip({"attack": "ok", "cautious": "wait"}.get(_env_w.get("state"), "block"),
+                             _env_w.get("label") or "环境未知")
+            _auto_w = _env_w.get("auto") or {}
+            _xref = ""
+            if _auto_w.get("known"):
+                _recon_s = {True: "对账一致", False: "对账不一致"}.get(_env_w.get("reconciled"), "对账不可用")
+                _xref = (f'<div style="color:#8b9bab;font-size:12px;margin-top:4px;">自动计算：上证 {_auto_w["close"]:,.2f} vs MA20 {_auto_w["ma20"]:,.2f} → '
+                         f'{"站上" if _auto_w["on"] else "未站上"}（指数日 {_auto_w.get("last_date")}） · 与母板B31 {_recon_s}</div>')
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">市场环境</div>'
+                f'<div style="font-size:15px;">环境门禁：{_chip}'
+                f'<span style="color:#8b9bab;font-size:12px;">（母板 B31＝{_b31_s}）</span></div>'
+                f'<div style="font-size:13px;margin-top:4px;">市场宽度（母板 16 只）：涨 {_adv} · 跌 {_dec} · 平 {_flat}</div>'
+                f'{_xref}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="kpi-card"><div class="kpi-label">市场环境</div>'
+                        '市场环境暂不可用（读取失败，不下结论）</div>',
+                        unsafe_allow_html=True)
+    with _p2:
+        _risk_chip = (_r1_chip("block", "禁止新增风险") if (_has_stop or (_env_w and _env_w.get("state") in ("blocked_new", "degraded")))
+                      else _r1_chip("ok", "正常"))
+        st.markdown(
+            f'<div class="kpi-card"><div class="kpi-label">组合风险</div>'
+            f'<div style="font-size:15px;">风险状态：{_risk_chip}</div>'
+            f'<div style="font-size:13px;margin-top:4px;">A股敞口：<span class="num">{_expo:.1f}%</span>（上限 70%） · '
+            f'组合回撤：<span class="num">{_dd:.1f}%</span><br>'
+            f'最大单标的集中度：<span class="num">{_conc:.1f}%</span>（占 A股账户净值）</div></div>'
+            if (_expo is not None and _dd is not None and _conc is not None) else
+            '<div class="kpi-card"><div class="kpi-label">组合风险</div>风险数据不完整，不下结论</div>',
+            unsafe_allow_html=True)
+    with _p3:
+        try:
+            _md_max = q("SELECT MAX(date) FROM market_data WHERE market IN ('a','hk')")[0][0]
+            _fp = q("SELECT COUNT(*), MAX(id) FROM fills")[0]
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">系统状态</div>'
+                f'<div style="font-size:13px;line-height:1.9;">行情：正常 · 数据至 {_md_max}<br>'
+                f'账本：已核对 · fills {_fp[0]} 笔 · max_id {_fp[1]}<br>'
+                f'引擎：{"运行中" if status == "running" else "已暂停"} · '
+                f'{"自动" if mode == "auto" else "手动"}（模拟执行）</div></div>',
+                unsafe_allow_html=True)
+        except Exception:
+            st.markdown('<div class="kpi-card"><div class="kpi-label">系统状态</div>状态读取失败</div>',
+                        unsafe_allow_html=True)
 
-    # 风险警报区已前移至市场环境卡之后（UI批A W-1），此处不再重复。
-    # 原「系统状态+行情新鲜度」_fresh_card 定义从未被调用（死代码），
-    # 其四态判定已由页眉状态条（G-3）统一呈现，UI批A W-2 一并删除。
+    # ===== 左：优先级队列；右：账户概览 + 市场与策略摘要 =====
+    _ql, _qr = st.columns([2, 1])
+    with _ql:
+        st.markdown('<div class="kpi-card" style="margin-bottom:2px;"><div class="kpi-label">待处理事项 / 优先级队列</div></div>',
+                    unsafe_allow_html=True)
+        _items = []
+        if _hworst >= 2:
+            _items.append(("P0", "block", "<b>数据异常</b>：数据健康处于断连/异常态（见顶栏 SYSTEM），先恢复数据再谈交易"))
+        try:
+            _eb = q("SELECT date, symbol, reason FROM risk_block_events WHERE rule='env_gate' ORDER BY date DESC, id DESC LIMIT 1")
+        except Exception:
+            _eb = []
+        if _eb:
+            _nm = SYMBOL_CN.get(_eb[0][1], "")
+            _items.append(("P1", "block", f"<b>风控拦截</b>：{_eb[0][1]} {_nm} BUY 被环境闸拦截（{_eb[0][0]}）"))
+        if _has_stop:
+            _bs = "；".join(f"{_s} 现价 {_px_fmt(_s, _l)} < 母板止损参考 {_px_fmt(_s, _r)}"
+                            for _w, _s, _qty, _l, _r, _md in _breach_rows[:3])
+            _items.append(("P1", "block", f"<b>破止损仍持仓</b>：{_bs}"))
+        if pending_orders:
+            _items.append(("P2", "wait", f"<b>待建条件单</b>：{pending_orders} 个待处理（模拟执行，券商人工下单）"))
+        if pending_signals:
+            _items.append(("P2", "wait", f"<b>待审批信号</b>：{pending_signals} 条待处理（无持仓 SELL 须先核持仓）"))
+        try:
+            _inst = q("SELECT COUNT(*), MAX(date) FROM inst_lhb_fetch_days")[0]
+        except Exception:
+            _inst = (0, None)
+        if _inst and _inst[0]:
+            _items.append(("P3", "mut", f"<b>研究观察</b>：机构影子前向样本积累中（已抓取 {_inst[0]} 个交易日，至 {_inst[1]}）"))
+        if status != "running":
+            _items.insert(0, ("P1", "block", "<b>系统已暂停</b>：新信号不会成交；已挂券商条件单请在券商端自行检查/撤销"))
+        if not _items:
+            _items.append(("", "ok", "当前无待处理事项"))
+        for _pri, _kind, _txt in _items:
+            _pri_html = f'<span style="color:{"#f6465d" if _pri in ("P0", "P1") else "#e8a33d" if _pri == "P2" else "#8b9bab"};font-weight:700;margin-right:8px;">{_pri}</span>' if _pri else ""
+            st.markdown(f'<div style="font-size:13.5px;padding:7px 2px;border-bottom:1px solid #1e2532;">{_pri_html}{_txt}</div>',
+                        unsafe_allow_html=True)
+        # 跳转与待办入口（沿用既有按钮与 key，队列只分发不处理）
+        def _goto(page):
+            st.session_state["main_nav"] = page
+        def _goto_blocked():
+            st.session_state["main_nav"] = "📝 交易"
+            st.session_state["trade_focus"] = "first_blocked"
+        def _goto_trade():
+            st.session_state["main_nav"] = "📝 交易"
+        _jc = st.columns(2)
+        if blocked:
+            _jc[0].button("系统阻断 → 去交易页处理", key="jump_block_trade", on_click=_goto_blocked)
+        if _has_stop:
+            _jc[1].button("破止损持仓 → 去账户页", key="jump_stop_acct", on_click=_goto, args=("💰 账户",))
+        _tc = st.columns(2)
+        _tc[0].button(f"待建条件单 {pending_orders} 个 → 去处理" if pending_orders else "待建条件单 0",
+                      on_click=_goto_trade, key="todo_orders", disabled=not pending_orders)
+        _tc[1].button(f"待审批信号 {pending_signals} 个 → 去处理" if pending_signals else "待审批信号 0",
+                      on_click=_goto_trade, key="todo_signals", disabled=not pending_signals)
+    with _qr:
+        _na = core.get("sim_a", {})
+        _pnl_a = _na.get("pnl", 0)
+        # 净值 sparkline（A股账户近 60 个交易日，daily_report 同源）
+        _spark = ""
+        try:
+            _navs60 = [r[0] for r in q("SELECT nav FROM daily_report WHERE account='sim_a' AND symbol='TOTAL' ORDER BY date DESC LIMIT 60")][::-1]
+            if len(_navs60) > 1:
+                _lo, _hi = min(_navs60), max(_navs60)
+                _rg60 = (_hi - _lo) or 1
+                _pts = " ".join(f"{i / (len(_navs60) - 1) * 260:.1f},{40 - (v - _lo) / _rg60 * 36:.1f}"
+                                for i, v in enumerate(_navs60))
+                _spark = (f'<svg width="100%" height="44" viewBox="0 0 260 44" preserveAspectRatio="none">'
+                          f'<polyline points="{_pts}" fill="none" stroke="#56c8dc" stroke-width="1.5"/></svg>')
+        except Exception:
+            _spark = ""
+        st.markdown(
+            f'<div class="kpi-card"><div class="kpi-label">账户概览</div>'
+            f'<div style="font-size:13.5px;line-height:2.0;">'
+            f'A股账户净值 <b class="num" style="float:right;">¥{_fmt(_na.get("nav", 0))}</b><br>'
+            f'港股账户净值 <b class="num" style="float:right;">HK${_fmt(core.get("sim_hk", {}).get("nav", 0))}</b><br>'
+            f'加密账户净值 <b class="num" style="float:right;">${_fmt(core.get("sim_crypto", {}).get("nav", 0))}</b><br>'
+            f'当日盈亏（A股） <b class="num" style="float:right;color:{_rg(_pnl_a)};">{_pnl_a:+,.2f}</b><br>'
+            f'可用资金（A股） <b class="num" style="float:right;">¥{_fmt(_na.get("cash", 0))}</b></div>'
+            f'{_spark}'
+            f'<div style="color:#8b9bab;font-size:12px;">A股账户净值 · 近 60 个交易日 · 详细持仓进入账户页</div></div>',
+            unsafe_allow_html=True)
+        # 市场与策略摘要（选股 TOP1 + 新闻面状态 + 策略状态，均只读事实）
+        _top1 = "—"
+        try:
+            import json as _json2
+            _sr1 = q("SELECT results_json FROM screen_runs ORDER BY asof DESC, id DESC LIMIT 1")
+            if _sr1:
+                _res = _json2.loads(_sr1[0][0])
+                if _res:
+                    _t = max(_res, key=lambda x: x.get("total") or 0)
+                    _top1 = f'{_t.get("symbol", "")} {_t.get("name", "")}（{_t.get("grade", "")} · {_t.get("total", 0):.1f} 分）'
+        except Exception:
+            pass
+        _news_s = "未知"
+        try:
+            import json as _json3
+            with open(os.path.join(BASE, "config", "sector_news.json"), encoding="utf-8") as _nf:
+                _news = _json3.load(_nf)
+            _news_s = f"在账 {len(_news)} 条" if _news else "过期 · 断更（X 简报停用后无新入账）"
+        except Exception:
+            _news_s = "未知"
+        st.markdown(
+            f'<div class="kpi-card"><div class="kpi-label">市场与策略摘要</div>'
+            f'<div style="font-size:13.5px;line-height:1.9;">选股 TOP1：{_top1}<br>'
+            f'新闻面：{_news_s}<br>'
+            f'策略状态：sim_a＝buyback · 港股/加密策略停用（只跟踪）</div></div>',
+            unsafe_allow_html=True)
+
     # 互联互通资金（北向/南向）：成交额 + 北向持股市值，净买额 2024-08 起停止披露
     _ns = _fetch_ns_flow()
     if _ns:
@@ -1191,15 +1636,13 @@ if tab == "🏠 工作台":
                     f'<div style="margin-top:4px;">{_ns_delta(_ns.get("south_amt"), _ns.get("south_prev"))}</div></div>',
                     unsafe_allow_html=True)
 
-    # UI批B 信息架构收敛（§1/§2.4）：工作台只留风险+待办+核心数字+
-    # 关注列表。原误置的「该账户暂无数据」蓝条（W-3）删除；净值曲线
-    # 移至账户页；事件流移至交易页（§3.2，四类色点、近15条）。
+    # UI-R1 阶段C 工作台：顶部三块（环境/风险/系统）+ 左优先级队列
+    # （P0 数据异常 / P1 风控与破止损 / P2 待人工 / P3 研究观察）
+    # + 右账户概览与策略摘要；只做总览与待办分发，明细各归其页。
 
 # ================================================================
-# 📈 行情与信号：实时行情 + 策略规则 + 触发线
-# ================================================================
 elif tab == "🔍 选股":
-    st.header("🔍 选股")
+    st.markdown('<div class="section-head">🔍 选股 · 研究与候选</div>', unsafe_allow_html=True)
     # 模块D（2026-10-26）：原「🎯 条件筛选」手动面板（2026-10-17 试验版，
     # 涨幅/RSI/MACD 手动条件 + 独立出结果）已删除——它是与三重校验并存的
     # 第二个决策入口，违反唯一入口原则。本页只呈现每日自动筛选结果：
@@ -1239,6 +1682,26 @@ elif tab == "🔍 选股":
                     unsafe_allow_html=True)
     except Exception:
         pass
+    # ===== UI-R1 阶段C 选股页：摘要条（覆盖/等级分布/asof，事实先行） =====
+    try:
+        import json as _json_s
+        _srow = q("SELECT asof, results_json FROM screen_runs ORDER BY asof DESC, id DESC LIMIT 1")
+        if _srow:
+            _sres = _json_s.loads(_srow[0][1])
+            _grades = {}
+            for _r in _sres:
+                _grades[_r.get("grade") or "?"] = _grades.get(_r.get("grade") or "?", 0) + 1
+            _gdist = " · ".join(f"{g} 级 {_grades[g]}" for g in ("S", "A", "B", "C", "D") if g in _grades)
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">选股摘要</div>'
+                f'<div style="font-size:13.5px;">评分覆盖 <span class="num">{len(_sres)}</span> 只（母板观察池全集） · '
+                f'{_gdist} · 数据 asof <span class="num">{_srow[0][0]}</span><br>'
+                f'<span style="color:#8b9bab;font-size:12px;">本页只呈现每日自动筛选结果，不提供手动筛选或下单入口；候选是否可买由环境闸与风控决定。</span></div></div>',
+                unsafe_allow_html=True)
+    except Exception:
+        pass
+    st.markdown('<div class="kpi-label" style="margin-top:12px;">研究结论 · 候选与全池结果（事实）</div>',
+                unsafe_allow_html=True)
     # ---- TOP标的榜：最近一期 screen_runs 全集 TOP8 + screen_perf 验证列 ----
     st.subheader("🏆 TOP标的榜")
     _tb_asof, _tb_rv, _tb_rows = _topboard_data(DB)
@@ -1343,6 +1806,8 @@ elif tab == "🔍 选股":
                 f"{_top['symbol']} {_top['name']} {_top['total']:.1f} 分"
                 + (f"（{' · '.join(_gate_tags(_top['gates']))}）" if _top["gates"] else ""))
     # ---- 板块新闻面：X 博主证据账折算的板块情绪 ----
+    st.markdown('<div class="kpi-label" style="margin-top:12px;">研究证据 · 新闻面（观察，不构成交易依据）</div>',
+                unsafe_allow_html=True)
     st.subheader("📰 板块新闻面")
     try:
         from engine.screen import load_map as _load_wmap
@@ -1389,6 +1854,8 @@ elif tab == "🔍 选股":
     # 模块E裁决（2026-10-26 用户拍板删除）：原「📰 持仓资讯」外链目录
     # （已被证据制板块新闻面覆盖）已移除，不得回流。
     # ---- 技术形态：每个标的指标面板 ----
+    st.markdown('<div class="kpi-label" style="margin-top:12px;">研究证据 · 技术形态（观察）</div>',
+                unsafe_allow_html=True)
     st.subheader("📐 技术形态")
     import time as _time
     _ts = int(_time.time())
@@ -1431,7 +1898,7 @@ elif tab == "📝 交易":
                     horizontal=True, key="trade_acct")
 
     # 待建条件单
-    st.subheader("待建条件单")
+    st.subheader("订单管理")
     sigs = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
                 LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
                   AND s.symbol=f.symbol AND s.side=f.side
@@ -1462,41 +1929,40 @@ elif tab == "📝 交易":
                 qty_est = pos[0][0] if pos else 0
             ok, errs, warns = validate_order(acct, s, sd, qty_est, px, d)
             validated.append((d, s, sd, px, ok, errs, warns))
-        # 拦截：有校验失败的先提示
-        failed = [v for v in validated if not v[4]]
-        if failed:
-            st.warning(f"⛔ {len(failed)} 条信号校验未通过，已拦截（不生成订单指引）")
-            st.caption("校验不通过无法建单。不再处理这条就点「跳过/隔离」：跳过后不再计入待办，模拟盘也不会成交。")
-            for d, s, sd, px, ok, errs, warns in failed:
-                # 无效/过期标签（§3.1）：无持仓 SELL 与过期信号一眼可辨，
-                # 避免被反复当成可建单；拦截原因一行说完（首因+项数）。
-                if any("无持仓" in e for e in errs):
-                    _tag = "无效·无仓"
-                elif any("已过期" in e for e in errs):
-                    _tag = "已过期"
-                else:
-                    _tag = "已拦截"
-                _reason = errs[0] if errs else ""
-                if len(errs) > 2:
-                    _reason += f"（共 {len(errs)} 项）"
-                elif len(errs) == 2:
-                    _reason += f"；{errs[1]}"
-                _fc1, _fc2 = st.columns([3, 1])
-                with _fc1:
-                    st.markdown(f'<span id="blk-{s}"></span>'
-                                f'<span style="background:rgba(246,70,93,.15);'
-                                f'color:#f6465d;border-radius:4px;padding:1px 6px;'
-                                f'font-size:12px;">{_tag}</span> '
-                                f"**{sym_name(s)}** {sd} @{_px_fmt(s, px)} "
-                                f'<span style="color:#666;font-size:12px;">{d}</span>',
-                                unsafe_allow_html=True)
-                    st.caption(_reason)
-                with _fc2:
-                    if st.button("⏭ 跳过/隔离", key=f"block_skip_{d}_{s}_{sd}"):
-                        _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
-                        if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
-                            st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
-                        st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+
+        # ===== UI-R1 阶段C 交易页：执行状态栏（状态在先，明细在后） =====
+        _n_ok = sum(1 for v in validated if v[4])
+        _n_fail = len(validated) - _n_ok
+        _tag_n = {"无效·无仓": 0, "已过期": 0, "已拦截": 0}
+        for _v in validated:
+            if _v[4]:
+                continue
+            if any("无持仓" in e for e in _v[5]):
+                _tag_n["无效·无仓"] += 1
+            elif any("已过期" in e for e in _v[5]):
+                _tag_n["已过期"] += 1
+            else:
+                _tag_n["已拦截"] += 1
+        try:
+            from engine import regime as _regime_tr
+            _env_tr = _regime_tr.load_market_env(db_path=DB)
+            _env_chip = _r1_chip({"attack": "ok", "cautious": "wait"}.get(
+                _env_tr.get("state"), "block"), _env_tr.get("label") or "环境未知")
+        except Exception:
+            _env_chip = _r1_chip("wait", "环境未知")
+        _risk_txt = ("；".join(f"{k} {v}" for k, v in _tag_n.items() if v)
+                     if _n_fail else "无拦截")
+        st.markdown(
+            f'<div class="kpi-card"><div class="kpi-label">执行状态</div>'
+            f'<div style="font-size:13.5px;">环境：{_env_chip} · '
+            f'可执行：{_r1_chip("info" if _n_ok else "mut", f"可处理 {_n_ok} 条")} · '
+            f'待建单 {len(sigs)} 条（近 7 天）<br>'
+            f'风控结果：{_r1_chip("block", "已拦截 " + str(_n_fail) + " 条") if _n_fail else _r1_chip("ok", "无拦截")} '
+            f'<span style="color:#8b9bab;font-size:12px;">{_risk_txt if _n_fail else ""}</span></div></div>',
+            unsafe_allow_html=True)
+        st.markdown('<div class="kpi-label" style="margin-top:10px;">可处理订单（校验通过 · 券商人工建单）</div>',
+                    unsafe_allow_html=True)
+
         valid_sigs = [v for v in validated if v[4]]
         if not valid_sigs:
             st.info("无可执行订单")
@@ -1552,6 +2018,94 @@ elif tab == "📝 交易":
                         if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
                             st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
                         st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+
+
+        st.markdown('<div class="kpi-label" style="margin-top:14px;">风控拦截（不可处理 · 原因与处理方式逐条标注）</div>',
+                    unsafe_allow_html=True)
+        failed = [v for v in validated if not v[4]]
+        if failed:
+            st.warning(f"⛔ {len(failed)} 条信号校验未通过，已拦截（不生成订单指引）")
+            st.caption("校验不通过无法建单。不再处理这条就点「跳过/隔离」：跳过后不再计入待办，模拟盘也不会成交。")
+            for d, s, sd, px, ok, errs, warns in failed:
+                # 无效/过期标签（§3.1）：无持仓 SELL 与过期信号一眼可辨，
+                # 避免被反复当成可建单；拦截原因一行说完（首因+项数）。
+                if any("无持仓" in e for e in errs):
+                    _tag = "无效·无仓"
+                elif any("已过期" in e for e in errs):
+                    _tag = "已过期"
+                else:
+                    _tag = "已拦截"
+                _reason = errs[0] if errs else ""
+                if len(errs) > 2:
+                    _reason += f"（共 {len(errs)} 项）"
+                elif len(errs) == 2:
+                    _reason += f"；{errs[1]}"
+                _fc1, _fc2 = st.columns([3, 1])
+                with _fc1:
+                    st.markdown(f'<span id="blk-{s}"></span>'
+                                f'<span style="background:rgba(246,70,93,.15);'
+                                f'color:#f6465d;border-radius:4px;padding:1px 6px;'
+                                f'font-size:12px;">{_tag}</span> '
+                                f"**{sym_name(s)}** {sd} @{_px_fmt(s, px)} "
+                                f'<span style="color:#666;font-size:12px;">{d}</span>',
+                                unsafe_allow_html=True)
+                    st.caption(_reason)
+                with _fc2:
+                    if st.button("⏭ 跳过/隔离", key=f"block_skip_{d}_{s}_{sd}"):
+                        _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
+                        if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
+                            st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
+                        st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+
+    # 成交记录（独立区，与事件流分开；fills 同源只读）
+    st.subheader("成交记录")
+    _fills_tr = q("SELECT date, symbol, side, qty, price, pnl FROM fills WHERE account=? ORDER BY date DESC, id DESC LIMIT 15", (acct,))
+    if _fills_tr:
+        st.table([{"日期": d, "标的": sym_name(s),
+                   "方向": "买入" if sd == "BUY" else "卖出",
+                   "数量": f"{qty:g}", "成交价": _px_fmt(s, px),
+                   "盈亏": (f"{pnl:+,.2f}" if pnl is not None else "—")}
+                  for d, s, sd, qty, px, pnl in _fills_tr])
+    else:
+        st.write("暂无成交记录")
+
+    # 事件流（§3.2：自工作台移入交易页）：日期 | 色点类型 | 一句话，
+    # 默认近 15 条；类型色：信号灰、审批蓝、成交绿、拦截/阻断红。
+    # 拦截事件读 risk_block_events 落库记录（V-3 只读展示，不改账本）。
+    st.subheader("事件流")
+    _EV_DOT = {"成交": "#2ebd85", "信号": "#8a8f9c",
+               "审批": "#1890ff", "拦截": "#f6465d"}
+    _ev = []
+    for d, a, s, sd, qty, px in q(
+            "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 8"):
+        _ev.append((d, "成交", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} {qty:g} @ {_px_fmt(s, px)}"))
+    for d, a, s, sd in q(
+            "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 8"):
+        _ev.append((d, "信号", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd}"))
+    for d, a, s, sd, dc in q(
+            "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 8"):
+        _dc_cn = "批准" if dc == "approved" else ("跳过" if dc == "skipped" else dc)
+        _ev.append((d, "审批", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} · {_dc_cn}"))
+    try:
+        for d, a, s, sd, reason in q(
+                "SELECT COALESCE(trade_date, substr(ts,1,10)), account, symbol,"
+                " side, reason FROM risk_block_events ORDER BY ts DESC LIMIT 8"):
+            _ev.append((d or "—", "拦截",
+                        f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} · {reason or ''}"))
+    except Exception:
+        pass
+    _ev.sort(key=lambda e: e[0], reverse=True)
+    if _ev:
+        st.markdown("".join(
+            f'<div style="display:flex;gap:10px;align-items:baseline;padding:5px 0;'
+            f'border-bottom:1px solid #1e2532;">'
+            f'<span style="color:#8a8f9c;font-size:12px;min-width:86px;">{d}</span>'
+            f'<span style="color:{_EV_DOT[k]};font-size:12px;">●</span>'
+            f'<span style="color:{_EV_DOT[k]};font-size:12px;font-weight:700;min-width:32px;">{k}</span>'
+            f'<span style="font-size:13px;">{txt}</span></div>'
+            for d, k, txt in _ev[:15]), unsafe_allow_html=True)
+    else:
+        st.write("暂无事件")
 
     # 券商回执录入（四态按钮反馈：已提交→执行中→已生效/失败）
     st.subheader("🧾 券商回执录入")
@@ -1619,44 +2173,6 @@ elif tab == "📝 交易":
     else:
         st.write("暂无回执")
 
-    # 事件流（§3.2：自工作台移入交易页）：日期 | 色点类型 | 一句话，
-    # 默认近 15 条；类型色：信号灰、审批蓝、成交绿、拦截/阻断红。
-    # 拦截事件读 risk_block_events 落库记录（V-3 只读展示，不改账本）。
-    st.subheader("事件流")
-    _EV_DOT = {"成交": "#2ebd85", "信号": "#8a8f9c",
-               "审批": "#1890ff", "拦截": "#f6465d"}
-    _ev = []
-    for d, a, s, sd, qty, px in q(
-            "SELECT date,account,symbol,side,qty,price FROM fills ORDER BY date DESC LIMIT 8"):
-        _ev.append((d, "成交", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} {qty:g} @ {_px_fmt(s, px)}"))
-    for d, a, s, sd in q(
-            "SELECT date,account,symbol,side FROM signals ORDER BY date DESC LIMIT 8"):
-        _ev.append((d, "信号", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd}"))
-    for d, a, s, sd, dc in q(
-            "SELECT date,account,symbol,side,decision FROM approvals ORDER BY updated DESC LIMIT 8"):
-        _dc_cn = "批准" if dc == "approved" else ("跳过" if dc == "skipped" else dc)
-        _ev.append((d, "审批", f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} · {_dc_cn}"))
-    try:
-        for d, a, s, sd, reason in q(
-                "SELECT COALESCE(trade_date, substr(ts,1,10)), account, symbol,"
-                " side, reason FROM risk_block_events ORDER BY ts DESC LIMIT 8"):
-            _ev.append((d or "—", "拦截",
-                        f"{ACCT_CN.get(a, a)} {sym_name(s)} {sd} · {reason or ''}"))
-    except Exception:
-        pass
-    _ev.sort(key=lambda e: e[0], reverse=True)
-    if _ev:
-        st.markdown("".join(
-            f'<div style="display:flex;gap:10px;align-items:baseline;padding:5px 0;'
-            f'border-bottom:1px solid #1e2532;">'
-            f'<span style="color:#8a8f9c;font-size:12px;min-width:86px;">{d}</span>'
-            f'<span style="color:{_EV_DOT[k]};font-size:12px;">●</span>'
-            f'<span style="color:{_EV_DOT[k]};font-size:12px;font-weight:700;min-width:32px;">{k}</span>'
-            f'<span style="font-size:13px;">{txt}</span></div>'
-            for d, k, txt in _ev[:15]), unsafe_allow_html=True)
-    else:
-        st.write("暂无事件")
-
     # 行级深链（P3 实测项）：工作台「系统阻断」跳转时定位第一条
     # 被拦截行并闪烁描边；一次性消费，失败静默（页级跳转已达成）。
     _focus = st.session_state.pop("trade_focus", None)
@@ -1681,96 +2197,150 @@ elif tab == "💰 账户":
     acct_map = {"A股": "sim_a", "港股": "sim_hk", "加密货币": "sim_crypto"}
     acct = acct_map[acct_choice]
 
-    # 导出对账单
-    if st.button("📥 导出对账单CSV", key="export_stmt"):
-        import csv, io
-        out = io.StringIO()
-        w = csv.writer(out)
-        w.writerow(["日期", "账户", "标的", "方向", "数量", "价格", "费用", "盈亏"])
-        for r in q("SELECT date,account,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 500", (acct,)):
-            r = list(r); r[1] = ACCT_CN.get(r[1], r[1])
-            w.writerow(r)
-        st.download_button("下载CSV", out.getvalue(), f"对账单_{ACCT_CN.get(acct, acct)}.csv", "text/csv", key="dl_stmt")
-
-    # 持仓（§4 定列）：代码 | 名称 | 数量 | 成本 | 现价 | 浮盈% |
-    # 止损参考 | 状态；状态与工作台/验证页同源（_stop_state：破止损/
-    # 接近止损（距参考 ≤5%）/正常），禁止三处数字不一致。
-    st.subheader("当前持仓")
-    pos = q("SELECT symbol,qty,avg_cost,last_price,market_value FROM positions WHERE account=? AND qty>0", (acct,))
-    if pos:
-        rows = []
-        for s, qty, avg, last, mv in pos:
-            upl_pct = (last - avg) / avg * 100 if last and avg else 0
-            _stt, _sr = _stop_state(s, last)
-            _stt_s = {"breach": "🔴 破止损", "near": "🟡 接近止损",
-                      "ok": "正常", "none": "—"}.get(_stt, "—")
-            rows.append({"代码": s[2:] if s.startswith("HK") else s,
-                         "名称": SYMBOL_CN.get(s, ""),
-                         "数量": f"{qty:g}", "成本": _px_fmt(s, avg),
-                         "现价": _px_fmt(s, last),
-                         "浮盈%": f"{upl_pct:+.1f}%",
-                         "止损参考": _px_fmt(s, _sr) if _sr else "—",
-                         "状态": _stt_s})
-        st.table(rows)
-
+    _det = st.session_state.get("acct_detail")
+    if _det and _det[0] == acct:
+        _render_acct_detail(acct, _det[1])
     else:
-        st.write("空仓")
+        # 导出对账单
+        if st.button("📥 导出对账单CSV", key="export_stmt"):
+            import csv, io
+            out = io.StringIO()
+            w = csv.writer(out)
+            w.writerow(["日期", "账户", "标的", "方向", "数量", "价格", "费用", "盈亏"])
+            for r in q("SELECT date,account,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 500", (acct,)):
+                r = list(r); r[1] = ACCT_CN.get(r[1], r[1])
+                w.writerow(r)
+            st.download_button("下载CSV", out.getvalue(), f"对账单_{ACCT_CN.get(acct, acct)}.csv", "text/csv", key="dl_stmt")
 
-    # 持仓K线：固定为实盘4只（2026-10-25用户指定：中国船舶换科德数控，加港股两只）
-    # 成本为用户2026-09-28确认的实盘成本，只作价格线与相对成本对照，不进模拟账
-    st.subheader("持仓K线")
-    from engine.tv_charts import kline_html
-    _KLINE_WATCH = [("002446", "sim_a", 11.2), ("688305", "sim_a", 64.0),
-                    ("HK9660", "sim_hk", 7.9), ("HK0354", "sim_hk", 5.2)]
-    for _sym, _sacct, _cost in _KLINE_WATCH:
-        _bars = q("SELECT date,open,high,low,close,volume FROM market_data"
-                  " WHERE symbol=? ORDER BY date DESC LIMIT 120", (_sym,))
-        if len(_bars) < 20:
-            st.write(f"**{sym_name(_sym)}**：数据不足（{len(_bars)}根）")
-            continue
-        _bars = _bars[::-1]
-        _last = _bars[-1][4]
-        _pct = (_last - _cost) / _cost * 100 if _cost else 0
-        _pls = [{"price": round(_cost, 4), "title": f"实盘成本 {_cost:.2f}",
-                 "color": "#1890ff"}]
-        _sm = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "
-                "ORDER BY date DESC LIMIT 20", (_sacct, _sym))
-        _marks = []
-        for _d, _sd in _sm:
-            if _sd == "BUY":
-                _marks.append({"time": _d, "position": "belowBar", "shape": "arrowUp",
-                               "text": "买", "color": "#2ebd85"})
+        # ===== UI-R1 阶段C 账户页：顶部四项资产摘要 + 风险分布 =====
+        _cur_s = {"sim_a": "¥", "sim_hk": "HK$", "sim_crypto": "$"}.get(acct, "")
+        _sum = q("SELECT nav, pnl_day, cash, position_value FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date DESC LIMIT 1", (acct,))
+        if _sum:
+            _nv, _pd, _cash, _pv = _sum[0]
+            _expo_a = (_pv / _nv * 100) if _nv else 0.0
+            _cap_a = 100 if acct == "sim_crypto" else 70
+            _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+            for _col, _lab, _val in (
+                    (_sc1, "账户净值", f"{_cur_s}{_nv:,.2f}"),
+                    (_sc2, "当日盈亏", f"{(_pd or 0):+,.2f}"),
+                    (_sc3, "可用现金", f"{_cur_s}{(_cash or 0):,.2f}"),
+                    (_sc4, "持仓敞口", f"{_expo_a:.1f}% / 上限 {_cap_a}%")):
+                _col.markdown(f'<div class="kpi-card"><div class="kpi-label">{_lab}</div>'
+                              f'<div class="kpi-value num" style="font-size:19px;">{_val}</div></div>',
+                              unsafe_allow_html=True)
+            _posr = q("SELECT symbol, market_value FROM positions WHERE account=? AND qty>0", (acct,))
+            _tot_mv = sum(r[1] or 0 for r in _posr)
+            _max_mv = max([r[1] or 0 for r in _posr], default=0)
+            _conc_a = (_max_mv / _tot_mv * 100) if _tot_mv else 0.0
+            _cov = sum(1 for r in _posr if stop_ref_of(r[0]))
+            _nbr = len(_stop_breaches(acct))
+            st.markdown(
+                f'<div class="kpi-card"><div class="kpi-label">风险分布</div>'
+                f'<div style="font-size:13.5px;">敞口 <span class="num">{_expo_a:.1f}%</span>（上限 {_cap_a}%） · '
+                f'最大单标的集中度 <span class="num">{_conc_a:.1f}%</span>（占持仓市值） · '
+                f'止损覆盖 <span class="num">{_cov}/{len(_posr)}</span> 只持仓有母板止损参考 · '
+                f'破止损 <span class="num" style="color:{"#f6465d" if _nbr else "#2ebd85"};">{_nbr}</span> 只</div></div>',
+                unsafe_allow_html=True)
+
+        # 持仓（§4 定列）：代码 | 名称 | 数量 | 成本 | 现价 | 浮盈% |
+        # 止损参考 | 状态；状态与工作台/验证页同源（_stop_state：破止损/
+        # 接近止损（距参考 ≤5%）/正常），禁止三处数字不一致。
+        st.subheader("当前持仓")
+        pos = q("SELECT symbol,qty,avg_cost,last_price,market_value FROM positions WHERE account=? AND qty>0", (acct,))
+        if pos:
+            rows = []
+            for s, qty, avg, last, mv in pos:
+                upl_pct = (last - avg) / avg * 100 if last and avg else 0
+                _stt, _sr = _stop_state(s, last)
+                _stt_s = {"breach": "🔴 破止损", "near": "🟡 接近止损",
+                          "ok": "正常", "none": "—"}.get(_stt, "—")
+                rows.append({"代码": s[2:] if s.startswith("HK") else s,
+                             "名称": SYMBOL_CN.get(s, ""),
+                             "数量": f"{qty:g}", "成本": _px_fmt(s, avg),
+                             "现价": _px_fmt(s, last),
+                             "浮盈%": f"{upl_pct:+.1f}%",
+                             "止损参考": _px_fmt(s, _sr) if _sr else "—",
+                             "状态": _stt_s})
+            st.caption("勾选持仓行首复选框，进入个股详情"
+                       "（大图 · 成本/止损/计划线 · 成交记录）")
+            # 点选行进入个股详情（批D-1）：选择状态被消费一次，
+            # 返回后原选择仍在也不回弹；取消选择后守卫复位。
+            _raw_order = [r[0] for r in pos]
+            st.dataframe(rows, key="pos_df", hide_index=True,
+                         on_select="rerun", selection_mode="single-row",
+                         use_container_width=True)
+            _sel = (st.session_state.get("pos_df") or {}
+                    ).get("selection", {}).get("rows", [])
+            if _sel:
+                _ti = _sel[0]
+                _tgt = _raw_order[_ti] if 0 <= _ti < len(_raw_order) \
+                    else None
+                if _tgt and st.session_state.get(
+                        "_pos_consumed") != (acct, _tgt):
+                    st.session_state["_pos_consumed"] = (acct, _tgt)
+                    st.session_state["acct_detail"] = (acct, _tgt)
+                    st.rerun()
             else:
-                _marks.append({"time": _d, "position": "aboveBar", "shape": "arrowDown",
-                               "text": "卖", "color": "#f6465d"})
-        st.write(f"**{sym_name(_sym)}** 实盘成本 {_cost:.2f} · 现价 {_last:.2f} · "
-                 f"相对成本 {_pct:+.1f}%")
-        st.components.v1.html(
-            kline_html(f"watch_{_sym}", _bars, price_lines=_pls,
-                       markers=_marks, height=420),
-            height=430)
+                st.session_state["_pos_consumed"] = None
 
-    # 近期成交
-    st.subheader("近期成交")
-    fl = q("SELECT date,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 20", (acct,))
-    if fl:
-        st.table([{"日期": d, "标的": sym_name(s), "方向": sd, "数量": qty, "成交价": px, "费用": fee, "盈亏": pnl}
-                  for d, s, sd, qty, px, fee, pnl in fl])
-    else:
-        st.write("暂无成交")
+        else:
+            st.write("空仓")
 
-    # 净值曲线（UI批B 自工作台移入，归账户页职责）：纵轴为数据域
-    # 自动缩放时必须明示范围，避免波动视觉误导（批C W-4 约束）。
-    _nhist = q("SELECT date,nav FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date", (acct,))
-    if _nhist:
-        st.subheader("净值曲线")
-        import pandas as pd
-        _ndf = pd.DataFrame(_nhist, columns=["date", "nav"])
-        _ndf["date"] = pd.to_datetime(_ndf["date"])
-        _ndf = _ndf.set_index("date")
-        _nmin, _nmax = float(_ndf["nav"].min()), float(_ndf["nav"].max())
-        st.caption(f"纵轴数据域：{_nmin:,.2f} – {_nmax:,.2f}（自动缩放，非零起点）")
-        st.line_chart(_ndf["nav"])
+        # 持仓K线：固定为实盘4只（2026-10-25用户指定：中国船舶换科德数控，加港股两只）
+        # 成本为用户2026-09-28确认的实盘成本，只作价格线与相对成本对照，不进模拟账
+        st.subheader("持仓K线")
+        from engine.tv_charts import kline_html
+        _KLINE_WATCH = [("002446", "sim_a", 11.2), ("688305", "sim_a", 64.0),
+                        ("HK9660", "sim_hk", 7.9), ("HK0354", "sim_hk", 5.2)]
+        for _sym, _sacct, _cost in _KLINE_WATCH:
+            _bars = q("SELECT date,open,high,low,close,volume FROM market_data"
+                      " WHERE symbol=? ORDER BY date DESC LIMIT 120", (_sym,))
+            if len(_bars) < 20:
+                st.write(f"**{sym_name(_sym)}**：数据不足（{len(_bars)}根）")
+                continue
+            _bars = _bars[::-1]
+            _last = _bars[-1][4]
+            _pct = (_last - _cost) / _cost * 100 if _cost else 0
+            _pls = [{"price": round(_cost, 4), "title": f"实盘成本 {_cost:.2f}",
+                     "color": "#1890ff"}]
+            _sm = q("SELECT date,side FROM signals WHERE account=? AND symbol=? "
+                    "ORDER BY date DESC LIMIT 20", (_sacct, _sym))
+            _marks = []
+            for _d, _sd in _sm:
+                if _sd == "BUY":
+                    _marks.append({"time": _d, "position": "belowBar", "shape": "arrowUp",
+                                   "text": "买", "color": "#2ebd85"})
+                else:
+                    _marks.append({"time": _d, "position": "aboveBar", "shape": "arrowDown",
+                                   "text": "卖", "color": "#f6465d"})
+            st.write(f"**{sym_name(_sym)}** 实盘成本 {_cost:.2f} · 现价 {_last:.2f} · "
+                     f"相对成本 {_pct:+.1f}%")
+            st.components.v1.html(
+                kline_html(f"watch_{_sym}", _bars, price_lines=_pls,
+                           markers=_marks, height=420),
+                height=430)
+
+        # 近期成交
+        st.subheader("近期成交")
+        fl = q("SELECT date,symbol,side,qty,price,fee,pnl FROM fills WHERE account=? ORDER BY date DESC LIMIT 20", (acct,))
+        if fl:
+            st.table([{"日期": d, "标的": sym_name(s), "方向": sd, "数量": qty, "成交价": px, "费用": fee, "盈亏": pnl}
+                      for d, s, sd, qty, px, fee, pnl in fl])
+        else:
+            st.write("暂无成交")
+
+        # 净值曲线（UI批B 自工作台移入，归账户页职责）：纵轴为数据域
+        # 自动缩放时必须明示范围，避免波动视觉误导（批C W-4 约束）。
+        _nhist = q("SELECT date,nav FROM daily_report WHERE account=? AND symbol='TOTAL' ORDER BY date", (acct,))
+        if _nhist:
+            st.subheader("净值曲线")
+            import pandas as pd
+            _ndf = pd.DataFrame(_nhist, columns=["date", "nav"])
+            _ndf["date"] = pd.to_datetime(_ndf["date"])
+            _ndf = _ndf.set_index("date")
+            _nmin, _nmax = float(_ndf["nav"].min()), float(_ndf["nav"].max())
+            st.caption(f"纵轴数据域：{_nmin:,.2f} – {_nmax:,.2f}（自动缩放，非零起点）")
+            st.line_chart(_ndf["nav"])
 
 # ================================================================
 # 🏦 机构专用席位连续净买监控（方案1 影子监控 · 只读）：龙虎榜机构专用
@@ -1797,6 +2367,22 @@ elif tab == "🏦 机构影子":
                          % (_latest_ok or "无",
                             _last["date"],
                             "成功" if _last["state"] != "failed" else "失败"))
+                # UI-R1 阶段C：数据可用性条（可信日/抓取时间/样本段）
+                _lk = None
+                if _latest_ok:
+                    _lk = _con.execute(
+                        "SELECT fetched_at, state FROM inst_lhb_fetch_days"
+                        " WHERE date=?", (_latest_ok,)).fetchone()
+                _seg_i = ("前向积累" if (_latest_ok and _latest_ok >= "2026-10-30")
+                          else ("历史回填段" if _latest_ok else "—"))
+                st.markdown(
+                    f'<div class="kpi-card"><div class="kpi-label">数据可用性</div>'
+                    f'<div style="font-size:13.5px;">最近可信交易日 '
+                    f'<b class="num">{_latest_ok or "无"}</b> · 抓取时间 '
+                    f'{(_lk[0] if _lk else "—")} · 数据状态 '
+                    f'{("正常" if _lk and _lk[1] != "failed" else "异常")} · '
+                    f'样本段：{_seg_i}（回填段与前向段分开登记，不混算）</div></div>',
+                    unsafe_allow_html=True)
                 st.markdown("**抓取状态（近 10 个抓取日）**")
                 st.table([{
                     "日期": s["date"],
@@ -1856,6 +2442,45 @@ elif tab == "🏦 机构影子":
 # ================================================================
 elif tab == "🛡 验证":
     st.markdown('<div class="section-head">🛡 验证与风控</div>', unsafe_allow_html=True)
+
+    # ===== UI-R1 阶段C 验证页：顶部四块（健康/账本/门禁/运行证据） =====
+    _HEALTH_TXT = {0: "正常", 1: "延迟/降级", 2: "断连/异常"}
+    try:
+        import json as _json_v
+        _fp_v = q("SELECT COUNT(*), MAX(id) FROM fills")[0]
+        _gate_st = {}
+        try:
+            with open(os.path.join(BASE, ".release_gate_state.json"), encoding="utf-8") as _gf:
+                _gate_st = _json_v.load(_gf)
+        except Exception:
+            _gate_st = {}
+        _ledger_ok = (bool(_gate_st) and _gate_st.get("fills_count") == _fp_v[0]
+                      and _gate_st.get("max_id") == _fp_v[1])
+        _gate_last = "无记录"
+        try:
+            with open(os.path.join(BASE, "reports", "release_gate_log.jsonl"), encoding="utf-8") as _lf:
+                _ll = [ln for ln in _lf if ln.strip()]
+            if _ll:
+                _lj = _json_v.loads(_ll[-1])
+                _gate_last = f"{_lj.get('event', '')} · {_lj.get('ts', '')}"
+        except Exception:
+            pass
+        _dr_max = q("SELECT MAX(date) FROM daily_report")[0][0]
+        _v1, _v2, _v3, _v4 = st.columns(4)
+        _v1.markdown(f'<div class="kpi-card"><div class="kpi-label">数据健康</div>'
+                     f'<div style="font-size:15px;">{_HEALTH_TXT.get(_hworst, "未知")}</div></div>',
+                     unsafe_allow_html=True)
+        _v2.markdown(f'<div class="kpi-card"><div class="kpi-label">账本核对</div>'
+                     f'<div style="font-size:15px;">{"一致" if _ledger_ok else "待核验"} · fills {_fp_v[0]} 笔</div></div>',
+                     unsafe_allow_html=True)
+        _v3.markdown(f'<div class="kpi-card"><div class="kpi-label">发布门禁</div>'
+                     f'<div style="font-size:15px;">最近：{_gate_last}</div></div>',
+                     unsafe_allow_html=True)
+        _v4.markdown(f'<div class="kpi-card"><div class="kpi-label">运行证据</div>'
+                     f'<div style="font-size:15px;">日报至 {_dr_max or "—"}</div></div>',
+                     unsafe_allow_html=True)
+    except Exception:
+        st.caption("验证页顶部状态读取失败（不影响下方明细）")
 
     # 页内账户切换：上方为单账户详情，下方仪表盘为跨账户摘要
     acct = st.radio("账户", accts, format_func=lambda x: ACCT_CN.get(x, x),
@@ -2102,6 +2727,53 @@ elif tab == "🛡 验证":
         st.error(f"仪表盘读取失败：{e}")
     # ---- 验收报告（2026-10-31 新增）：判分/查收类报告直发本页 ----
     # 定时任务把报告写入 reports/public/*.md，随每日同步上公网，不走聊天推送。
+    # ===== UI-R1 阶段C 验证页：五列检查表 + 异常证据时间线 =====
+    st.subheader("系统检查表")
+    try:
+        _ck = []
+        _fp2 = q("SELECT COUNT(*), MAX(id) FROM fills")[0]
+        _ck.append({"检查项": "账本指纹", "标准": "与发布水位一致",
+                    "当前值": f"fills {_fp2[0]} · max_id {_fp2[1]}",
+                    "结论": "通过" if _ledger_ok else "待核验",
+                    "证据来源": "sim.db / .release_gate_state.json"})
+        _md2 = q("SELECT MAX(date) FROM market_data WHERE market IN ('a','hk')")[0][0]
+        _dr2 = q("SELECT MAX(date) FROM daily_report")[0][0]
+        _ck.append({"检查项": "行情新鲜度", "标准": "数据至最近日报日",
+                    "当前值": f"行情 {_md2} · 日报 {_dr2}",
+                    "结论": "通过" if _md2 and _dr2 and _md2 >= _dr2 else "待核验",
+                    "证据来源": "market_data / daily_report"})
+        _sc2 = q("SELECT MAX(asof) FROM screen_runs")[0][0]
+        _ck.append({"检查项": "选股运行", "标准": "夜跑每期一跑",
+                    "当前值": f"最近一期 {_sc2}",
+                    "结论": "通过" if _sc2 else "待核验",
+                    "证据来源": "screen_runs"})
+        _il2 = q("SELECT MAX(date) FROM inst_lhb_fetch_days WHERE state != 'failed'")[0][0]
+        _ck.append({"检查项": "机构抓取", "标准": "每交易日抓取（影子）",
+                    "当前值": f"最近成功 {_il2}",
+                    "结论": "通过" if _il2 else "待核验",
+                    "证据来源": "inst_lhb_fetch_days"})
+        _ck.append({"检查项": "数据健康", "标准": "四态为正常",
+                    "当前值": _HEALTH_TXT.get(_hworst, "未知"),
+                    "结论": "通过" if _hworst == 0 else "待核验",
+                    "证据来源": "engine.data_health"})
+        st.table(_ck)
+    except Exception as _cke:
+        st.caption(f"检查表生成失败：{_cke}")
+    st.subheader("异常与拦截证据（只追加 · 可追溯）")
+    try:
+        _tl = q("SELECT COALESCE(trade_date, substr(ts,1,10)), symbol, side, rule, reason"
+                " FROM risk_block_events ORDER BY ts DESC LIMIT 8")
+        if _tl:
+            st.markdown("".join(
+                f'<div style="font-size:13px;padding:5px 0;border-bottom:1px solid #1e2532;">'
+                f'<span style="color:#8b9bab;">{d}</span> · {s} {sd} · '
+                f'<span style="color:#f6465d;">{rule}</span> · {reason or ""}</div>'
+                for d, s, sd, rule, reason in _tl), unsafe_allow_html=True)
+        else:
+            st.write("暂无拦截记录")
+    except Exception:
+        st.write("拦截记录读取失败")
+
     st.subheader("📄 验收报告")
     try:
         import glob as _glob

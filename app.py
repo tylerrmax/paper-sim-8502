@@ -1118,9 +1118,11 @@ def _detail_chart_html(sym, bars, sub_kind, price_lines, markers):
     j_ma20, j_ma60 = _json.dumps(_ma(20)), _json.dumps(_ma(60))
     # D-2：计划价位（触发/目标/止损）超出 K 线数据范围时不进图——LWC
     # 不为计划线扩展价格轴（实测 600150 目标 52.95 坐标在图外被裁），
-    # 改走右侧独立价格标尺；图内价位仍用图内线，二者不重复。成本线
-    # 非计划价位，维持 D-1 现状。分类以数据范围 [最低, 最高] 为界，
-    # 不用 LWC 边距扩展区，避免边缘价位似显非显。
+    # 改走右侧独立价格标尺；图内价位仍用图内线，二者不重复。其中
+    # kind=stop 仅由调用方在计划有效且 plan_stop 与母板止损参考同值
+    # 时桥接标记（计划自带止损价）；kind=mbstop 的母板止损参考线、
+    # kind=cost 的成本线均非计划价位，不参与分类，维持 D-1 现状。
+    # 分类以数据范围 [最低, 最高] 为界，不用 LWC 边距扩展区。
     _lo = min(b[3] for b in bars)
     _hi = max(b[2] for b in bars)
     _lastc = closes[-1] if closes else None
@@ -1148,17 +1150,23 @@ def _detail_chart_html(sym, bars, sub_kind, price_lines, markers):
                         key=lambda p: -p["price"])
         _below = sorted((p for p in _edge if p["price"] < _lo),
                         key=lambda p: -p["price"])
+        # 标尺总宽严格 102px（border-box，含内边距与左边框）；单侧价位
+        # 过多时分组内滚动（上限 250px≈5 条），不压缩、不截断、不隐藏，
+        # 标尺总高恒 570px（D-2 初审修正）。
+        _grp = ('<div style="max-height:250px;overflow-y:auto;'
+                'scrollbar-width:thin;flex:none;">')
         _rail = (
-            '<div style="width:102px;flex:none;height:570px;'
+            '<div style="width:102px;box-sizing:border-box;flex:none;'
+            'height:570px;'
             'border-left:1px solid #1e2532;padding:2px 0 0 10px;'
             'display:flex;flex-direction:column;">'
             '<div style="color:#8a8f9c;font-size:11px;margin-bottom:8px;">'
             '图外计划价<br>'
             f'<span style="font-size:10px;">主图 {_px_fmt(sym, _lo)}'
             f'–{_px_fmt(sym, _hi)}</span></div>'
-            + "".join(_ent(p, "▲") for p in _above)
+            + _grp + "".join(_ent(p, "▲") for p in _above) + '</div>'
             + '<div style="flex:1;"></div>'
-            + "".join(_ent(p, "▼") for p in _below)
+            + _grp + "".join(_ent(p, "▼") for p in _below) + '</div>'
             + '</div>')
     j_pl, j_mk, j_sub = (_json.dumps(_chart_lines), _json.dumps(markers),
                          _json.dumps(payload))
@@ -1326,10 +1334,21 @@ def _render_acct_detail(acct, sym):
                          "style": 2, "kind": "cost",
                          "title": f"成本 {_px_fmt(sym, _avg)}"})
         if _sr:
+            # 母板止损参考线（D-1）：来源 workbook_map.stop_ref，非计划
+            # 价位本身，kind=mbstop 不参与 D-2 分类；仅当计划有效且其
+            # plan_stop 与本线同值时，经下方桥接才按计划止损分类。
             _pls.append({"price": round(_sr, 4), "color": "#f6465d",
-                         "style": 2, "kind": "stop",
+                         "style": 2, "kind": "mbstop",
                          "title": f"止损参考 {_px_fmt(sym, _sr)}"})
         if _plan.get("plan_trigger") and _plan.get("plan_target"):
+            # 计划桥接（D-2 初审修正）：plan_stop 是计划自带的止损价
+            # （screen._trade_plan：止损=母板 stop_ref，与 _sr 同源同值）；
+            # 计划有效且同值时，把止损参考线标记为计划止损参与分类。
+            if _plan.get("plan_stop") is not None:
+                for _p in _pls:
+                    if (_p.get("kind") == "mbstop"
+                            and _p["price"] == round(_plan["plan_stop"], 4)):
+                        _p["kind"] = "stop"
             _pls.append({"price": round(_plan["plan_trigger"], 4),
                          "color": "#4a90d9", "style": 1, "kind": "trigger",
                          "title": f"触发 {_px_fmt(sym, _plan['plan_trigger'])}"})

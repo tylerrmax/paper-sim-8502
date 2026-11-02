@@ -21,7 +21,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas requests openpyxl
+          pip install pandas requests openpyxl PyYAML
 
       - name: Run Crawler & Update Data Script
         run: |

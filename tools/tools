@@ -1,0 +1,36 @@
+name: Auto Update Quant Data
+
+on:
+  schedule:
+    - cron: '0 10,14 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas requests openpyxl
+
+      - name: Run Crawler & Update Data Script
+        run: |
+          bash 工具/nightly_run.sh
+
+      - name: Commit and Push New Data to GitHub
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "chore: auto-update quant data by GitHub Actions" || exit 0
+          git push

@@ -29,10 +29,7 @@ jobs:
           bash tools/nightly_run.sh
 
       - name: Commit and Push New Data to GitHub
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git
-          git add .
-          git commit -m "chore: auto-update quant data by GitHub Actions" || exit 0
-          git push origin master
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GH_PAT }}
+          branch: master

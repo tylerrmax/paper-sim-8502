@@ -11,8 +11,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GH_PAT }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -27,9 +25,3 @@ jobs:
         run: |
           export NIGHTLY_CMD="python run_daily.py"
           bash tools/nightly_run.sh
-
-      - name: Commit and Push New Data to GitHub
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GH_PAT }}
-          branch: master

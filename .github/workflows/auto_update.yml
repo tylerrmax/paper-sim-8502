@@ -13,6 +13,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,12 +30,9 @@ jobs:
           bash tools/nightly_run.sh
 
       - name: Commit and Push New Data to GitHub
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git
           git add .
           git commit -m "chore: auto-update quant data by GitHub Actions" || exit 0
-          git push origin master
+          git push

@@ -25,7 +25,7 @@ jobs:
 
       - name: Run Crawler & Update Data Script
         run: |
-          bash 工具/nightly_run.sh
+          bash tools/nightly_run.sh
 
       - name: Commit and Push New Data to GitHub
         run: |

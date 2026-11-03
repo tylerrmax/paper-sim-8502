@@ -1766,72 +1766,55 @@ if tab == "🏠 工作台":
             </div>
             """, unsafe_allow_html=True)
                 
-        # 快捷跳转到交易页按钮（一键救火）
-        if st.button("🚀 前往 02 交易页集中处理", use_container_width=True, type="primary"):
-            st.session_state["main_nav"] = "📈 交易"
-            st.rerun()
-
-    # 【右侧 60%】账户资产、敞口与核心看板
+      # 快捷跳转到交易页按钮（一键救火）
+    if st.button("🚀 前往 02 交易页集中处理", key="go_to_trade_page_btn", use_container_width=True, type="primary"):
+    st.session_state["main_nav"] = "📊 交易"
+    st.rerun()
+    # 定义左右分栏（平级关系，严禁嵌套）
+_col_left, _col_right = st.columns([2, 3])
+# 【左侧】优先处理事项 / 救火队列
+with _col_left:
+    st.markdown('<div class="kpi-label" style="margin-bottom:6px;">⚡ 优先处理事项 / 救火队列</div>', unsafe_allow_html=True)
+    if not _items:
+        st.markdown('<div class="status-card" style="border-left: 4px solid #2ebd85;">暂无紧急待办事项</div>', unsafe_allow_html=True)
+    else:
+        for _pri, _kind, _txt in _items:
+            _border_color = "#f6465d" if _pri in ("P0", "P1") else ("#e8a33d" if _pri == "P2" else "#8b9ba4")
+            st.markdown(f"""
+            <div class="status-card" style="border-left: 4px solid {_border_color}; margin-bottom:6px;">
+                <span class="r1-chip {_kind}"><b>[{_pri}]</b></span> {_txt}
+            </div>
+            """, unsafe_allow_html=True)
+            # 【右侧】账户资产、敞口与核心看板 & 盘后重点观察 TOP3
     with _col_right:
-        st.markdown('<div class="kpi-label" style="margin-bottom:6px;">📊 账户总览与核心看板</div>', unsafe_allow_html=True)
-        
-        _sim_a = core.get("sim_a", {})
-        _rk1, _rk2, _rk3, _rk4 = st.columns(4)
-        _rk1.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">净值</div><div class="kpi-value num" style="font-size:18px;">¥{_sim_a.get("nav", 0):,.0f}</div></div>', unsafe_allow_html=True)
-        _rk2.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">现金</div><div class="kpi-value num" style="font-size:18px;">¥{_sim_a.get("cash", 0):,.0f}</div></div>', unsafe_allow_html=True)
-        _rk3.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">当日盈亏</div><div class="kpi-value num {"pos" if _sim_a.get("pnl", 0)>=0 else "neg"}" style="font-size:18px;">¥{_sim_a.get("pnl", 0):,.0f}</div></div>', unsafe_allow_html=True)
-        _rk4.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">股票敞口</div><div class="kpi-value num neg" style="font-size:18px;">{_expo if _expo is not None else 0:.1f}%</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="kpi-label" style="margin-bottom:6px;">📊 账户总览与核心看板</div>', unsafe_allow_html=True)
+    
+    _sim_a = core.get("sim_a", {})
+    _rk1, _rk2, _rk3, _rk4 = st.columns(4)
+    _rk1.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">净值</div><div class="kpi-value">{_sim_a.get("net_value", 0)}</div></div>', unsafe_allow_html=True)
+    _rk2.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">现金</div><div class="kpi-value">{_sim_a.get("cash", 0)}</div></div>', unsafe_allow_html=True)
+    _rk3.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">当日盈亏</div><div class="kpi-value">{_sim_a.get("pnl_day", 0)}</div></div>', unsafe_allow_html=True)
+    _rk4.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">股票敞口</div><div class="kpi-value">72.6%</div></div>', unsafe_allow_html=True)
 
-        # 盘后重点观察 TOP3 预览
-        st.markdown("#### 🔥 盘后重点观察 TOP3")
-        st.markdown("""
-        <div style="font-size:12.5px; color:#d6dee7; background:#10141b; padding:10px 14px; border-radius:8px; border:1px solid #1e2532;">
-            1. <b>002185 华天科技</b> | 评分: <span class="num" style="color:#56c8dc;">56.4</span> | 评级: <span style="color:#e8a33d;">B</span> (只观察，不成交)[cite: 12]<br>
-            2. <b>002639 雪人集团</b> | 评分: <span class="num" style="color:#56c8dc;">49.9</span> | 评级: <span style="color:#e8a33d;">B</span>[cite: 12]<br>
-            3. <b>002472 双环传动</b> | 评分: <span class="num" style="color:#56c8dc;">47.5</span> | 评级: <span style="color:#e8a33d;">B</span> (已触发)[cite: 12]
-        </div>
-        """, unsafe_allow_html=True)
-    with _col_left:
-        st.markdown('<div class="kpi-label" style="margin-bottom:6px;">⚡ 优先处理事项 / 救火队列</div>', unsafe_allow_html=True)
-        
-        if not _items:
-            st.markdown('<div class="status-card" style="border-left: 4px solid #2ebd85;"><div style="color:#2ebd85; font-weight:700;">🟢 当前无阻断或紧急待办事项</div></div>', unsafe_allow_html=True)
-        else:
-            for _pri, _kind, _txt in _items:
+    st.markdown("#### 🔥 盘后重点观察 TOP3")
+    st.markdown("""
+    <div style="font-size:12.5px; color:#d6dee7; background:#10141b; padding:10px 14px; border-radius:8px; border:1px solid #1e2532;">
+        1. <b>002185 华天科技</b> | 评分: <span class="num" style="color:#56c8dc;">56.4</span> | 评级: B<br>
+        2. <b>002639 雪人集团</b> | 评分: <span class="num" style="color:#56c8dc;">49.9</span> | 评级: B<br>
+        3. <b>002472 双环传动</b> | 评分: <span class="num" style="color:#56c8dc;">47.5</span> | 评级: B
+    </div>
+    """, unsafe_allow_html=True)
+ with _col_left:
+     st.markdown('<div class="kpi-label" style="margin-bottom:6px;">⚡ 优先处理事项 / 救火队列</div>', unsafe_allow_html=True)
+     if not _items:
+         st.markdown('<div class="status-card" style="border-left: 4px solid #2ebd85;"><div style="color:#2ebd85; font-weight:700;">🟢 当前无阻断或紧急待办事项</div></div>', unsafe_allow_html=True)
+     else:
+         for _pri, _kind, _txt in _items:
                 _border_color = "#f6465d" if _pri in ("P0", "P1") else ("#e8a33d" if _pri == "P2" else "#8b9bab")
                 st.markdown(f"""
                 <div class="status-card" style="border-left: 4px solid {_border_color}; margin-bottom:8px; padding:10px 14px; font-size:12.5px;">
                     <span class="r1-chip {_kind}"><b>[{_pri}]</b></span> {_txt}
                 </div>
-                """, unsafe_allow_html=True)
-                
-        # 快捷跳转到交易页按钮（一键救火）
-    if st.button("🚀 前往 02 交易页集中处理", key="go_to_trade_page_btn", use_container_width=True, type="primary"):
-        st.session_state["main_nav"] = "02 交易"
-        st.rerun()
-
-    # 【右侧 60%】账户资产、敞口与核心观察
-    with _col_right:
-        st.markdown('<div class="kpi-label" style="margin-bottom:6px;">📊 账户总览与核心看板</div>', unsafe_allow_html=True)
-        
-        # 提取 A 股核心账户数据
-        _sim_a = core.get("sim_a", {})
-        _rk1, _rk2, _rk3, _rk4 = st.columns(4)
-        _rk1.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">净值</div><div class="kpi-value num" style="font-size:18px;">¥{_sim_a.get("nav", 0):,.0f}</div></div>', unsafe_allow_html=True)
-        _rk2.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">现金</div><div class="kpi-value num" style="font-size:18px;">¥{_sim_a.get("cash", 0):,.0f}</div></div>', unsafe_allow_html=True)
-        _rk3.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">当日盈亏</div><div class="kpi-value num {"pos" if _sim_a.get("pnl", 0)>=0 else "neg"}" style="font-size:18px;">¥{_sim_a.get("pnl", 0):,.0f}</div></div>', unsafe_allow_html=True)
-        _rk4.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">股票敞口</div><div class="kpi-value num neg" style="font-size:18px;">{_expo if _expo is not None else 0:.1f}%</div></div>', unsafe_allow_html=True)
-
-        # 盘后重点观察 TOP3 预览
-        st.markdown("#### 🔥 盘后重点观察 TOP3")
-        st.markdown("""
-        <div style="font-size:12.5px; color:#d6dee7; background:#10141b; padding:10px 14px; border-radius:8px; border:1px solid #1e2532;">
-            1. <b>002185 华天科技</b> | 评分: <span class="num" style="color:#56c8dc;">56.4</span> | 评级: <span style="color:#e8a33d;">B</span> (只观察，不成交)[cite: 12]<br>
-            2. <b>002639 雪人集团</b> | 评分: <span class="num" style="color:#56c8dc;">49.9</span> | 评级: <span style="color:#e8a33d;">B</span>[cite: 12]<br>
-            3. <b>002472 双环传动</b> | 评分: <span class="num" style="color:#56c8dc;">47.5</span> | 评级: <span style="color:#e8a33d;">B</span> (已触发)[cite: 12]
-        </div>
-        """, unsafe_allow_html=True)
-        for _pri, _kind, _txt in _items:
             _pri_html = f'<span style="color:{"#f6465d" if _pri in ("P0", "P1") else "#e8a33d" if _pri == "P2" else "#8b9bab"};font-weight:700;margin-right:8px;">{_pri}</span>' if _pri else ""
             _hot = 'background:#190f16;border-left:3px solid #f6465d;padding-left:7px;' if _pri in ("P0", "P1") else ""
             st.markdown(f'<div style="font-size:12.5px;padding:4px 2px;{_hot}border-bottom:1px solid #1e2532;">{_pri_html}{_txt}</div>',

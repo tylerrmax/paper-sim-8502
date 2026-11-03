@@ -1730,8 +1730,9 @@ if tab == "🏠 工作台":
                 f'<div style="color:#8b9bab;font-size:11px;">{_note}</div></div>',
                 unsafe_allow_html=True)
 
-    # --- L2 黄金双栏: 左侧 40% 高危待办救火 | 右侧 60% 账户总览与核心持仓 ---
-    # 1. 重新构建待办队列数据（补充缺失的 _items 计算）
+   # --- L2 黄金双栏: 左侧 40% 高危待办救火 | 右侧 60% 账户总览与核心持仓 ---
+    
+    # 1. 初始化并安全构建救火待办队列数据（_items）
     _items = []
     if '_hworst' in locals() and _hworst >= 2:
         _items.append(("P0", "block", "<b>数据异常</b>: 数据健康处于断连/异常态（见顶栏 SYSTEM），先恢复数据再谈交易"))
@@ -1747,11 +1748,49 @@ if tab == "🏠 工作台":
         _items.append(("P2", "wait", f"<b>待审批信号</b>: {pending_signals} 条待处理 (无持仓 SELL 须先核持仓)"))
     if 'status' in locals() and status != "running":
         _items.insert(0, ("P1", "block", "<b>系统已暂停</b>: 新信号不会成交；已挂券商条件单请在券商端自行检查/撤销"))
+    if not _items:
+        _items.append(("", "ok", "当前无待处理事项"))
 
-    # --- L2 黄金双栏: 左侧 40% 高危待办救火 | 右侧 60% 账户总览与核心持仓 ---
+    # 2. 渲染黄金双栏布局
     _col_left, _col_right = st.columns([2, 3], gap="medium")
 
-    # 【左侧 40%】高危待办与救火队列（复用你现有的 _items 逻辑）
+    # 【左侧 40%】高危待办与救火队列
+    with _col_left:
+        st.markdown('<div class="kpi-label" style="margin-bottom:6px;">⚡ 优先处理事项 / 救火队列</div>', unsafe_allow_html=True)
+        
+        for _pri, _kind, _txt in _items:
+            _border_color = "#f6465d" if _pri in ("P0", "P1") else ("#e8a33d" if _pri == "P2" else "#8b9bab")
+            st.markdown(f"""
+            <div class="status-card" style="border-left: 4px solid {_border_color}; margin-bottom:8px; padding:10px 14px; font-size:12.5px;">
+                <span class="r1-chip {_kind}"><b>[{_pri}]</b></span> {_txt}
+            </div>
+            """, unsafe_allow_html=True)
+                
+        # 快捷跳转到交易页按钮（一键救火）
+        if st.button("🚀 前往 02 交易页集中处理", use_container_width=True, type="primary"):
+            st.session_state["main_nav"] = "📈 交易"
+            st.rerun()
+
+    # 【右侧 60%】账户资产、敞口与核心看板
+    with _col_right:
+        st.markdown('<div class="kpi-label" style="margin-bottom:6px;">📊 账户总览与核心看板</div>', unsafe_allow_html=True)
+        
+        _sim_a = core.get("sim_a", {})
+        _rk1, _rk2, _rk3, _rk4 = st.columns(4)
+        _rk1.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">净值</div><div class="kpi-value num" style="font-size:18px;">¥{_sim_a.get("nav", 0):,.0f}</div></div>', unsafe_allow_html=True)
+        _rk2.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">现金</div><div class="kpi-value num" style="font-size:18px;">¥{_sim_a.get("cash", 0):,.0f}</div></div>', unsafe_allow_html=True)
+        _rk3.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">当日盈亏</div><div class="kpi-value num {"pos" if _sim_a.get("pnl", 0)>=0 else "neg"}" style="font-size:18px;">¥{_sim_a.get("pnl", 0):,.0f}</div></div>', unsafe_allow_html=True)
+        _rk4.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">股票敞口</div><div class="kpi-value num neg" style="font-size:18px;">{_expo if _expo is not None else 0:.1f}%</div></div>', unsafe_allow_html=True)
+
+        # 盘后重点观察 TOP3 预览
+        st.markdown("#### 🔥 盘后重点观察 TOP3")
+        st.markdown("""
+        <div style="font-size:12.5px; color:#d6dee7; background:#10141b; padding:10px 14px; border-radius:8px; border:1px solid #1e2532;">
+            1. <b>002185 华天科技</b> | 评分: <span class="num" style="color:#56c8dc;">56.4</span> | 评级: <span style="color:#e8a33d;">B</span> (只观察，不成交)[cite: 12]<br>
+            2. <b>002639 雪人集团</b> | 评分: <span class="num" style="color:#56c8dc;">49.9</span> | 评级: <span style="color:#e8a33d;">B</span>[cite: 12]<br>
+            3. <b>002472 双环传动</b> | 评分: <span class="num" style="color:#56c8dc;">47.5</span> | 评级: <span style="color:#e8a33d;">B</span> (已触发)[cite: 12]
+        </div>
+        """, unsafe_allow_html=True)
     with _col_left:
         st.markdown('<div class="kpi-label" style="margin-bottom:6px;">⚡ 优先处理事项 / 救火队列</div>', unsafe_allow_html=True)
         

@@ -1730,7 +1730,7 @@ if tab == "🏠 工作台":
                 f'<div style="color:#8b9bab;font-size:11px;">{_note}</div></div>',
                 unsafe_allow_html=True)
 
-   # --- L2 黄金双栏: 左侧 40% 高危待办救火 | 右侧 60% 账户总览与核心持仓 ---
+  # --- L2 黄金双栏: 左侧 40% 高危待办救火 | 右侧 60% 账户总览与核心持仓 ---
     
     # 1. 初始化并安全构建救火待办队列数据（_items）
     _items = []

@@ -1854,6 +1854,7 @@ if tab == "🏠 工作台":
                       on_click=_goto_trade, key="todo_orders", disabled=not pending_orders)
         _tc[1].button(f"待审批信号 {pending_signals} 个 → 去处理" if pending_signals else "待审批信号 0",
                       on_click=_goto_trade, key="todo_signals", disabled=not pending_signals)
+    _qm = st.container()
     with _qm:
         _th2 = ('<table style="width:100%;border-collapse:collapse;font-size:10.5px;white-space:nowrap;">'
                '<tr style="color:#67748c;text-align:right;">')

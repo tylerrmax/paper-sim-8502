@@ -1804,21 +1804,6 @@ with _col_left:
         3. <b>002472 双环传动</b> | 评分: <span class="num" style="color:#56c8dc;">47.5</span> | 评级: B
     </div>
     """, unsafe_allow_html=True)
- with _col_left:
-     st.markdown('<div class="kpi-label" style="margin-bottom:6px;">⚡ 优先处理事项 / 救火队列</div>', unsafe_allow_html=True)
-     if not _items:
-         st.markdown('<div class="status-card" style="border-left: 4px solid #2ebd85;"><div style="color:#2ebd85; font-weight:700;">🟢 当前无阻断或紧急待办事项</div></div>', unsafe_allow_html=True)
-     else:
-         for _pri, _kind, _txt in _items:
-                _border_color = "#f6465d" if _pri in ("P0", "P1") else ("#e8a33d" if _pri == "P2" else "#8b9bab")
-                st.markdown(f"""
-                <div class="status-card" style="border-left: 4px solid {_border_color}; margin-bottom:8px; padding:10px 14px; font-size:12.5px;">
-                    <span class="r1-chip {_kind}"><b>[{_pri}]</b></span> {_txt}
-                </div>
-            _pri_html = f'<span style="color:{"#f6465d" if _pri in ("P0", "P1") else "#e8a33d" if _pri == "P2" else "#8b9bab"};font-weight:700;margin-right:8px;">{_pri}</span>' if _pri else ""
-            _hot = 'background:#190f16;border-left:3px solid #f6465d;padding-left:7px;' if _pri in ("P0", "P1") else ""
-            st.markdown(f'<div style="font-size:12.5px;padding:4px 2px;{_hot}border-bottom:1px solid #1e2532;">{_pri_html}{_txt}</div>',
-                        unsafe_allow_html=True)
         # 跳转与待办入口（沿用既有按钮与 key，队列只分发不处理）
         def _goto(page):
             st.session_state["main_nav"] = page

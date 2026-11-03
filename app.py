@@ -1731,6 +1731,24 @@ if tab == "🏠 工作台":
                 unsafe_allow_html=True)
 
     # --- L2 黄金双栏: 左侧 40% 高危待办救火 | 右侧 60% 账户总览与核心持仓 ---
+    # 1. 重新构建待办队列数据（补充缺失的 _items 计算）
+    _items = []
+    if '_hworst' in locals() and _hworst >= 2:
+        _items.append(("P0", "block", "<b>数据异常</b>: 数据健康处于断连/异常态（见顶栏 SYSTEM），先恢复数据再谈交易"))
+    if '_eb' in locals() and _eb:
+        _nm = SYMBOL_CN.get(_eb[0][1], "") if 'SYMBOL_CN' in locals() else ""
+        _items.append(("P1", "block", f"<b>风控拦截</b>: {_eb[0][1]} {_nm} BUY 被环境闸拦截 ({_eb[0][0]})"))
+    if '_has_stop' in locals() and _has_stop and '_breach_rows' in locals():
+        _bs = "；".join(f"{_s} 现价 {_px_fmt(_s, _l)} < 止损参考 {_px_fmt(_s, _r)}" for _w, _s, _qty, _l, _r, _md in _breach_rows[:3])
+        _items.append(("P1", "block", f"<b>破止损仍持仓</b>: {_bs}"))
+    if 'pending_orders' in locals() and pending_orders:
+        _items.append(("P2", "wait", f"<b>待建条件单</b>: {pending_orders} 个待处理 (模拟执行，券商人工下单)"))
+    if 'pending_signals' in locals() and pending_signals:
+        _items.append(("P2", "wait", f"<b>待审批信号</b>: {pending_signals} 条待处理 (无持仓 SELL 须先核持仓)"))
+    if 'status' in locals() and status != "running":
+        _items.insert(0, ("P1", "block", "<b>系统已暂停</b>: 新信号不会成交；已挂券商条件单请在券商端自行检查/撤销"))
+
+    # --- L2 黄金双栏: 左侧 40% 高危待办救火 | 右侧 60% 账户总览与核心持仓 ---
     _col_left, _col_right = st.columns([2, 3], gap="medium")
 
     # 【左侧 40%】高危待办与救火队列（复用你现有的 _items 逻辑）

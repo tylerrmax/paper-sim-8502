@@ -1806,9 +1806,9 @@ if tab == "🏠 工作台":
                 """, unsafe_allow_html=True)
                 
         # 快捷跳转到交易页按钮（一键救火）
-        if st.button("🚀 前往 02 交易页集中处理", use_container_width=True, type="primary"):
-            st.session_state["main_nav"] = "📈 交易"
-            st.rerun()
+    if st.button("🚀 前往 02 交易页集中处理", key="go_to_trade_page_btn", use_container_width=True, type="primary"):
+        st.session_state["main_nav"] = "02 交易"
+        st.rerun()
 
     # 【右侧 60%】账户资产、敞口与核心观察
     with _col_right:

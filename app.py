@@ -171,6 +171,20 @@ def q(sql, args=()):
     return rows
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def _live_quotes_cached(syms):
+    """公网直拉最新行情（30 秒缓存）；表头时间戳与行情条共用同一份，避免两处不一致。"""
+    from engine.realtime import fetch_all
+    return fetch_all(list(syms))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fresh_bars_cached(syms):
+    """公网直拉最新日K（5 分钟缓存，失败回退为空，由 live_calc 退回账本日K）。"""
+    from engine.live_calc import fetch_fresh_bars_many
+    return fetch_fresh_bars_many(list(syms))
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def _screen_cached(db_path, day_str):
     """多重校验选股评分（engine.screen，母板16只）；按日缓存。"""
@@ -431,16 +445,70 @@ table { color: #e8ecf1; }
 
 st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_html=True)
 
-# 数据日期（交易员需要知道数据新旧，不说教）
-if CLOUD_DATA_ASOF:
-    # 区分：数据日期（交易日）vs 同步时间（文件推送时间）
-    # 周末无新数据时，数据日期停在周五属正常，不应误报为同步中断
-    data_date = q("SELECT MAX(date) FROM daily_report WHERE symbol='TOTAL'")
-    data_date_str = data_date[0][0] if data_date and data_date[0][0] else ""
-    if data_date_str:
-        st.caption(f"数据日期 {data_date_str} · 同步于 {CLOUD_DATA_ASOF}")
+# 双时间戳（2026-11-04）：「行情实时时间」与「账本快照时间」分开显示，
+# 延迟一眼可见。只读展示，不碰账本数据。
+# 账本快照时间取 build_info.json 的 built_at（同步脚本推送时刻）；
+# 不再用 sim.db 的文件 mtime——云端 mtime 是容器检出时刻，会把部署时间
+# 误当数据时间。
+def _render_dual_clock():
+    from engine.live_calc import (CN_TZ, MARKET_CN, quote_time_summary,
+                                  ledger_snapshot_time, human_lag, lag_level)
+    from datetime import datetime as _dtm
+    try:
+        _syms = tuple(r[0] for r in q("SELECT DISTINCT symbol FROM market_data")
+                      if r[0] != "IDX000001")
+        _qs = quote_time_summary(_live_quotes_cached(_syms))
+    except Exception:
+        _qs = {"newest": None, "per_market": {}}
+    _snap, _snap_src = ledger_snapshot_time(BASE)
+    if _snap is None and not IS_CLOUD:
+        # 本地模式：库文件就是账本本体，修改时间可信
+        try:
+            _snap = _dtm.fromtimestamp(os.path.getmtime(DB), CN_TZ)
+            _snap_src = "本地库修改时间"
+        except OSError:
+            pass
+    _dd = q("SELECT MAX(date) FROM daily_report WHERE symbol='TOTAL'")
+    _dd = _dd[0][0] if _dd and _dd[0][0] else "—"
+    _fmt = lambda d: d.strftime("%Y-%m-%d %H:%M:%S")
+    _col = {"ok": "#2ecc71", "warn": "#f0b90b", "danger": "#ff4d4f",
+            "unknown": "#888"}
+    _newest = _qs["newest"]
+    if _newest is not None:
+        _per = " · ".join("%s %s" % (MARKET_CN[m], d.strftime("%m-%d %H:%M"))
+                          for m, d in sorted(_qs["per_market"].items()))
+        _q_html = ('<b>%s</b><span style="color:#888;font-size:12px;"> '
+                   '（%s）</span>' % (_fmt(_newest), _per))
     else:
-        st.caption(f"数据截至 {CLOUD_DATA_ASOF}")
+        _q_html = ('<b style="color:#f0b90b;">未取到</b>'
+                   '<span style="color:#888;font-size:12px;"> '
+                   '（实时接口不可用，页面行情回退为账本收盘价）</span>')
+    if _snap is not None:
+        _lag = human_lag(_newest, _snap)
+        _lv = lag_level(_newest, _snap)
+        _s_html = ('<b style="color:%s;">%s</b>' % (_col[_lv], _fmt(_snap)))
+        if _lag:
+            _s_html += ('<span style="color:%s;font-size:12px;"> 落后行情 %s</span>'
+                        % (_col[_lv], _lag))
+        _s_html += ('<span style="color:#888;font-size:12px;"> 来源：%s'
+                    '</span>' % _snap_src)
+    else:
+        _s_html = ('<b style="color:#f0b90b;">未标记</b>'
+                   '<span style="color:#888;font-size:12px;"> '
+                   '（缺少账本推送时间，无法判断账本新旧）</span>')
+    st.markdown(
+        '<div style="display:flex;flex-wrap:wrap;gap:6px 28px;'
+        'font-size:13px;color:#aaa;margin:2px 0 8px;">'
+        '<span>行情实时时间　%s</span>'
+        '<span>账本快照时间　%s</span>'
+        '<span>账本数据日期　<b>%s</b></span></div>' % (_q_html, _s_html, _dd),
+        unsafe_allow_html=True)
+
+
+try:
+    _render_dual_clock()
+except Exception:
+    st.caption("时间戳读取失败：行情实时时间与账本快照时间暂无法显示")
 
 # ============ 行情状态四态判定 + 数字格式化助手 ============
 from datetime import datetime, timedelta
@@ -551,13 +619,26 @@ _wb_first = _tab_now == "🏠 工作台"
 def render_ticker():
     """作战大屏：代码 | 名称 | 现价 | 涨幅% | 技术信号 | 待建单，完整闭环"""
     try:
-        from engine.realtime import fetch_all
         syms = [r[0] for r in q("SELECT DISTINCT symbol FROM market_data")]
-        live = fetch_all(syms)
+        live = _live_quotes_cached(tuple(syms))
     except Exception:
         live = {}
         syms = []
-    from engine.indicators import rsi, macd, bollinger, adx, market_regime, ma_align
+
+    # 技术信号实时计算（2026-11-04）：账本日K + 公网直拉最新日K 合并后算指标，
+    # 成交量先过单位校验；直拉失败回退纯账本日K。只用于展示，信号/风控仍走账本。
+    _tech_view = {}
+    try:
+        from engine.live_calc import live_tech_view
+        from zoneinfo import ZoneInfo
+        _tsyms = [s_ for s_ in syms if s_ != "IDX000001"]
+        _db_bars = {s_: q("SELECT date,open,high,low,close,volume FROM market_data"
+                          " WHERE symbol=? ORDER BY date", (s_,)) for s_ in _tsyms}
+        _tech_view = live_tech_view(
+            _db_bars, _fresh_bars_cached(tuple(_tsyms)),
+            today=datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d"))
+    except Exception:
+        _tech_view = {}  # 整体失败 → 下面逐标的回退账本口径
 
     # 待建单：未成交的信号（新格式：方向 动作类型 @价格 | 止损 @价格）
     # UI批B §2.2：订单文本只写订单本身；持仓上下文（成本/浮盈/止损参考）
@@ -614,28 +695,21 @@ def render_ticker():
         holdinfo = {}
 
     def _tech_signals(sym):
-        bars = q("SELECT close,high,low FROM market_data WHERE symbol=? ORDER BY date", (sym,))
-        if len(bars) < 30:
-            return "-"
-        closes = [r[0] for r in bars]
-        highs = [r[1] for r in bars]
-        lows = [r[2] for r in bars]
-        tags = []
-        rsi_v = rsi(closes)[-1]
-        if rsi_v and rsi_v > 70: tags.append("超买")
-        elif rsi_v and rsi_v < 30: tags.append("超卖")
-        _, _, hist = macd(closes)
-        tags.append("MACD多" if (hist[-1] and hist[-1] > 0) else "MACD空")
-        adx_v = adx(highs, lows, closes)[-1]
-        regime = market_regime(adx_v)
-        if regime == "trend": tags.append("趋势")
-        align = ma_align(closes)
-        if align > 0.5: tags.append("均线多")
-        elif align < -0.5: tags.append("均线空")
-        upper, _, lower = bollinger(closes)
-        if closes[-1] > upper[-1]: tags.append("破上轨")
-        if closes[-1] < lower[-1]: tags.append("破下轨")
-        return " ".join(tags)
+        """返回 (标签, 来源注记)。来源：实时=含最新直拉K线；账本=直拉不可用。"""
+        v = _tech_view.get(sym)
+        if v is None:
+            try:
+                from engine.live_calc import tech_tags
+                bars = q("SELECT date,open,high,low,close,volume FROM market_data"
+                         " WHERE symbol=? ORDER BY date", (sym,))
+                return tech_tags(bars), "账本日K"
+            except Exception:
+                return "-", ""
+        if v["source"] == "live":
+            note = "含%sK线" % ("盘中" if v["provisional"] else v["asof"][5:])
+        else:
+            note = "账本日K"
+        return v["tags"], note
 
     def _row(sym):
         d = live.get(sym, {})
@@ -655,7 +729,7 @@ def render_ticker():
         sign = "+" if chg >= 0 else ""
         code_show = sym[2:] if sym.startswith("HK") else sym
         name_show = SYMBOL_CN.get(sym, "")
-        tech = _tech_signals(sym)
+        tech, tech_note = _tech_signals(sym)
         order = pending.get(sym, "-")
         # 观察态只认最终展示的那条订单：同股另有 SELL 无持仓信号时，
         # 若最终展示的是 BUY，不得把可执行 BUY 一并灰化。
@@ -675,7 +749,8 @@ def render_ticker():
                 f'<td style="padding:8px;color:#1890ff;">{name_show}</td>'
                 f'<td class="num" style="padding:8px;color:{color};text-align:right;">{price_s}</td>'
                 f'<td style="padding:8px;color:{color};text-align:right;">{sign}{chg:.2f}%</td>'
-                f'<td style="padding:8px;font-size:12px;color:#aaa;">{tech}</td>'
+                f'<td style="padding:8px;font-size:12px;color:#aaa;">{tech}'
+                f'<br><span style="font-size:10px;color:#666;">{tech_note}</span></td>'
                 f'<td style="padding:8px;{order_style}">{order}</td></tr>')
 
     # 分类
@@ -737,6 +812,20 @@ def render_ticker():
     with st.expander(f"📊 全部行情（共 {_total} 只）", expanded=False):
         st.markdown(_table(a_syms, "A股") + _table(hk_syms, "港股")
                     + _table(crypto_syms, "加密"), unsafe_allow_html=True)
+        # 成交量单位校验结果（只列异常项，全部一致时给一行总结）
+        try:
+            from engine.live_calc import VOLUME_STATUS_CN
+            _bad = [(SYMBOL_CN.get(k, k), VOLUME_STATUS_CN[v["volume"]["status"]])
+                    for k, v in sorted(_tech_view.items())
+                    if v["volume"]["status"] in ("unit_x100", "unit_x0.01", "inconsistent")]
+            _n_ok = sum(1 for v in _tech_view.values() if v["volume"]["status"] == "ok")
+            if _bad:
+                st.caption("⚠ 成交量单位校验：" + "；".join("%s %s" % b for b in _bad))
+            if _tech_view:
+                st.caption("成交量单位校验：%d/%d 只与账本一致；技术信号 = 账本日K + 公网最新日K"
+                           "实时计算，直拉失败回退账本日K。" % (_n_ok, len(_tech_view)))
+        except Exception:
+            pass
 
 
 # ============ 顶栏：系统状态 + 策略 ============

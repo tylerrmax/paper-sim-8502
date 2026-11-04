@@ -98,8 +98,18 @@ def fetch_crypto(symbols=("BTCUSDT",)):
                 d = json.loads(r.read().decode())
             price = float(d["lastPrice"])
             chg = float(d["priceChangePercent"])
+            # 取交易所 closeTime（北京时间），让页面能显示"行情实时时间"；
+            # 字段缺失才退回旧文案（调用方须能处理不可解析的时间戳）
+            try:
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+                t = datetime.fromtimestamp(int(d["closeTime"]) / 1000,
+                                           ZoneInfo("Asia/Shanghai")
+                                           ).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                t = "Binance实时"
             out[sym] = {"price": price, "change_pct": round(chg, 2),
-                        "time": "Binance实时"}
+                        "time": t}
         except Exception:
             continue
     return out

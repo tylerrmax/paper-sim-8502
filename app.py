@@ -1730,8 +1730,8 @@ if tab == "🏠 工作台":
                 f'<div style="color:#8b9bab;font-size:11px;">{_note}</div></div>',
                 unsafe_allow_html=True)
 
-    # --- L2 三列：左优先级队列 / 中账户与持仓 / 右今日执行与重点观察 ---
-    _ql, _qm, _qr = st.columns([1.2, 2.3, 1.0])
+    # --- L2 双栏（方案A）：左 40% 优先级队列 + 今日执行与重点观察 / 右 60% 账户与持仓 ---
+    _ql, _qm = st.columns([2, 3], gap="medium")
     with _ql:
         st.markdown('<div class="kpi-card" style="padding:9px 12px;margin-bottom:2px;"><div class="kpi-label">待处理事项 / 优先级队列</div></div>',
                     unsafe_allow_html=True)
@@ -1786,6 +1786,9 @@ if tab == "🏠 工作台":
                       on_click=_goto_trade, key="todo_orders", disabled=not pending_orders)
         _tc[1].button(f"待审批信号 {pending_signals} 个 → 去处理" if pending_signals else "待审批信号 0",
                       on_click=_goto_trade, key="todo_signals", disabled=not pending_signals)
+        # 一键前往交易页：用 on_click 回调，仅在点击时才改导航状态（渲染时不会触发跳转）
+        st.button("🚀 前往 02 交易页集中处理", key="go_to_trade_page_btn", on_click=_goto_trade,
+                  use_container_width=True, type="primary")
     with _qm:
         _th2 = ('<table style="width:100%;border-collapse:collapse;font-size:10.5px;white-space:nowrap;">'
                '<tr style="color:#67748c;text-align:right;">')
@@ -1846,7 +1849,7 @@ if tab == "🏠 工作台":
                 '<th style="text-align:left;padding:3px 3px;">标的</th><th>数量</th><th>成本</th><th>现价</th>'
                 '<th>市值</th><th>浮动盈亏</th><th>止损参考</th><th>距止损</th><th>状态</th></tr>' + _prows +
                 '</table></div>', unsafe_allow_html=True)
-    with _qr:
+    with _ql:   # 左栏下半：今日执行与重点观察（只渲染一次，接在优先级队列之后）
         _eb2 = ""
         try:
             _ebr = q("SELECT date, symbol, reason FROM risk_block_events ORDER BY date DESC, id DESC LIMIT 1")
@@ -1888,8 +1891,8 @@ if tab == "🏠 工作台":
         _control_panel()
 
     # UI-R1 工作台落地：L0 状态带（门禁/风险/系统）+ L1 组合核心指标
-    # + L2 左优先级队列（原逻辑与按钮 key 不变）/ 中账户概览与持仓 /
-    # 右今日执行与重点观察；只做总览与待办分发，明细各归其页。
+    # + L2 双栏：左 优先级队列（原逻辑与按钮 key 不变）+ 今日执行与重点观察 /
+    # 右 账户概览与持仓；只做总览与待办分发，明细各归其页。
 
     # 互联互通资金（北向/南向）：成交额 + 北向持股市值，净买额 2024-08 起停止披露
     _ns = _fetch_ns_flow()

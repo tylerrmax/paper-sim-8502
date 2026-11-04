@@ -1730,80 +1730,44 @@ if tab == "🏠 工作台":
                 f'<div style="color:#8b9bab;font-size:11px;">{_note}</div></div>',
                 unsafe_allow_html=True)
 
-  # --- L2 黄金双栏: 左侧 40% 高危待办救火 | 右侧 60% 账户总览与核心持仓 ---
-    
-    # 1. 初始化并安全构建救火待办队列数据（_items）
-    _items = []
-    if '_hworst' in locals() and _hworst >= 2:
-        _items.append(("P0", "block", "<b>数据异常</b>: 数据健康处于断连/异常态（见顶栏 SYSTEM），先恢复数据再谈交易"))
-    if '_eb' in locals() and _eb:
-        _nm = SYMBOL_CN.get(_eb[0][1], "") if 'SYMBOL_CN' in locals() else ""
-        _items.append(("P1", "block", f"<b>风控拦截</b>: {_eb[0][1]} {_nm} BUY 被环境闸拦截 ({_eb[0][0]})"))
-    if '_has_stop' in locals() and _has_stop and '_breach_rows' in locals():
-        _bs = "；".join(f"{_s} 现价 {_px_fmt(_s, _l)} < 止损参考 {_px_fmt(_s, _r)}" for _w, _s, _qty, _l, _r, _md in _breach_rows[:3])
-        _items.append(("P1", "block", f"<b>破止损仍持仓</b>: {_bs}"))
-    if 'pending_orders' in locals() and pending_orders:
-        _items.append(("P2", "wait", f"<b>待建条件单</b>: {pending_orders} 个待处理 (模拟执行，券商人工下单)"))
-    if 'pending_signals' in locals() and pending_signals:
-        _items.append(("P2", "wait", f"<b>待审批信号</b>: {pending_signals} 条待处理 (无持仓 SELL 须先核持仓)"))
-    if 'status' in locals() and status != "running":
-        _items.insert(0, ("P1", "block", "<b>系统已暂停</b>: 新信号不会成交；已挂券商条件单请在券商端自行检查/撤销"))
-    if not _items:
-        _items.append(("", "ok", "当前无待处理事项"))
-
-    # 2. 渲染黄金双栏布局
-    _col_left, _col_right = st.columns([2, 3], gap="medium")
-
-    # 【左侧 40%】高危待办与救火队列
-    with _col_left:
-        st.markdown('<div class="kpi-label" style="margin-bottom:6px;">⚡ 优先处理事项 / 救火队列</div>', unsafe_allow_html=True)
-        
+    # --- L2 三列：左优先级队列 / 中账户与持仓 / 右今日执行与重点观察 ---
+    _ql, _qm, _qr = st.columns([1.2, 2.3, 1.0])
+    with _ql:
+        st.markdown('<div class="kpi-card" style="padding:9px 12px;margin-bottom:2px;"><div class="kpi-label">待处理事项 / 优先级队列</div></div>',
+                    unsafe_allow_html=True)
+        _items = []
+        if _hworst >= 2:
+            _items.append(("P0", "block", "<b>数据异常</b>：数据健康处于断连/异常态（见顶栏 SYSTEM），先恢复数据再谈交易"))
+        try:
+            _eb = q("SELECT date, symbol, reason FROM risk_block_events WHERE rule='env_gate' ORDER BY date DESC, id DESC LIMIT 1")
+        except Exception:
+            _eb = []
+        if _eb:
+            _nm = SYMBOL_CN.get(_eb[0][1], "")
+            _items.append(("P1", "block", f"<b>风控拦截</b>：{_eb[0][1]} {_nm} BUY 被环境闸拦截（{_eb[0][0]}）"))
+        if _has_stop:
+            _bs = "；".join(f"{_s} 现价 {_px_fmt(_s, _l)} < 止损参考 {_px_fmt(_s, _r)}"
+                            for _w, _s, _qty, _l, _r, _md in _breach_rows[:3])
+            _items.append(("P1", "block", f"<b>破止损仍持仓</b>：{_bs}"))
+        if pending_orders:
+            _items.append(("P2", "wait", f"<b>待建条件单</b>：{pending_orders} 个待处理（模拟执行，券商人工下单）"))
+        if pending_signals:
+            _items.append(("P2", "wait", f"<b>待审批信号</b>：{pending_signals} 条待处理（无持仓 SELL 须先核持仓）"))
+        try:
+            _inst = q("SELECT COUNT(*), MAX(date) FROM inst_lhb_fetch_days")[0]
+        except Exception:
+            _inst = (0, None)
+        if _inst and _inst[0]:
+            _items.append(("P3", "mut", f"<b>研究观察</b>：机构影子前向样本积累中（已抓取 {_inst[0]} 个交易日，至 {_inst[1]}）"))
+        if status != "running":
+            _items.insert(0, ("P1", "block", "<b>系统已暂停</b>：新信号不会成交；已挂券商条件单请在券商端自行检查/撤销"))
+        if not _items:
+            _items.append(("", "ok", "当前无待处理事项"))
         for _pri, _kind, _txt in _items:
-            _border_color = "#f6465d" if _pri in ("P0", "P1") else ("#e8a33d" if _pri == "P2" else "#8b9bab")
-            st.markdown(f"""
-            <div class="status-card" style="border-left: 4px solid {_border_color}; margin-bottom:8px; padding:10px 14px; font-size:12.5px;">
-                <span class="r1-chip {_kind}"><b>[{_pri}]</b></span> {_txt}
-            </div>
-            """, unsafe_allow_html=True)
-                
-      # 快捷跳转到交易页按钮（一键救火）
-    if st.button("🚀 前往 02 交易页集中处理", key="go_to_trade_page_btn", use_container_width=True, type="primary"):
-    st.session_state["main_nav"] = "📊 交易"
-    st.rerun()
-    # 定义左右分栏（平级关系，严禁嵌套）
-_col_left, _col_right = st.columns([2, 3])
-# 【左侧】优先处理事项 / 救火队列
-with _col_left:
-    st.markdown('<div class="kpi-label" style="margin-bottom:6px;">⚡ 优先处理事项 / 救火队列</div>', unsafe_allow_html=True)
-    if not _items:
-        st.markdown('<div class="status-card" style="border-left: 4px solid #2ebd85;">暂无紧急待办事项</div>', unsafe_allow_html=True)
-    else:
-        for _pri, _kind, _txt in _items:
-            _border_color = "#f6465d" if _pri in ("P0", "P1") else ("#e8a33d" if _pri == "P2" else "#8b9ba4")
-            st.markdown(f"""
-            <div class="status-card" style="border-left: 4px solid {_border_color}; margin-bottom:6px;">
-                <span class="r1-chip {_kind}"><b>[{_pri}]</b></span> {_txt}
-            </div>
-            """, unsafe_allow_html=True)
-            # 【右侧】账户资产、敞口与核心看板 & 盘后重点观察 TOP3
-    with _col_right:
-    st.markdown('<div class="kpi-label" style="margin-bottom:6px;">📊 账户总览与核心看板</div>', unsafe_allow_html=True)
-    
-    _sim_a = core.get("sim_a", {})
-    _rk1, _rk2, _rk3, _rk4 = st.columns(4)
-    _rk1.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">净值</div><div class="kpi-value">{_sim_a.get("net_value", 0)}</div></div>', unsafe_allow_html=True)
-    _rk2.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">现金</div><div class="kpi-value">{_sim_a.get("cash", 0)}</div></div>', unsafe_allow_html=True)
-    _rk3.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">当日盈亏</div><div class="kpi-value">{_sim_a.get("pnl_day", 0)}</div></div>', unsafe_allow_html=True)
-    _rk4.markdown(f'<div class="kpi-card" style="padding:10px;"><div class="kpi-label">股票敞口</div><div class="kpi-value">72.6%</div></div>', unsafe_allow_html=True)
-
-    st.markdown("#### 🔥 盘后重点观察 TOP3")
-    st.markdown("""
-    <div style="font-size:12.5px; color:#d6dee7; background:#10141b; padding:10px 14px; border-radius:8px; border:1px solid #1e2532;">
-        1. <b>002185 华天科技</b> | 评分: <span class="num" style="color:#56c8dc;">56.4</span> | 评级: B<br>
-        2. <b>002639 雪人集团</b> | 评分: <span class="num" style="color:#56c8dc;">49.9</span> | 评级: B<br>
-        3. <b>002472 双环传动</b> | 评分: <span class="num" style="color:#56c8dc;">47.5</span> | 评级: B
-    </div>
-    """, unsafe_allow_html=True)
+            _pri_html = f'<span style="color:{"#f6465d" if _pri in ("P0", "P1") else "#e8a33d" if _pri == "P2" else "#8b9bab"};font-weight:700;margin-right:8px;">{_pri}</span>' if _pri else ""
+            _hot = 'background:#190f16;border-left:3px solid #f6465d;padding-left:7px;' if _pri in ("P0", "P1") else ""
+            st.markdown(f'<div style="font-size:12.5px;padding:4px 2px;{_hot}border-bottom:1px solid #1e2532;">{_pri_html}{_txt}</div>',
+                        unsafe_allow_html=True)
         # 跳转与待办入口（沿用既有按钮与 key，队列只分发不处理）
         def _goto(page):
             st.session_state["main_nav"] = page
@@ -1822,7 +1786,6 @@ with _col_left:
                       on_click=_goto_trade, key="todo_orders", disabled=not pending_orders)
         _tc[1].button(f"待审批信号 {pending_signals} 个 → 去处理" if pending_signals else "待审批信号 0",
                       on_click=_goto_trade, key="todo_signals", disabled=not pending_signals)
-    _qm = st.container()
     with _qm:
         _th2 = ('<table style="width:100%;border-collapse:collapse;font-size:10.5px;white-space:nowrap;">'
                '<tr style="color:#67748c;text-align:right;">')

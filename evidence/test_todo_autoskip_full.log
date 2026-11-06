@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/l2-remediation/p4/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/hatch/workspace/l2-remediation/p4
+plugins: anyio-4.15.1
+collecting ... collected 7 items
+
+tests/test_todo_autoskip.py::test_rules_writes_and_audit PASSED          [ 14%]
+tests/test_todo_autoskip.py::test_idempotent_second_run_writes_zero PASSED [ 28%]
+tests/test_todo_autoskip.py::test_dry_run_writes_nothing PASSED          [ 42%]
+tests/test_todo_autoskip.py::test_log_failure_leaves_db_untouched PASSED [ 57%]
+tests/test_todo_autoskip.py::test_pending_counts_drop_by_isolated PASSED [ 71%]
+tests/test_todo_autoskip.py::test_apptest_counts_drop_and_isolated_zone PASSED [ 85%]
+tests/test_todo_autoskip.py::test_apptest_cloud_readonly_disables_write_buttons PASSED [100%]
+
+============================== 7 passed in 50.38s ==============================

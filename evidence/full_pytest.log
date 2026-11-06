@@ -1,0 +1,49 @@
+..........................................................F............. [ 41%]
+........................................................................ [ 82%]
+...............................                                          [100%]
+=================================== FAILURES ===================================
+______________________ test_ledger_fingerprint_idempotent ______________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-16/test_ledger_fingerprint_idempo0')
+
+    def test_ledger_fingerprint_idempotent(tmp_path):
+        """同库连跑两次（模拟重复跑批/进程重启重跑）：账本指纹不变、
+        不产生重复成交，且与改造前基线全等。"""
+        db = str(tmp_path / "prod_copy.db")
+        shutil.copy2(PROD_DB, db)
+        cfg = _load_cfg()
+        pipeline_run(db, cfg)
+        fp1 = _fingerprint(db)
+        pipeline_run(db, cfg)
+        fp2 = _fingerprint(db)
+        base = json.load(open(os.path.join(EVID, "ledger_fingerprint.json"),
+                              encoding="utf-8"))["baseline_pre_batch2"]
+        _evidence("ledger_fingerprint_idempotent", {
+            "input": "生产库副本 + 现行管线连跑两次",
+            "expected": "两次指纹相等且与改造前基线（行数/逐行哈希/Σqty/Σamount/Σpnl）全等",
+            "actual": {"after_run1": fp1, "after_run2": fp2, "baseline": base},
+            "fills": fp2["fills"]})
+        assert fp1 == fp2
+        for k in ("rows", "sha256", "sum_qty", "sum_amount", "sum_pnl"):
+>           assert fp1["fills"][k] == base["fills"][k], k
+E           AssertionError: rows
+E           assert 50 == 51
+
+tests/test_e2e_batch2.py:609: AssertionError
+----------------------------- Captured stdout call -----------------------------
+市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
+WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
+WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+=============================== warnings summary ===============================
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=7503) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
+1 failed, 174 passed, 2 warnings in 95.81s (0:01:35)

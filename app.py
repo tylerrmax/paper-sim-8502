@@ -432,13 +432,44 @@ table { color: #e8ecf1; }
 st.markdown('<div class="main-title">独立交易终端</div>', unsafe_allow_html=True)
 
 # 数据日期（交易员需要知道数据新旧，不说教）
+# 第二层 P2：新鲜度五态强提示——延迟黄条、过期/不可用红条，禁止静默展示
+# 旧数据。判定走 engine/page_freshness 纯函数（固定时钟可测），此处只取数与
+# 渲染；读不到数据日期按不可用处理（红条而非崩溃）。
+from datetime import date as _date_cls
+from datetime import timedelta as _timedelta_cls
+from datetime import timezone as _timezone_cls
+
+from engine import page_freshness as _pf
+
+try:
+    _data_rows = q("SELECT MAX(date) FROM daily_report WHERE symbol='TOTAL'")
+    data_date_str = _data_rows[0][0] if _data_rows and _data_rows[0][0] else ""
+except Exception:
+    data_date_str = ""
+# 云端服务器为 UTC，须换算到市场时区再判定 17:30 应到线
+_now_market = datetime.now(_timezone_cls(_timedelta_cls(hours=8)))
+_fresh_state, _fresh = _pf.classify(
+    _date_cls.fromisoformat(data_date_str) if data_date_str else None,
+    _now_market)
+if _fresh_state == _pf.DELAYED:
+    st.warning(
+        f"⚠ 数据延迟：页面数据截至 {_fresh['asof']}，应到 {_fresh['expected']}"
+        "（落后 1 个交易日），请注意数据时效。")
+elif _fresh_state == _pf.STALE:
+    st.error(
+        f"⛔ 数据已过期：页面数据截至 {_fresh['asof']}，应到 {_fresh['expected']}"
+        f"（已落后 {_fresh['lag_trading_days']} 个交易日），不是最新数据，"
+        "请勿据此决策。")
+elif _fresh_state == _pf.UNAVAILABLE:
+    st.error("⛔ 数据不可用：暂时读不到账本数据日期，页面展示可能不完整，"
+             "请稍后刷新。")
 if CLOUD_DATA_ASOF:
     # 区分：数据日期（交易日）vs 同步时间（文件推送时间）
     # 周末无新数据时，数据日期停在周五属正常，不应误报为同步中断
-    data_date = q("SELECT MAX(date) FROM daily_report WHERE symbol='TOTAL'")
-    data_date_str = data_date[0][0] if data_date and data_date[0][0] else ""
     if data_date_str:
-        st.caption(f"数据日期 {data_date_str} · 同步于 {CLOUD_DATA_ASOF}")
+        _closed_suffix = " · 休市" if _fresh_state == _pf.CLOSED else ""
+        st.caption(f"数据日期 {data_date_str} · 同步于 {CLOUD_DATA_ASOF}"
+                   f"{_closed_suffix}")
     else:
         st.caption(f"数据截至 {CLOUD_DATA_ASOF}")
 

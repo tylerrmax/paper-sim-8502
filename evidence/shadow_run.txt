@@ -1,0 +1,13 @@
+影子演算（生产库副本 dry-run，只判定不写入）
+将被自动隔离: 3 条
+{"date": "2026-10-27", "account": "sim_a", "symbol": "002639", "side": "BUY", "price": 14.27, "rule": "R2", "also_matched": [], "evidence": {"age_trading_days": 8, "asof": "2026-11-06"}}
+{"date": "2026-10-30", "account": "sim_a", "symbol": "688305", "side": "SELL", "price": 42.3, "rule": "R1", "also_matched": [], "evidence": {"pos_qty_now": 0.0, "open_qty_at_signal_date": 0.0}}
+{"date": "2026-11-05", "account": "sim_a", "symbol": "300827", "side": "SELL", "price": 29.4, "rule": "R1", "also_matched": [], "evidence": {"pos_qty_now": 0.0, "open_qty_at_signal_date": 0.0}}
+
+未隔离（保留）关键条目结论：
+- 600150 BUY 2026-11-02 @34.11：交易日龄 = 4（11-03/04/05/06），未超过 5 日线 → 不隔离；
+  若仍未成交，2026-11-10（周二）夜跑时龄达 6 日将按 R2 自动隔离。
+- 688305 BUY 2026-11-02 @43.02：同上，龄 4 日 → 不隔离，口径同 600150。
+- 600150 SELL 2026-10-30：已有成交 #467（signal_date 联结）→ 非待办，未触碰。
+- 其余历史信号均已有 approvals 记录（approved/skipped）→ 按"人工已表态不碰"原则未触碰。
+dry-run 后副本 approvals skipped 仍为 3 条（存量），证明零写入；源生产库全程只读。

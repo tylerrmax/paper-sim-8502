@@ -2214,6 +2214,9 @@ elif tab == "📝 交易":
 
     # 待建条件单
     st.subheader("订单管理")
+    if IS_CLOUD:
+        # 公网只读（P4）：写按钮点了也落不到生产库，禁用并明示，避免假按钮
+        st.caption("🔒 只读展示，处理请用本机版")
     sigs = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
                 LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
                   AND s.symbol=f.symbol AND s.side=f.side
@@ -2325,11 +2328,13 @@ elif tab == "📝 交易":
                     for w in warns:
                         st.caption(f"⚠️ {w}")
                 with c2:
-                    if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}"):
+                    if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}",
+                                 disabled=IS_CLOUD):
                         _ap_state(f"{d}_{s}_{sd}", "approved", d, acct, s, sd)
                         st.success(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
                 with c3:
-                    if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}"):
+                    if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}",
+                                 disabled=IS_CLOUD):
                         _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
                         if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
                             st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
@@ -2367,11 +2372,65 @@ elif tab == "📝 交易":
                                 unsafe_allow_html=True)
                     st.caption(_reason)
                 with _fc2:
-                    if st.button("⏭ 跳过/隔离", key=f"block_skip_{d}_{s}_{sd}"):
+                    if st.button("⏭ 跳过/隔离", key=f"block_skip_{d}_{s}_{sd}",
+                                 disabled=IS_CLOUD):
                         _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
                         if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
                             st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
                         st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+
+    # 已隔离（第二层 P4）：approvals 中 decision='skipped' 的条目，
+    # 区分自动隔离（auto_skip_log 命中，带规则号）与人工跳过；
+    # 「恢复」= 删除该 skipped 行，信号按原口径回到待办（只读态禁用）。
+    _skipped_rows = q("""SELECT ap.date, ap.symbol, ap.side, ap.updated, s.price
+                         FROM approvals ap
+                         LEFT JOIN signals s ON s.date=ap.date
+                           AND s.account=ap.account AND s.symbol=ap.symbol
+                           AND s.side=ap.side
+                         WHERE ap.account=? AND ap.decision='skipped'
+                         ORDER BY ap.date DESC""", (acct,))
+    if _skipped_rows:
+        _auto_rules = {}
+        try:
+            import json as _json_sk
+            _logp = os.path.join(BASE, "reports", "auto_skip_log.jsonl")
+            if os.path.exists(_logp):
+                for _ln in open(_logp, encoding="utf-8"):
+                    try:
+                        _rec = _json_sk.loads(_ln)
+                    except Exception:
+                        continue
+                    _auto_rules[(_rec.get("date"), _rec.get("account"),
+                                 _rec.get("symbol"),
+                                 _rec.get("side"))] = _rec.get("rule", "")
+        except Exception:
+            _auto_rules = {}
+        with st.expander(f"已隔离（{len(_skipped_rows)} 条 · 不再计入待办）"):
+            if IS_CLOUD:
+                st.caption("🔒 只读展示，处理请用本机版")
+            for _d, _s, _sd, _upd, _px in _skipped_rows:
+                _rule = _auto_rules.get((_d, acct, _s, _sd))
+                _src = f"自动隔离·{_rule}" if _rule else "人工跳过"
+                _rc1, _rc2 = st.columns([3, 1])
+                with _rc1:
+                    st.markdown(f"**{sym_name(_s)}** {_sd} "
+                                f"@{_px_fmt(_s, _px) if _px else '—'} · {_d}"
+                                f" · {_src} · {_upd or ''}")
+                with _rc2:
+                    if st.button("↩️ 恢复", key=f"restore_{_d}_{_s}_{_sd}",
+                                 disabled=IS_CLOUD):
+                        try:
+                            _con = sqlite3.connect(DB)
+                            _con.execute(
+                                "DELETE FROM approvals WHERE date=? AND"
+                                " account=? AND symbol=? AND side=?"
+                                " AND decision='skipped'",
+                                (_d, acct, _s, _sd))
+                            _con.commit()
+                            _con.close()
+                            st.rerun()
+                        except Exception:
+                            st.info("失败")
 
     # 成交记录（独立区，与事件流分开；fills 同源只读）
     st.subheader("成交记录")

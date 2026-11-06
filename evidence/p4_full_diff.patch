@@ -1,0 +1,628 @@
+diff --git a/app.py b/app.py
+index 7d38472..409532d 100644
+--- a/app.py
++++ b/app.py
+@@ -2183,6 +2183,9 @@ elif tab == "📝 交易":
+ 
+     # 待建条件单
+     st.subheader("订单管理")
++    if IS_CLOUD:
++        # 公网只读（P4）：写按钮点了也落不到生产库，禁用并明示，避免假按钮
++        st.caption("🔒 只读展示，处理请用本机版")
+     sigs = q("""SELECT s.date, s.symbol, s.side, s.price FROM signals s
+                 LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account
+                   AND s.symbol=f.symbol AND s.side=f.side
+@@ -2294,11 +2297,13 @@ elif tab == "📝 交易":
+                     for w in warns:
+                         st.caption(f"⚠️ {w}")
+                 with c2:
+-                    if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}"):
++                    if st.button("✅ 已建单", key=f"done_{d}_{s}_{sd}",
++                                 disabled=IS_CLOUD):
+                         _ap_state(f"{d}_{s}_{sd}", "approved", d, acct, s, sd)
+                         st.success(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+                 with c3:
+-                    if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}"):
++                    if st.button("⏭ 跳过", key=f"skip_{d}_{s}_{sd}",
++                                 disabled=IS_CLOUD):
+                         _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
+                         if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
+                             st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
+@@ -2336,12 +2341,66 @@ elif tab == "📝 交易":
+                                 unsafe_allow_html=True)
+                     st.caption(_reason)
+                 with _fc2:
+-                    if st.button("⏭ 跳过/隔离", key=f"block_skip_{d}_{s}_{sd}"):
++                    if st.button("⏭ 跳过/隔离", key=f"block_skip_{d}_{s}_{sd}",
++                                 disabled=IS_CLOUD):
+                         _ap_state(f"{d}_{s}_{sd}", "skipped", d, acct, s, sd)
+                         if st.session_state.get(f"apstate_{d}_{s}_{sd}") == "已生效":
+                             st.rerun()  # 立即重查：已跳过的信号当场从待办/列表消失
+                         st.info(st.session_state.get(f"apstate_{d}_{s}_{sd}", "失败"))
+ 
++    # 已隔离（第二层 P4）：approvals 中 decision='skipped' 的条目，
++    # 区分自动隔离（auto_skip_log 命中，带规则号）与人工跳过；
++    # 「恢复」= 删除该 skipped 行，信号按原口径回到待办（只读态禁用）。
++    _skipped_rows = q("""SELECT ap.date, ap.symbol, ap.side, ap.updated, s.price
++                         FROM approvals ap
++                         LEFT JOIN signals s ON s.date=ap.date
++                           AND s.account=ap.account AND s.symbol=ap.symbol
++                           AND s.side=ap.side
++                         WHERE ap.account=? AND ap.decision='skipped'
++                         ORDER BY ap.date DESC""", (acct,))
++    if _skipped_rows:
++        _auto_rules = {}
++        try:
++            import json as _json_sk
++            _logp = os.path.join(BASE, "reports", "auto_skip_log.jsonl")
++            if os.path.exists(_logp):
++                for _ln in open(_logp, encoding="utf-8"):
++                    try:
++                        _rec = _json_sk.loads(_ln)
++                    except Exception:
++                        continue
++                    _auto_rules[(_rec.get("date"), _rec.get("account"),
++                                 _rec.get("symbol"),
++                                 _rec.get("side"))] = _rec.get("rule", "")
++        except Exception:
++            _auto_rules = {}
++        with st.expander(f"已隔离（{len(_skipped_rows)} 条 · 不再计入待办）"):
++            if IS_CLOUD:
++                st.caption("🔒 只读展示，处理请用本机版")
++            for _d, _s, _sd, _upd, _px in _skipped_rows:
++                _rule = _auto_rules.get((_d, acct, _s, _sd))
++                _src = f"自动隔离·{_rule}" if _rule else "人工跳过"
++                _rc1, _rc2 = st.columns([3, 1])
++                with _rc1:
++                    st.markdown(f"**{sym_name(_s)}** {_sd} "
++                                f"@{_px_fmt(_s, _px) if _px else '—'} · {_d}"
++                                f" · {_src} · {_upd or ''}")
++                with _rc2:
++                    if st.button("↩️ 恢复", key=f"restore_{_d}_{_s}_{_sd}",
++                                 disabled=IS_CLOUD):
++                        try:
++                            _con = sqlite3.connect(DB)
++                            _con.execute(
++                                "DELETE FROM approvals WHERE date=? AND"
++                                " account=? AND symbol=? AND side=?"
++                                " AND decision='skipped'",
++                                (_d, acct, _s, _sd))
++                            _con.commit()
++                            _con.close()
++                            st.rerun()
++                        except Exception:
++                            st.info("失败")
++
+     # 成交记录（独立区，与事件流分开；fills 同源只读）
+     st.subheader("成交记录")
+     _fills_tr = q("SELECT date, symbol, side, qty, price, pnl FROM fills WHERE account=? ORDER BY date DESC, id DESC LIMIT 15", (acct,))
+diff --git a/engine/todo_autoskip.py b/engine/todo_autoskip.py
+new file mode 100644
+index 0000000..f331471
+--- /dev/null
++++ b/engine/todo_autoskip.py
+@@ -0,0 +1,186 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""待办自动隔离（8502 第二层 P4，2026-11-07 批准方案）。
++
++背景：工作台/交易页的待办（待建条件单、待审批信号、风控拦截列表）
++全部由 signals × fills × approvals 三表联查得出，人工点「跳过/隔离」
++即往 approvals 写一条 decision='skipped'（键 = date/account/symbol/side，
++date 为信号日，与 app.py 的 _ap_state 完全一致），各列表随即排除该条。
++本模块只处理这条既有通道：把「客观已死」的待办按规则自动写 skipped，
++不建新表、不改 schema、不删任何 signals/fills/blocked_signals 记录，
++不碰信号生成、撮合、订单校验与风控拦截规则本身。
++
++候选集（与界面口径一致）：无对应 fill（按 fills.signal_date 联结）、
++且 approvals 无任何记录（人工已表态的一律不碰）、信号日在 asof
++往前 60 天窗口内（与待审批计数窗口一致）。
++
++规则（命中任一即隔离，优先级 R1 > R3 > R2，JSONL 里留 also_matched）：
++- R1 无持仓 SELL：side=SELL，positions 现无持仓，且按 fills 计算
++  信号日时点未平仓数量 <= 0。
++- R3 被取代：同 (account, symbol, side) 存在更晚 signal_date 的信号，
++  且其已成交或仍待处理（未被 skipped）。
++- R2 过期信号：信号日距 asof > 5 个交易日（交易日以 market_data
++  指数日期序列计数；无指数序列时退回 A股日历口径）且从未成交。
++
++写入顺序（故障安全）：先把判定结果追加写审计 JSONL 并落盘，
++成功后才写 approvals；JSONL 写失败则抛错、DB 一行不动，
++杜绝「已隔离但无留痕」。函数幂等：已写 skipped 的条目不再是候选，
++重复运行第二次写入 0 条。
++"""
++from __future__ import annotations
++
++import json
++import os
++import sqlite3
++from datetime import datetime, timedelta
++
++BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++DEFAULT_LOG = os.path.join(BASE, "reports", "auto_skip_log.jsonl")
++WINDOW_DAYS = 60
++EXPIRE_TRADING_DAYS = 5
++
++
++def _trading_days(con):
++    """交易日序列：market_data 指数日期（数据驱动，与页面 asof 同源）。"""
++    rows = con.execute(
++        "SELECT DISTINCT date FROM market_data WHERE market='index'"
++        " ORDER BY date").fetchall()
++    return [r[0] for r in rows]
++
++
++def _age_trading_days(days, signal_date, asof):
++    """signal_date 之后、asof（含）之前的交易日数。"""
++    if days:
++        return sum(1 for d in days if signal_date < d <= asof)
++    # 无指数序列时退回 A股日历口径（周末+法定假日，engine.execution）
++    from engine.execution import is_stock_trading_day
++    d0 = datetime.strptime(signal_date, "%Y-%m-%d").date()
++    d1 = datetime.strptime(asof, "%Y-%m-%d").date()
++    n, d = 0, d0
++    while d < d1:
++        d += timedelta(days=1)
++        if is_stock_trading_day(d):
++            n += 1
++    return n
++
++
++def _open_qty_at(con, account, symbol, on_date):
++    """fills 推算某时点未平仓数量（BUY 为正、SELL 为负，按成交日累计）。"""
++    r = con.execute(
++        "SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN qty ELSE -qty END), 0)"
++        " FROM fills WHERE account=? AND symbol=? AND date<=?",
++        (account, symbol, on_date)).fetchone()
++    return float(r[0] or 0)
++
++
++def _pos_qty_now(con, account, symbol):
++    r = con.execute(
++        "SELECT qty FROM positions WHERE account=? AND symbol=?",
++        (account, symbol)).fetchone()
++    return float(r[0]) if r else 0.0
++
++
++def _has_fill(con, sig):
++    r = con.execute(
++        "SELECT COUNT(*) FROM fills WHERE signal_date=? AND account=?"
++        " AND symbol=? AND side=?",
++        (sig["date"], sig["account"], sig["symbol"], sig["side"])).fetchone()
++    return r[0] > 0
++
++
++def evaluate(con, asof=None):
++    """只判定不写入。返回 [decision, ...]，每条含 rule 与判定证据。"""
++    days = _trading_days(con)
++    if asof is None:
++        asof = days[-1] if days else datetime.now().strftime("%Y-%m-%d")
++    win_start = (datetime.strptime(asof, "%Y-%m-%d")
++                 - timedelta(days=WINDOW_DAYS)).strftime("%Y-%m-%d")
++    cands = con.execute(
++        "SELECT s.date, s.account, s.symbol, s.side, s.price FROM signals s"
++        " LEFT JOIN fills f ON f.signal_date=s.date AND f.account=s.account"
++        "   AND f.symbol=s.symbol AND f.side=s.side"
++        " LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account"
++        "   AND ap.symbol=s.symbol AND ap.side=s.side"
++        " WHERE f.id IS NULL AND ap.date IS NULL AND s.date>=?"
++        " ORDER BY s.date, s.account, s.symbol, s.side",
++        (win_start,)).fetchall()
++    # 全部信号（供 R3 查更新者，含已成交/已表态者）
++    all_sigs = con.execute(
++        "SELECT date, account, symbol, side FROM signals").fetchall()
++    out = []
++    for d, acct, sym, side, px in cands:
++        sig = {"date": d, "account": acct, "symbol": sym, "side": side}
++        matched, evidence = [], {}
++        # R1 无持仓 SELL
++        if side == "SELL":
++            pos_now = _pos_qty_now(con, acct, sym)
++            open_at = _open_qty_at(con, acct, sym, d)
++            if pos_now <= 0 and open_at <= 0:
++                matched.append("R1")
++                evidence["R1"] = {"pos_qty_now": pos_now,
++                                  "open_qty_at_signal_date": open_at}
++        # R3 被取代
++        newer = None
++        for d2, a2, s2, sd2 in all_sigs:
++            if (a2, s2, sd2) == (acct, sym, side) and d2 > d:
++                newer = max(newer, d2) if newer else d2
++        if newer is not None:
++            nsig = {"date": newer, "account": acct, "symbol": sym, "side": side}
++            nrow = con.execute(
++                "SELECT decision FROM approvals WHERE date=? AND account=?"
++                " AND symbol=? AND side=?",
++                (newer, acct, sym, side)).fetchone()
++            ndecision = nrow[0] if nrow else None
++            if _has_fill(con, nsig) or ndecision != "skipped":
++                matched.append("R3")
++                evidence["R3"] = {"superseded_by": newer,
++                                  "newer_state": ("filled" if _has_fill(con, nsig)
++                                                  else "pending")}
++        # R2 过期
++        age = _age_trading_days(days, d, asof)
++        if age > EXPIRE_TRADING_DAYS:
++            matched.append("R2")
++            evidence["R2"] = {"age_trading_days": age, "asof": asof}
++        if matched:
++            rule = matched[0]
++            out.append({"date": d, "account": acct, "symbol": sym,
++                        "side": side, "price": px, "rule": rule,
++                        "also_matched": matched[1:],
++                        "evidence": evidence[rule]})
++    return out
++
++
++def run_autoskip(db_path, asof=None, log_path=None, dry_run=False):
++    """执行自动隔离，返回本次隔离的 decision 列表。
++
++    dry_run=True 时只判定、不写 approvals、不写 JSONL（影子演算用）。
++    非 dry_run 时先写 JSONL 并落盘，成功后才写 approvals（单事务）。
++    """
++    log_path = log_path or DEFAULT_LOG
++    con = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True) \
++        if dry_run else sqlite3.connect(db_path)
++    try:
++        decisions = evaluate(con, asof=asof)
++        if dry_run or not decisions:
++            return decisions
++        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
++        # 1) 先落审计 JSONL（失败则抛错，DB 不动）
++        os.makedirs(os.path.dirname(log_path), exist_ok=True)
++        with open(log_path, "a", encoding="utf-8") as f:
++            for dec in decisions:
++                f.write(json.dumps({"ts": now, "source": "auto", **dec},
++                                   ensure_ascii=False) + "\n")
++            f.flush()
++            os.fsync(f.fileno())
++        # 2) 再写 approvals（键法与 app.py _ap_state 完全一致）
++        for dec in decisions:
++            con.execute(
++                "INSERT OR REPLACE INTO approvals"
++                "(date,account,symbol,side,decision,updated)"
++                " VALUES(?,?,?,?,?,?)",
++                (dec["date"], dec["account"], dec["symbol"], dec["side"],
++                 "skipped", now))
++        con.commit()
++        return decisions
++    finally:
++        con.close()
+diff --git a/run_daily.py b/run_daily.py
+index 7490373..3c81282 100644
+--- a/run_daily.py
++++ b/run_daily.py
+@@ -239,6 +239,23 @@ def main():
+     except Exception as e:  # noqa: BLE001
+         print("FAIL 机构影子抓取: %s" % e)
+ 
++    # 7. 待办自动隔离（第二层 P4）：信号/成交全部落定后，把客观已死的
++    #    待办（无持仓 SELL / 被取代 / 过期未成交）按规则写入
++    #    approvals skipped（与人工「跳过/隔离」同一通道）并留审计
++    #    JSONL；日报末尾留一行。失败只留 FAIL 行，不中断日批。
++    try:
++        from engine.todo_autoskip import run_autoskip
++        _skipped = run_autoskip(DB)
++        print("自动隔离 %d 条" % len(_skipped))
++        try:
++            with open(report, "a", encoding="utf-8") as _f:
++                _f.write("\n自动隔离 %d 条（明细见 auto_skip_log）\n"
++                         % len(_skipped))
++        except Exception as e:  # noqa: BLE001
++            print("WARN 日报追加自动隔离行失败: %s" % e)
++    except Exception as e:  # noqa: BLE001
++        print("FAIL 待办自动隔离: %s" % e)
++
+ 
+ if __name__ == "__main__":
+     main()
+diff --git a/tests/test_todo_autoskip.py b/tests/test_todo_autoskip.py
+new file mode 100644
+index 0000000..ec7c448
+--- /dev/null
++++ b/tests/test_todo_autoskip.py
+@@ -0,0 +1,304 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""待办自动隔离（第二层 P4）回归测试。
++
++- 规则层：tmp 夹具 DB（从仓内 DB 复制后清空五表、按场景重建），
++  断言 R1/R2/R3 命中集合、approvals 写入与审计 JSONL 精确一致、
++  二次运行写入 0（幂等）、dry-run 零写入、日志故障时 DB 一行不动。
++- 界面层：AppTest 在 tmp 仓库副本上跑（本机态 / 公网只读态），
++  断言隔离后工作台待办计数下降、交易页已隔离区可见且带恢复按钮、
++  只读态下写按钮全部禁用并出现只读标注。
++"""
++import json
++import os
++import re
++import shutil
++import sqlite3
++from datetime import date, timedelta
++
++import pytest
++from streamlit.testing.v1 import AppTest
++
++REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
++SRC_DB = os.path.join(REPO, "db", "sim.db")
++import sys
++sys.path.insert(0, REPO)
++from engine.todo_autoskip import run_autoskip  # noqa: E402
++
++ACCT = "sim_a"
++
++
++def _trading_days(n=12):
++    """最近 n 个工作日（升序），末位为最近交易日。"""
++    days, d = [], date.today()
++    while len(days) < n:
++        if d.weekday() < 5:
++            days.append(d.isoformat())
++        d -= timedelta(days=1)
++    return sorted(days)
++
++
++def build_fixture_db(path):
++    """构造场景 DB，返回 (days, expect_isolated)。
++
++    场景（asof = days[-1]，年龄 = 信号日之后的交易日数）：
++    - S1 SELL 300827 @days[-2]：无持仓、无成交 → R1 隔离
++    - S2 SELL 002446 @days[-2]：有持仓（fills+positions）→ 保留
++    - S3 BUY  600150 @days[-3]：年龄 2 → 保留
++    - S4 BUY  688305 @days[-8]：年龄 7、未成交 → R2 隔离
++    - S5 BUY  002472 @days[-4]：被 S6 取代 → R3 隔离
++    - S6 BUY  002472 @days[-2]：最新 → 保留
++    - S7 BUY  002812 @days[-2]：已有 fill → 非待办，勿动
++    - S8 SELL 002639 @days[-2]：approvals 已 approved（人工已表态）→ 勿动
++    """
++    days = _trading_days()
++    shutil.copy2(SRC_DB, path)
++    con = sqlite3.connect(path)
++    for t in ("signals", "approvals", "fills", "positions"):
++        con.execute("DELETE FROM %s" % t)
++    for d in days:
++        con.execute(
++            "INSERT OR REPLACE INTO market_data"
++            "(symbol,date,open,high,low,close,volume,market)"
++            " VALUES('IDX000001',?,3600,3610,3590,3605,100000000,'index')",
++            (d,))
++
++    def sig(d, sym, side, px):
++        con.execute(
++            "INSERT INTO signals(date,account,symbol,side,price,status)"
++            " VALUES(?,?,?,?,?,'待执行')", (d, ACCT, sym, side, px))
++
++    sig(days[-2], "300827", "SELL", 29.4)          # S1
++    sig(days[-2], "002446", "SELL", 7.0)           # S2
++    sig(days[-3], "600150", "BUY", 34.11)          # S3
++    sig(days[-8], "688305", "BUY", 43.02)          # S4
++    sig(days[-4], "002472", "BUY", 33.0)           # S5
++    sig(days[-2], "002472", "BUY", 33.5)           # S6
++    sig(days[-2], "002812", "BUY", 42.0)           # S7
++    sig(days[-2], "002639", "SELL", 13.5)          # S8
++    # S2 的持仓来源成交 + 当前持仓
++    con.execute(
++        "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl,"
++        "signal_date,strategy_version) VALUES(?,?,?, 'BUY',7200,6.94386,"
++        "6.22,0,?,'v1.1-2026-10-26')", (days[-10], ACCT, "002446", days[-10]))
++    con.execute(
++        "INSERT INTO positions(account,symbol,qty,avg_cost,last_price,"
++        "market_value) VALUES(?,?,7200,6.94386,6.76,48672.0)",
++        (ACCT, "002446"))
++    # S7 的成交（signal_date 联结）
++    con.execute(
++        "INSERT INTO fills(date,account,symbol,side,qty,price,fee,pnl,"
++        "signal_date,strategy_version) VALUES(?,?,?, 'BUY',500,42.0,3.7,0,"
++        "?,'v1.1-2026-10-26')", (days[-1], ACCT, "002812", days[-2]))
++    # S8 人工已批准
++    con.execute(
++        "INSERT INTO approvals(date,account,symbol,side,decision,updated)"
++        " VALUES(?,?,?, 'SELL','approved','2026-11-07 00:00:00')",
++        (days[-2], ACCT, "002639"))
++    con.commit()
++    con.close()
++    expect = {(days[-2], "300827", "SELL"): "R1",
++              (days[-8], "688305", "BUY"): "R2",
++              (days[-4], "002472", "BUY"): "R3"}
++    return days, expect
++
++
++def _approvals(db):
++    con = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
++    rows = con.execute(
++        "SELECT date,account,symbol,side,decision FROM approvals"
++        " ORDER BY date,symbol").fetchall()
++    con.close()
++    return rows
++
++
++def _pending_counts(db):
++    """与 app.py 工作台完全相同的两条计数口径。"""
++    con = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
++    orders = con.execute(
++        "SELECT COUNT(*) FROM signals s"
++        " LEFT JOIN fills f ON s.date=f.signal_date AND s.account=f.account"
++        "   AND s.symbol=f.symbol AND s.side=f.side"
++        " LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account"
++        "   AND ap.symbol=s.symbol AND ap.side=s.side"
++        " WHERE f.id IS NULL AND s.date >= date('now','-7 days')"
++        "   AND (ap.decision IS NULL OR ap.decision <> 'skipped')").fetchone()[0]
++    sigs = con.execute(
++        "SELECT COUNT(*) FROM signals s"
++        " LEFT JOIN approvals ap ON ap.date=s.date AND ap.account=s.account"
++        "   AND ap.symbol=s.symbol AND ap.side=s.side"
++        " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
++        "   AND f.symbol=s.symbol AND f.side=s.side"
++        " WHERE s.date>=date('now','-60 days') AND ap.date IS NULL"
++        "   AND f.date IS NULL").fetchone()[0]
++    con.close()
++    return orders, sigs
++
++
++# ---------------- 规则层 ----------------
++
++def test_rules_writes_and_audit(tmp_path):
++    db = str(tmp_path / "sim.db")
++    days, expect = build_fixture_db(db)
++    log = str(tmp_path / "auto_skip_log.jsonl")
++    decs = run_autoskip(db, log_path=log)
++    got = {(d["date"], d["symbol"], d["side"]): d["rule"] for d in decs}
++    assert got == expect
++    # approvals 写入集合精确一致（另加 S8 的 approved 原样保留）
++    rows = _approvals(db)
++    skipped = {(r[0], r[2], r[3]) for r in rows if r[4] == "skipped"}
++    assert skipped == set(expect)
++    assert (days[-2], ACCT, "002639", "SELL", "approved") in rows
++    # JSONL 精确：3 行，规则与证据齐全
++    lines = open(log, encoding="utf-8").read().strip().split("\n")
++    assert len(lines) == 3
++    recs = {(r["date"], r["symbol"], r["side"]): r
++            for r in (json.loads(x) for x in lines)}
++    assert set(recs) == set(expect)
++    r1 = recs[(days[-2], "300827", "SELL")]
++    assert r1["rule"] == "R1"
++    assert r1["evidence"]["pos_qty_now"] == 0
++    assert r1["evidence"]["open_qty_at_signal_date"] == 0
++    r2 = recs[(days[-8], "688305", "BUY")]
++    assert r2["rule"] == "R2" and r2["evidence"]["age_trading_days"] == 7
++    r3 = recs[(days[-4], "002472", "BUY")]
++    assert r3["rule"] == "R3" and r3["evidence"]["superseded_by"] == days[-2]
++
++
++def test_idempotent_second_run_writes_zero(tmp_path):
++    db = str(tmp_path / "sim.db")
++    build_fixture_db(db)
++    log = str(tmp_path / "auto_skip_log.jsonl")
++    first = run_autoskip(db, log_path=log)
++    assert len(first) == 3
++    before_rows = _approvals(db)
++    before_log = open(log, encoding="utf-8").read()
++    second = run_autoskip(db, log_path=log)
++    assert second == []
++    assert _approvals(db) == before_rows
++    assert open(log, encoding="utf-8").read() == before_log
++
++
++def test_dry_run_writes_nothing(tmp_path):
++    db = str(tmp_path / "sim.db")
++    days, expect = build_fixture_db(db)
++    log = str(tmp_path / "auto_skip_log.jsonl")
++    decs = run_autoskip(db, log_path=log, dry_run=True)
++    assert {(d["date"], d["symbol"], d["side"]): d["rule"]
++            for d in decs} == expect
++    assert [r for r in _approvals(db) if r[4] == "skipped"] == []
++    assert not os.path.exists(log)
++
++
++def test_log_failure_leaves_db_untouched(tmp_path):
++    db = str(tmp_path / "sim.db")
++    build_fixture_db(db)
++    blocker = tmp_path / "blocker"
++    blocker.write_text("x")  # 文件冒充目录 → JSONL 打开必然失败
++    bad_log = str(blocker / "auto_skip_log.jsonl")
++    with pytest.raises(Exception):
++        run_autoskip(db, log_path=bad_log)
++    assert [r for r in _approvals(db) if r[4] == "skipped"] == []
++
++
++def test_pending_counts_drop_by_isolated(tmp_path):
++    db = str(tmp_path / "sim.db")
++    build_fixture_db(db)
++    o0, s0 = _pending_counts(db)
++    # 待建(7自然日窗口):S1,S2,S3,S5,S6,S8(S4 在窗口外,S7 已成交)
++    # 待审批(60日,ap 为空且 f.date=s.date 无成交):S1..S7
++    # (面B按成交日联结,S7 成交日≠信号日仍被计入——app 既有口径,本批未动)
++    assert (o0, s0) == (6, 7)
++    run_autoskip(db, log_path=str(tmp_path / "log.jsonl"))
++    o1, s1 = _pending_counts(db)
++    # 待建窗口(7自然日)内被隔离:S1,S5 → -2;待审批窗口内被隔离:3 条 → -3
++    assert (o1, s1) == (o0 - 2, s0 - 3)
++
++
++# ---------------- 界面层（AppTest） ----------------
++
++def _build_app_tree(tmp_path, autoskip=True):
++    tree = str(tmp_path / "tree")
++    shutil.copytree(
++        REPO, tree,
++        ignore=shutil.ignore_patterns(".venv", ".git", "__pycache__",
++                                      "evidence", "tests"))
++    db = os.path.join(tree, "db", "sim.db")
++    days, expect = build_fixture_db(db)
++    if autoskip:
++        log = os.path.join(tree, "reports", "auto_skip_log.jsonl")
++        run_autoskip(db, log_path=log)
++    return tree, days, expect
++
++
++def _goto_trade(at):
++    for w in at.radio:
++        opts = [str(o) for o in w.options]
++        if any("交易" in o for o in opts):
++            w.set_value([o for o in opts if "交易" in o][0])
++            break
++    at.run()
++    assert not at.exception, f"交易页异常: {at.exception}"
++
++
++def _workbench_counts(at):
++    for m in at.markdown:
++        v = str(m.value)
++        mo = re.search(r"待审批 <b class=\"num\">(\d+)</b> · "
++                       r"待建条件单 <b class=\"num\">(\d+)</b>", v)
++        if mo:
++            return int(mo.group(1)), int(mo.group(2))
++    raise AssertionError("工作台未找到待办计数")
++
++
++@pytest.fixture(autouse=True)
++def _no_screen_record(monkeypatch):
++    monkeypatch.setenv("PAPER_SIM_NO_SCREEN_RECORD", "1")
++
++
++def test_apptest_counts_drop_and_isolated_zone(tmp_path):
++    tree_pre, days, expect = _build_app_tree(tmp_path / "pre", autoskip=False)
++    at = AppTest.from_file(os.path.join(tree_pre, "app.py"),
++                           default_timeout=60)
++    at.run()
++    assert not at.exception
++    sig_pre, ord_pre = _workbench_counts(at)
++
++    tree, _, _ = _build_app_tree(tmp_path / "post", autoskip=True)
++    at2 = AppTest.from_file(os.path.join(tree, "app.py"),
++                            default_timeout=60)
++    at2.run()
++    assert not at2.exception
++    sig_post, ord_post = _workbench_counts(at2)
++    assert (sig_pre - sig_post, ord_pre - ord_post) == (3, 2)
++
++    _goto_trade(at2)
++    labels = [str(e.label) for e in at2.expander]
++    assert any("已隔离" in x for x in labels), labels
++    texts = " ".join(str(m.value) for m in at2.markdown)
++    assert "自动隔离·R1" in texts
++    restore = [b for b in at2.button if "恢复" in str(b.label)]
++    assert restore and all(not b.disabled for b in restore)
++    skip = [b for b in at2.button
++            if "跳过" in str(b.label) or "已建单" in str(b.label)]
++    assert skip and all(not b.disabled for b in skip)
++    captions = " ".join(str(c.value) for c in at2.caption)
++    assert "只读展示" not in captions
++
++
++def test_apptest_cloud_readonly_disables_write_buttons(tmp_path, monkeypatch):
++    tree, days, expect = _build_app_tree(tmp_path, autoskip=True)
++    monkeypatch.setenv("STREAMLIT_CLOUD", "1")
++    at = AppTest.from_file(os.path.join(tree, "app.py"),
++                           default_timeout=60)
++    at.run()
++    assert not at.exception
++    _goto_trade(at)
++    captions = " ".join(str(c.value) for c in at.caption)
++    assert "只读展示，处理请用本机版" in captions
++    write_btns = [b for b in at.button
++                  if any(k in str(b.label)
++                         for k in ("已建单", "跳过", "恢复"))]
++    assert write_btns, "只读态下应仍渲染写按钮（禁用态）"
++    assert all(b.disabled for b in write_btns), \
++        [(str(b.label), b.disabled) for b in write_btns]

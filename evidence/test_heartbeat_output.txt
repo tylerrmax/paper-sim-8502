@@ -1,0 +1,17 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/l2-remediation/p3/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/hatch/workspace/l2-remediation/p3
+plugins: anyio-4.15.1
+collecting ... collected 8 items
+
+tests/test_heartbeat.py::test_normal_fetch_records_all_stages_in_order PASSED [ 12%]
+tests/test_heartbeat.py::test_http200_garbage_is_not_valid PASSED        [ 25%]
+tests/test_heartbeat.py::test_http200_zero_price_is_not_valid PASSED     [ 37%]
+tests/test_heartbeat.py::test_future_source_timestamp_fails_valid PASSED [ 50%]
+tests/test_heartbeat.py::test_outside_window_no_anomaly_and_crypto_tolerance PASSED [ 62%]
+tests/test_heartbeat.py::test_jsonl_appends_without_overwriting PASSED   [ 75%]
+tests/test_heartbeat.py::test_heartbeat_write_failure_never_breaks_fetch PASSED [ 87%]
+tests/test_heartbeat.py::test_cli_exit_codes PASSED                      [100%]
+
+============================== 8 passed in 0.12s ===============================

@@ -1,0 +1,9 @@
+基线 e9583e1 干净 worktree 单跑（无 P3 任何改动）：
+WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+=========================== short test summary info ============================
+FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
+1 failed in 0.33s
+worktree 跟踪版 db/sim.db fills:
+50
+基线 json 期望 rows:
+51

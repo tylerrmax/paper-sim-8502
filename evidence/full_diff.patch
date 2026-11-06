@@ -1,0 +1,646 @@
+diff --git a/engine/heartbeat.py b/engine/heartbeat.py
+new file mode 100644
+index 0000000..cdb43b0
+--- /dev/null
++++ b/engine/heartbeat.py
+@@ -0,0 +1,237 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""
++实时行情心跳监控（第二层安全监控 P3）。
++
++设计原则：
++- 只追加（JSONL）、零交易依赖：本模块不被任何交易/信号/风控路径调用，
++  唯一写入方是 engine/realtime.py 的展示取数埋点；心跳异常只供告警，
++  绝不触发或阻断交易。
++- HTTP 200 不等于行情有效：分四阶段记录——request（请求发起）、
++  response（拿到原始响应）、valid（响应可解析且至少 1 个标的含有效
++  价格、源时间戳不荒谬）、persisted（有效报价交付调用方）。
++- 源时间戳合理界：不晚于 now+5 分钟、不早于 now-24 小时。盘中报价
++  时间戳为当日时间，24 小时界可容忍跨日/时区偏差，又能拦住明显错误
++  的时间（如 2099 年、1970 年）；无可用源时间戳的源（如 Binance
++  ticker 的文本时间）以接收时间近似，并在校验结果中注明。
++
++异常判定（status）：
++- cn_hk（腾讯 A股/港股）：交易日（周一至周五）09:30–15:05 CST 窗口内，
++  距最近 valid 事件（当日窗口开始后）超过 10 分钟 → 异常；窗口外不报。
++  注：未接交易日历，节假日可能误报——本模块只告警，误报代价可接受
++  （见 EVIDENCE 剩余风险）。
++- crypto（Binance，24/7）：超过 30 分钟无 valid → 异常；从未有 valid
++  亦为异常（没有心跳即视为异常，符合心跳监控语义）。
++"""
++from __future__ import annotations
++
++import json
++import os
++from datetime import datetime, timedelta, timezone
++
++try:
++    from zoneinfo import ZoneInfo
++    CST = ZoneInfo("Asia/Shanghai")
++except Exception:  # pragma: no cover - zoneinfo 缺失时的兜底
++    CST = timezone(timedelta(hours=8))
++
++STAGES = ("request", "response", "valid", "persisted")
++SOURCES = ("cn_hk", "crypto")
++SOURCE_LABELS = {"cn_hk": "腾讯 A股/港股", "crypto": "Binance 加密"}
++
++ENV_PATH = "PAPER_SIM_HEARTBEAT_PATH"
++
++# A/H 交易窗口（CST）与无有效行情容忍时长
++_CN_HK_OPEN = (9, 30)
++_CN_HK_CLOSE = (15, 5)
++_CN_HK_TOLERANCE = timedelta(minutes=10)
++_CRYPTO_TOLERANCE = timedelta(minutes=30)
++
++# 源时间戳合理界
++_SRC_TS_FUTURE = timedelta(minutes=5)
++_SRC_TS_PAST = timedelta(hours=24)
++
++
++def _repo_root():
++    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++
++def default_path():
++    """心跳日志路径：环境变量覆盖 > 仓库 reports/heartbeat.jsonl。"""
++    env = os.environ.get(ENV_PATH)
++    if env:
++        return env
++    return os.path.join(_repo_root(), "reports", "heartbeat.jsonl")
++
++
++def _resolve(path):
++    return path if path else default_path()
++
++
++def _now():
++    return datetime.now(CST)
++
++
++def _as_cst(dt):
++    if dt.tzinfo is None:
++        return dt.replace(tzinfo=CST)
++    return dt.astimezone(CST)
++
++
++def _iso(dt):
++    return _as_cst(dt).isoformat(timespec="seconds")
++
++
++def record(source, stage, ok, detail=None, ts=None, path=None):
++    """追加一条心跳事件。IO 失败会抛异常——调用方（realtime 埋点）
++    必须 try/except 吞掉，绝不能影响取数主流程。"""
++    if stage not in STAGES:
++        raise ValueError(f"unknown heartbeat stage: {stage!r}")
++    when = _as_cst(ts) if ts is not None else _now()
++    evt = {
++        "ts": _iso(when),
++        "source": str(source),
++        "stage": stage,
++        "ok": bool(ok),
++        "detail": None if detail is None else str(detail),
++    }
++    target = _resolve(path)
++    parent = os.path.dirname(target)
++    if parent:
++        os.makedirs(parent, exist_ok=True)
++    with open(target, "a", encoding="utf-8") as f:
++        f.write(json.dumps(evt, ensure_ascii=False) + "\n")
++    return evt
++
++
++def read_events(path=None):
++    """读全部事件（容忍坏行，逐行跳过）。文件不存在返回空列表。"""
++    target = _resolve(path)
++    if not os.path.exists(target):
++        return []
++    out = []
++    with open(target, encoding="utf-8") as f:
++        for line in f:
++            line = line.strip()
++            if not line:
++                continue
++            try:
++                evt = json.loads(line)
++                evt["_dt"] = _as_cst(datetime.fromisoformat(evt["ts"]))
++                out.append(evt)
++            except Exception:
++                continue
++    return out
++
++
++def _parse_src_ts(value):
++    """解析源时间戳字符串，失败返回 None。"""
++    if not value or not isinstance(value, str):
++        return None
++    v = value.strip()
++    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
++        try:
++            return datetime.strptime(v, fmt).replace(tzinfo=CST)
++        except ValueError:
++            continue
++    return None
++
++
++def check_quotes(quotes, now=None, src_times=None):
++    """有效性校验：返回 (ok, reason)。
++
++    quotes: realtime 返回的 {symbol: {"price":..., "time":...}}。
++    src_times: 可选的源时间戳 datetime 列表（优先于 quotes 内的文本
++    时间，如 Binance closeTime）。无任何可解析源时间戳时以接收时间
++    近似（reason 中注明），只校验价格。
++    """
++    now = _as_cst(now) if now is not None else _now()
++    if not quotes:
++        return False, "无任何含有效价格的标的"
++    priced = [s for s, q in quotes.items()
++              if isinstance(q, dict) and (q.get("price") or 0) > 0]
++    if not priced:
++        return False, "无任何含有效价格的标的"
++    times = []
++    if src_times:
++        times.extend(_as_cst(t) for t in src_times if t is not None)
++    for sym in priced:
++        t = _parse_src_ts(quotes[sym].get("time"))
++        if t is not None:
++            times.append(t)
++    if not times:
++        return True, "价格有效；源无可用时间戳，以接收时间近似"
++    for t in times:
++        if t > now + _SRC_TS_FUTURE:
++            return False, f"源时间戳在未来：{t.isoformat(timespec='seconds')}"
++        if t < now - _SRC_TS_PAST:
++            return False, f"源时间戳过旧：{t.isoformat(timespec='seconds')}"
++    return True, "价格与源时间戳均有效"
++
++
++def _cn_hk_anomaly(now, last_valid):
++    """返回 (anomaly, reason)。now/last_valid 均为 CST datetime。"""
++    if now.weekday() >= 5:
++        return False, "周末休市，窗口外不判定"
++    start = now.replace(hour=_CN_HK_OPEN[0], minute=_CN_HK_OPEN[1],
++                        second=0, microsecond=0)
++    end = now.replace(hour=_CN_HK_CLOSE[0], minute=_CN_HK_CLOSE[1],
++                      second=0, microsecond=0)
++    if now < start or now > end:
++        return False, "不在交易窗口（09:30–15:05），不判定"
++    ref = start
++    if last_valid is not None and last_valid >= start:
++        ref = last_valid
++    gap = now - ref
++    if gap > _CN_HK_TOLERANCE:
++        return True, (f"交易窗口内已 {int(gap.total_seconds() // 60)} 分钟"
++                      f"无有效行情（容忍 {_CN_HK_TOLERANCE.seconds // 60} 分钟）")
++    return False, "交易窗口内有效行情新鲜"
++
++
++def _crypto_anomaly(now, last_valid):
++    if last_valid is None:
++        return True, "从未记录到有效行情"
++    gap = now - last_valid
++    if gap > _CRYPTO_TOLERANCE:
++        return True, (f"已 {int(gap.total_seconds() // 60)} 分钟无有效行情"
++                      f"（容忍 {_CRYPTO_TOLERANCE.seconds // 60} 分钟）")
++    return False, "有效行情新鲜"
++
++
++def status(now=None, path=None):
++    """汇总各源最近各阶段时间与异常判定（只读，不写文件）。"""
++    now = _as_cst(now) if now is not None else _now()
++    events = read_events(path)
++    result = {"generated_at": _iso(now), "sources": {}}
++    for source in SOURCES:
++        last = {stage: None for stage in STAGES}
++        last_valid = None
++        for evt in events:
++            if evt.get("source") != source or evt.get("stage") not in last:
++                continue
++            if not evt.get("ok"):
++                continue
++            dt = evt["_dt"]
++            if last[evt["stage"]] is None or dt > last[evt["stage"]]:
++                last[evt["stage"]] = dt
++            if evt["stage"] == "valid":
++                last_valid = dt
++        if source == "cn_hk":
++            anomaly, reason = _cn_hk_anomaly(now, last_valid)
++        else:
++            anomaly, reason = _crypto_anomaly(now, last_valid)
++        age_min = None
++        if last_valid is not None:
++            age_min = round((now - last_valid).total_seconds() / 60.0, 1)
++        result["sources"][source] = {
++            "label": SOURCE_LABELS[source],
++            "last": {k: (_iso(v) if v is not None else None)
++                     for k, v in last.items()},
++            "last_valid": _iso(last_valid) if last_valid else None,
++            "valid_age_min": age_min,
++            "anomaly": anomaly,
++            "reason": reason,
++        }
++    result["anomaly"] = any(s["anomaly"] for s in result["sources"].values())
++    return result
+diff --git a/engine/realtime.py b/engine/realtime.py
+index 6959da1..32940da 100644
+--- a/engine/realtime.py
++++ b/engine/realtime.py
+@@ -9,9 +9,41 @@
+ import json
+ import re
+ import urllib.request
++from datetime import datetime, timezone
+ 
+ _TIMEOUT = 8
+ 
++# ---- 心跳埋点（第二层 P3）：只记录、只告警，绝不影响取数主流程 ----
++_HB_FAILURES = 0  # 埋点失败计数（写日志异常时累加，仅供诊断）
++
++
++def _hb(source, stage, ok, detail=None):
++    global _HB_FAILURES
++    try:
++        try:
++            from engine import heartbeat
++        except ImportError:
++            import heartbeat
++        heartbeat.record(source, stage, ok, detail=detail)
++    except Exception:
++        _HB_FAILURES += 1
++
++
++def _hb_check(source, quotes, src_times=None):
++    """有效性校验并记录 valid 阶段。只观测，不改变取数结果。"""
++    global _HB_FAILURES
++    try:
++        try:
++            from engine import heartbeat
++        except ImportError:
++            import heartbeat
++        ok, reason = heartbeat.check_quotes(quotes, src_times=src_times)
++    except Exception:
++        _HB_FAILURES += 1
++        return False
++    _hb(source, "valid", ok, reason)
++    return ok
++
+ 
+ def _http_get(url):
+     req = urllib.request.Request(url, headers={
+@@ -39,10 +71,13 @@ def fetch_cn_hk(symbols):
+     """批量拉 A股/港股实时行情。返回 {symbol: {price, change_pct, time}}"""
+     codes = [_tx_code(s) for s in symbols]
+     url = "https://qt.gtimg.cn/q=" + ",".join(codes)
++    _hb("cn_hk", "request", True, f"{len(codes)} symbols")
+     try:
+         text = _http_get(url)
+-    except Exception:
++    except Exception as e:
++        _hb("cn_hk", "request", False, type(e).__name__)
+         return {}
++    _hb("cn_hk", "response", True, f"{len(text)} chars")
+     out = {}
+     # v_sz002446="1~盛路通信~002446~6.93~6.78~6.78~...~20261016~14:55:03~..."
+     # v_hk09660="100~地平线机器人-W~09660~3.85~3.90~..."
+@@ -82,12 +117,17 @@ def fetch_cn_hk(symbols):
+                             "time": t.strip()}
+         except (ValueError, IndexError):
+             continue
++    if _hb_check("cn_hk", out) and out:
++        _hb("cn_hk", "persisted", True, f"{len(out)} quotes delivered")
+     return out
+ 
+ 
+ def fetch_crypto(symbols=("BTCUSDT",)):
+     """Binance 24h ticker。返回 {symbol: {price, change_pct, time}}"""
+     out = {}
++    src_times = []
++    responses = 0
++    _hb("crypto", "request", True, f"{len(symbols)} symbols")
+     for sym in symbols:
+         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={sym.upper()}"
+         try:
+@@ -96,12 +136,20 @@ def fetch_crypto(symbols=("BTCUSDT",)):
+             with urllib.request.urlopen(req,
+                                         timeout=_TIMEOUT) as r:
+                 d = json.loads(r.read().decode())
++            responses += 1
++            if d.get("closeTime"):
++                src_times.append(datetime.fromtimestamp(
++                    d["closeTime"] / 1000.0, tz=timezone.utc))
+             price = float(d["lastPrice"])
+             chg = float(d["priceChangePercent"])
+             out[sym] = {"price": price, "change_pct": round(chg, 2),
+                         "time": "Binance实时"}
+         except Exception:
+             continue
++    _hb("crypto", "response", responses > 0,
++        f"{responses} response(s)")
++    if _hb_check("crypto", out, src_times=src_times or None) and out:
++        _hb("crypto", "persisted", True, f"{len(out)} quotes delivered")
+     return out
+ 
+ 
+diff --git a/evidence/baseline_fingerprint_check.txt b/evidence/baseline_fingerprint_check.txt
+new file mode 100644
+index 0000000..95921dd
+--- /dev/null
++++ b/evidence/baseline_fingerprint_check.txt
+@@ -0,0 +1,9 @@
++基线 e9583e1 干净 worktree 单跑（无 P3 任何改动）：
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++=========================== short test summary info ============================
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
++1 failed in 0.33s
++worktree 跟踪版 db/sim.db fills:
++50
++基线 json 期望 rows:
++51
+diff --git a/evidence/full_regression_output.txt b/evidence/full_regression_output.txt
+new file mode 100644
+index 0000000..225b9d8
+--- /dev/null
++++ b/evidence/full_regression_output.txt
+@@ -0,0 +1,49 @@
++..........................................................F............. [ 40%]
++........................................................................ [ 81%]
++................................                                         [100%]
++=================================== FAILURES ===================================
++______________________ test_ledger_fingerprint_idempotent ______________________
++
++tmp_path = PosixPath('/tmp/pytest-of-root/pytest-4/test_ledger_fingerprint_idempo0')
++
++    def test_ledger_fingerprint_idempotent(tmp_path):
++        """同库连跑两次（模拟重复跑批/进程重启重跑）：账本指纹不变、
++        不产生重复成交，且与改造前基线全等。"""
++        db = str(tmp_path / "prod_copy.db")
++        shutil.copy2(PROD_DB, db)
++        cfg = _load_cfg()
++        pipeline_run(db, cfg)
++        fp1 = _fingerprint(db)
++        pipeline_run(db, cfg)
++        fp2 = _fingerprint(db)
++        base = json.load(open(os.path.join(EVID, "ledger_fingerprint.json"),
++                              encoding="utf-8"))["baseline_pre_batch2"]
++        _evidence("ledger_fingerprint_idempotent", {
++            "input": "生产库副本 + 现行管线连跑两次",
++            "expected": "两次指纹相等且与改造前基线（行数/逐行哈希/Σqty/Σamount/Σpnl）全等",
++            "actual": {"after_run1": fp1, "after_run2": fp2, "baseline": base},
++            "fills": fp2["fills"]})
++        assert fp1 == fp2
++        for k in ("rows", "sha256", "sum_qty", "sum_amount", "sum_pnl"):
++>           assert fp1["fills"][k] == base["fills"][k], k
++E           AssertionError: rows
++E           assert 50 == 51
++
++tests/test_e2e_batch2.py:609: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++=============================== warnings summary ===============================
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=6964) is multi-threaded, use of fork() may lead to deadlocks in the child.
++    self.pid = os.fork()
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++=========================== short test summary info ============================
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
++1 failed, 175 passed, 2 warnings in 99.18s (0:01:39)
+diff --git a/evidence/test_heartbeat_output.txt b/evidence/test_heartbeat_output.txt
+new file mode 100644
+index 0000000..c941623
+--- /dev/null
++++ b/evidence/test_heartbeat_output.txt
+@@ -0,0 +1,17 @@
++============================= test session starts ==============================
++platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/l2-remediation/p3/.venv/bin/python
++cachedir: .pytest_cache
++rootdir: /home/hatch/workspace/l2-remediation/p3
++plugins: anyio-4.15.1
++collecting ... collected 8 items
++
++tests/test_heartbeat.py::test_normal_fetch_records_all_stages_in_order PASSED [ 12%]
++tests/test_heartbeat.py::test_http200_garbage_is_not_valid PASSED        [ 25%]
++tests/test_heartbeat.py::test_http200_zero_price_is_not_valid PASSED     [ 37%]
++tests/test_heartbeat.py::test_future_source_timestamp_fails_valid PASSED [ 50%]
++tests/test_heartbeat.py::test_outside_window_no_anomaly_and_crypto_tolerance PASSED [ 62%]
++tests/test_heartbeat.py::test_jsonl_appends_without_overwriting PASSED   [ 75%]
++tests/test_heartbeat.py::test_heartbeat_write_failure_never_breaks_fetch PASSED [ 87%]
++tests/test_heartbeat.py::test_cli_exit_codes PASSED                      [100%]
++
++============================== 8 passed in 0.12s ===============================
+diff --git a/tests/test_heartbeat.py b/tests/test_heartbeat.py
+new file mode 100644
+index 0000000..d3c67de
+--- /dev/null
++++ b/tests/test_heartbeat.py
+@@ -0,0 +1,151 @@
++# -*- coding: utf-8 -*-
++"""
++第二层 P3 实时行情心跳监控测试（假时钟 + 假响应，不触真实网络，
++不写生产 reports —— 心跳路径经环境变量注入 tmp 文件）。
++"""
++import json
++import os
++from datetime import datetime, timedelta
++
++import pytest
++
++from engine import heartbeat, realtime
++
++CST = heartbeat.CST
++FRI_0959 = datetime(2026, 11, 6, 9, 59, tzinfo=CST)   # 周五盘中
++FRI_1000 = datetime(2026, 11, 6, 10, 0, tzinfo=CST)
++FRI_0200 = datetime(2026, 11, 6, 2, 0, tzinfo=CST)    # 周五凌晨（窗口外）
++
++
++@pytest.fixture(autouse=True)
++def hb_path(tmp_path, monkeypatch):
++    p = str(tmp_path / "heartbeat.jsonl")
++    monkeypatch.setenv(heartbeat.ENV_PATH, p)
++    realtime._HB_FAILURES = 0
++    return p
++
++
++def _tx_payload(ts14="20261106095900", price="6.93"):
++    parts = ["1", "盛路通信", "002446", price, "6.78"] + ["0"] * 25 + [ts14]
++    return 'v_sz002446="%s";' % "~".join(parts)
++
++
++def _events(path):
++    with open(path, encoding="utf-8") as f:
++        return [json.loads(line) for line in f if line.strip()]
++
++
++# ① 正常响应 → 四阶段按序落账、status 正常
++def test_normal_fetch_records_all_stages_in_order(hb_path, monkeypatch):
++    monkeypatch.setattr(heartbeat, "_now", lambda: FRI_0959)
++    monkeypatch.setattr(realtime, "_http_get", lambda url: _tx_payload())
++    out = realtime.fetch_cn_hk(["002446"])
++    assert out["002446"]["price"] == 6.93
++
++    evts = _events(hb_path)
++    assert [e["stage"] for e in evts] == ["request", "response",
++                                          "valid", "persisted"]
++    assert all(e["ok"] for e in evts)
++    assert all(e["source"] == "cn_hk" for e in evts)
++
++    st = heartbeat.status(now=FRI_1000, path=hb_path)
++    assert st["sources"]["cn_hk"]["anomaly"] is False
++    assert st["sources"]["cn_hk"]["last_valid"] is not None
++    assert st["sources"]["cn_hk"]["valid_age_min"] == 1.0
++
++
++# ② HTTP 200 但内容垃圾 → response ok、valid 失败、窗口内 status 异常
++def test_http200_garbage_is_not_valid(hb_path, monkeypatch):
++    monkeypatch.setattr(heartbeat, "_now", lambda: FRI_0959)
++    monkeypatch.setattr(realtime, "_http_get",
++                        lambda url: "this is not a quote payload")
++    out = realtime.fetch_cn_hk(["002446"])
++    assert out == {}
++
++    evts = _events(hb_path)
++    by_stage = {e["stage"]: e["ok"] for e in evts}
++    assert by_stage["request"] is True
++    assert by_stage["response"] is True   # 传输成功 ≠ 行情有效
++    assert by_stage["valid"] is False
++    assert "persisted" not in by_stage
++
++    st = heartbeat.status(now=FRI_1000, path=hb_path)
++    assert st["sources"]["cn_hk"]["anomaly"] is True
++
++
++def test_http200_zero_price_is_not_valid(hb_path, monkeypatch):
++    monkeypatch.setattr(heartbeat, "_now", lambda: FRI_0959)
++    monkeypatch.setattr(realtime, "_http_get",
++                        lambda url: _tx_payload(price="0"))
++    assert realtime.fetch_cn_hk(["002446"]) == {}
++    by_stage = {e["stage"]: e["ok"] for e in _events(hb_path)}
++    assert by_stage["valid"] is False
++
++
++# ③ 源时间戳为未来 → valid 失败；取数行为本身不被心跳改变
++def test_future_source_timestamp_fails_valid(hb_path, monkeypatch):
++    monkeypatch.setattr(heartbeat, "_now", lambda: FRI_0959)
++    monkeypatch.setattr(realtime, "_http_get",
++                        lambda url: _tx_payload(ts14="20990101095900"))
++    out = realtime.fetch_cn_hk(["002446"])
++    assert out["002446"]["price"] == 6.93  # 取数/回退行为不变，只告警
++    evts = _events(hb_path)
++    by_stage = {e["stage"]: e["ok"] for e in evts}
++    assert by_stage["valid"] is False
++    assert "persisted" not in by_stage
++    valid_evt = [e for e in evts if e["stage"] == "valid"][0]
++    assert "未来" in valid_evt["detail"]
++
++
++# ④ 窗口外无 valid 不报异常；加密按 30 分钟口径判定
++def test_outside_window_no_anomaly_and_crypto_tolerance(hb_path):
++    st = heartbeat.status(now=FRI_0200, path=hb_path)  # 空日志
++    assert st["sources"]["cn_hk"]["anomaly"] is False
++
++    t0 = datetime(2026, 11, 6, 1, 0, tzinfo=CST)
++    heartbeat.record("crypto", "valid", True, ts=t0, path=hb_path)
++    st = heartbeat.status(now=t0 + timedelta(minutes=20), path=hb_path)
++    assert st["sources"]["crypto"]["anomaly"] is False
++    st = heartbeat.status(now=t0 + timedelta(minutes=31), path=hb_path)
++    assert st["sources"]["crypto"]["anomaly"] is True
++
++
++# ⑤ JSONL 只追加，不覆盖旧记录
++def test_jsonl_appends_without_overwriting(hb_path):
++    heartbeat.record("cn_hk", "request", True, ts=FRI_0959, path=hb_path)
++    with open(hb_path, encoding="utf-8") as f:
++        first_line = f.readline()
++    heartbeat.record("cn_hk", "valid", True, ts=FRI_0959, path=hb_path)
++    with open(hb_path, encoding="utf-8") as f:
++        lines = f.readlines()
++    assert len(lines) == 2
++    assert lines[0] == first_line
++    evts = heartbeat.read_events(path=hb_path)
++    assert [e["stage"] for e in evts] == ["request", "valid"]
++
++
++# ⑥ 埋点写失败时 fetch 仍正常返回
++def test_heartbeat_write_failure_never_breaks_fetch(hb_path, monkeypatch):
++    monkeypatch.setattr(heartbeat, "_now", lambda: FRI_0959)
++
++    def boom(*a, **kw):
++        raise RuntimeError("disk full")
++
++    monkeypatch.setattr(heartbeat, "record", boom)
++    monkeypatch.setattr(realtime, "_http_get", lambda url: _tx_payload())
++    before = realtime._HB_FAILURES
++    out = realtime.fetch_cn_hk(["002446"])
++    assert out["002446"]["price"] == 6.93
++    assert realtime._HB_FAILURES > before
++    assert not os.path.exists(hb_path)  # 写失败未落账，但取数不受影响
++
++
++# CLI：异常 exit 1 / 正常 exit 0（只读）
++def test_cli_exit_codes(hb_path, monkeypatch):
++    from tools.heartbeat_check import main
++    # 空日志：周五盘中，两源均应判异常 → exit 1
++    assert main(["--path", hb_path, "--now", "2026-11-06T10:00:00+08:00"]) == 1
++    # 补齐两源新鲜 valid → exit 0
++    heartbeat.record("cn_hk", "valid", True, ts=FRI_0959, path=hb_path)
++    heartbeat.record("crypto", "valid", True, ts=FRI_0959, path=hb_path)
++    assert main(["--path", hb_path, "--now", "2026-11-06T10:00:00+08:00"]) == 0
+diff --git a/tools/heartbeat_check.py b/tools/heartbeat_check.py
+new file mode 100644
+index 0000000..bdb3efa
+--- /dev/null
++++ b/tools/heartbeat_check.py
+@@ -0,0 +1,47 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""
++实时行情心跳检查 CLI（第二层 P3，只读）。
++
++打印各行情源最近 request/response/valid/persisted 时间与异常判定；
++存在异常时 exit 1，否则 exit 0。供未来接入告警通道，本次不接任何
++生产调度。心跳异常只告警，绝不触发交易。
++
++用法：
++    python tools/heartbeat_check.py [--path reports/heartbeat.jsonl]
++                                    [--now 2026-11-06T10:00:00+08:00]
++"""
++import argparse
++import os
++import sys
++from datetime import datetime
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from engine import heartbeat  # noqa: E402
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser(description="实时行情心跳检查（只读）")
++    ap.add_argument("--path", default=None,
++                    help="心跳 JSONL 路径（默认 reports/heartbeat.jsonl）")
++    ap.add_argument("--now", default=None,
++                    help="判定时刻（ISO 格式，默认当前时间）")
++    args = ap.parse_args(argv)
++
++    now = datetime.fromisoformat(args.now) if args.now else None
++    st = heartbeat.status(now=now, path=args.path)
++    print(f"心跳检查 @ {st['generated_at']}")
++    for source, info in st["sources"].items():
++        flag = "异常" if info["anomaly"] else "正常"
++        print(f"[{flag}] {source}（{info['label']}）：{info['reason']}")
++        last = info["last"]
++        print(f"       request={last['request']}  response={last['response']}"
++              f"  valid={last['valid']}  persisted={last['persisted']}")
++        if info["valid_age_min"] is not None:
++            print(f"       最近有效行情距今 {info['valid_age_min']} 分钟")
++    return 1 if st["anomaly"] else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

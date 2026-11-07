@@ -264,6 +264,7 @@ FILES = [
     "engine/safety.py",
     "engine/data_health.py",
     "engine/page_freshness.py",
+    "engine/todo_autoskip.py",
     "engine/inst_lhb.py",
     ".env.example",
     "config/sector_news.json",

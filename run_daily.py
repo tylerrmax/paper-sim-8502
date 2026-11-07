@@ -239,6 +239,23 @@ def main():
     except Exception as e:  # noqa: BLE001
         print("FAIL 机构影子抓取: %s" % e)
 
+    # 7. 待办自动隔离（第二层 P4）：信号/成交全部落定后，把客观已死的
+    #    待办（无持仓 SELL / 被取代 / 过期未成交）按规则写入
+    #    approvals skipped（与人工「跳过/隔离」同一通道）并留审计
+    #    JSONL；日报末尾留一行。失败只留 FAIL 行，不中断日批。
+    try:
+        from engine.todo_autoskip import run_autoskip
+        _skipped = run_autoskip(DB)
+        print("自动隔离 %d 条" % len(_skipped))
+        try:
+            with open(report, "a", encoding="utf-8") as _f:
+                _f.write("\n自动隔离 %d 条（明细见 auto_skip_log）\n"
+                         % len(_skipped))
+        except Exception as e:  # noqa: BLE001
+            print("WARN 日报追加自动隔离行失败: %s" % e)
+    except Exception as e:  # noqa: BLE001
+        print("FAIL 待办自动隔离: %s" % e)
+
 
 if __name__ == "__main__":
     main()

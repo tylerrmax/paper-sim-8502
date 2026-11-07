@@ -1,0 +1,181 @@
+### TAB: 🏦 机构影子
+exception: none
+[markdown] <style>
+/* 全局：深色终端底 */
+/* 主题已由 .streamlit/config.toml 固定为深色（UI批A G-1），
+   标题色不再随浏览器 prefers-color-scheme 切换，避免深底深字。 */
+/* ===== UI-R1 共享设计系统（阶段C 基础）：令牌与组件类，六页共用 =====
+   令牌：底 #06090d/#0a0f16、面板 #101823、边线 #22303f、正文 #d6dee7、
+   次级 #8b9bab、弱 #5d7185、焦点 #56c8dc、通过 #2ebd85、阻断 #f6465d、
+   待处理 #e8a33d、数据蓝 #4a90d9。状态一律文字+颜色双表达。 */
+.r1-chip { display: inline-block; padding: 2px 9px; border-radius: 5px;
+           font-size: 12px; font-weight: 600; border: 1px solid transparent;
+           white-space: nowrap; }
+.r1-chip.ok { background: rgba(46,189,133,.13); color: #2ebd85; border-color: rgba(46,189,133,.35); }
+.r1-chip.block { background: rgba(246,70,93,.13); color: #f6465d; border-color: rgba(246,70,93,.35); }
+.r1-chip.wait { background: rgba(232,163,61,.13); color: #e8a33d; border-color: rgba(232,163,61,.35); }
+.r1-chip.info { background: rgba(86,200,220,.10); color: #56c8dc; border-color: rgba(86,200,220,.30); }
+.r1-chip.mut { background: #141e2a; color: #8b9bab; border-color: #22303f; }
+.r1-chip.miss { background: transparent; color: #8b9bab; border: 1px dashed #3a4a5c; }
+.r1-seg { display: inline-flex; align-items: center; gap: 6px; }
+.r1-seg-k { color: #5d7185; font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+.r1-seg + .r1-seg { border-left: 1px solid #22303f; padding-left: 12px; margin-left: 4px; }
+.r1-brand { font-size: 17px; font-weight: 800; letter-spacing: 1px; color: #d6dee7; padding: 4px 2px 10px; }
+.r1-brand span { color: #5d7185; font-size: 11px; font-weight: 600; }
+.r1-side-note { color: #5d7185; font-size: 12px; line-height: 1.6; border-top: 1px solid #22303f; padding-top: 10px; margin-top: 14px; }
+[data-testid="stSidebar"] { background: #06090d; border-right: 1px solid #22303f; }
+.main-title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: 1px; color: #e8ecf1; }
+.sub-title { font-size: 13px; color: #8a8f9c; margin-bottom: 16px; }
+/* 统一卡片：深色 */
+.kpi-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
+            padding: 14px 16px; margin-bottom: 10px; color: #e8ecf1; }
+.kpi-label { font-size: 12px; color: #8a8f9c; margin-bottom: 4px; }
+.kpi-value { font-size: 22px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, monospace; color: #e8ecf1; }
+.kpi-value.up { color: #2ebd85; } .kpi-value.down { color: #f6465d; }
+.kpi-value.big { font-size: 28px; }
+/* 数字统一：等宽字体 */
+.num { font-family: ui-monospace, SFMono-Regular, monospace; font-variant-numeric: tabular-nums; }
+.pos { color: #2ebd85; } .neg { color: #f6465d; } .flat { color: #8a8f9c; }
+/* 策略徽标 */
+.strategy-badge { display: inline-block; padding: 3px 12px; border-radius: 12px;
+                  font-size: 12px; font-weight: 600; }
+.strategy-badge.buyback { background: rgba(46,189,133,.15); color: #2ebd85; }
+.strategy-badge.ma20 { background: rgba(240,185,11,.15); color: #f0b90b; }
+.strategy-badge.disabled { background: rgba(138,143,156,.15); color: #8a8f9c; }
+/* UI-R1 阶段C：左侧固定导航恢复（旧「左侧栏已移除」隐藏规则就此作废） */
+/* 分区标题 */
+.section-head { font-size: 18px; font-weight: 700; margin: 20px 0 12px 0;
+                padding-bottom: 8px; border-bottom: 2px solid #1e2532; color: #e8ecf1; }
+/* 横幅：四态 */
+.alert-banner { border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; font-size: 14px; }
+.alert-banner.warn { background: rgba(240,185,11,.12); border: 1px solid rgba(240,185,11,.3); color: #f0b90b; }
+.alert-banner.info { background: rgba(24,144,255,.1); border: 1px solid rgba(24,144,255,.3); color: #1890ff; }
+.alert-banner.success { background: rgba(46,189,133,.1); border: 1px solid rgba(46,189,133,.3); color: #2ebd85; }
+.alert-banner.danger { background: rgba(246,70,93,.1); border: 1px solid rgba(246,70,93,.35); color: #f6465d; }
+/* 状态卡片：深色统一（替代原白色 .status-card） */
+.status-card { background: #10141b; border: 1px solid #1e2532; border-radius: 10px;
+               padding: 16px; margin-bottom: 12px; color: #e8ecf1; }
+.status-card .sc-label { font-size: 13px; color: #8a8f9c; margin-bottom: 8px; }
+.status-card .sc-value { font-size: 26px; font-weight: 700; font-family: ui-monospace, monospace; color: #e8ecf1; }
+.status-card .sc-value.paused { color: #8a8f9c; }
+.status-card .sc-value.nodata { color: #5a6270; }
+/* 行情状态徽标：实时 / 最近收盘 / 已过期 / 未知 */
+.qs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+.qs-live { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
+.qs-close { background: rgba(24,144,255,.14); color: #1890ff; border: 1px solid rgba(24,144,255,.35); }
+.qs-stale { background: rgba(240,185,11,.14); color: #f0b90b; border: 1px solid rgba(240,185,11,.35); }
+.qs-unknown { background: rgba(138,143,156,.14); color: #8a8f9c; border: 1px solid rgba(138,143,156,.35); }
+.qs-bad { background: rgba(246,70,93,.16); color: #f6465d; border: 1px solid rgba(246,70,93,.45); }
+/* 状态条（UI批A G-3）：数据健康徽标 + 运行版本一行呈现 */
+.status-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+              background: #10141b; border: 1px solid #1e2532; border-radius: 8px;
+              padding: 8px 12px; margin-bottom: 12px; font-size: 12px; color: #e8ecf1; }
+.status-bar.warn { border-color: rgba(240,185,11,.55); }
+.status-bar.danger { border-color: rgba(246,70,93,.6); }
+.status-bar .sb-label { color: #8a8f9c; font-weight: 700; }
+.status-bar .sb-ver { margin-left: auto; color: #8a8f9c; }
+/* 顶栏吸顶（P3 实测通过，2026-10-31）：状态条与系统阻断条的元素
+   容器 sticky，滚动时常驻顶部——风险不随滚动消失（§1/§2.1）。
+   选择器经真实 DOM 实测：滚动容器为 stMain，:has 定位容器。 */
+[data-testid="stElementContainer"]:has(.status-bar) {
+  position: sticky; top: 0px; z-index: 1000; background: #0b0e13; }
+[data-testid="stElementContainer"]:has(.blocked-banner) {
+  position: sticky; top: 56px; z-index: 999; background: #0b0e13; }
+/* 验证状态徽标：达标 / 未达标 / 样本不足 / 数据异常 */
+.vs { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+.vs-pass { background: rgba(46,189,133,.18); color: #2ebd85; border: 1px solid rgba(46,189,133,.4); }
+.vs-fail { background: rgba(246,70,93,.14); color: #f6465d; border: 1px solid rgba(246,70,93,.4); }
+.vs-insufficient { background: rgba(240,185,11,.14); color: #f0b90b; border: 1px solid rgba(240,185,11,.35); }
+.vs-anomaly { background: rgba(177,59,179,.16); color: #c77ddb; border: 1px solid rgba(177,59,179,.4); }
+/* 按钮状态 */
+.btn-state { display: inline-block; padding: 4px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; }
+.btn-submitted { background: rgba(24,144,255,.15); color: #1890ff; }
+.btn-running { background: rgba(240,185,11,.15); color: #f0b90b; }
+.btn-done { background: rgba(46,189,133,.15); color: #2ebd85; }
+.btn-failed { background: rgba(246,70,93,.15); color: #f6465d; }
+/* 表格：深色 */
+table { color: #e8ecf1; }
+/* 响应式：手机端卡片全宽 */
+@media (max-width: 768px) {
+  .main-title { font-size: 22px; }
+  .kpi-value.big { font-size: 22px; }
+  .status-card .sc-value { font-size: 20px; }
+}
+</style>
+[markdown] <div class="main-title">独立交易终端</div>
+[markdown] <div class="kpi-card" style="border:1px solid #ff4d4f;"><div class="kpi-label">系统状态</div><div class="kpi-value" style="color:#ff4d4f;">⛔ 阻断</div></div>
+[markdown] <div class="kpi-card"><div class="kpi-label">执行模式</div><div class="kpi-value">⚡ 自动</div></div>
+[markdown] <div class="kpi-card"><div class="kpi-label">策略版本</div><div class="kpi-value" style="font-size:16px">v1.1</div><div class="kpi-label">2026-10-26 起生效</div></div>
+[markdown] <div style="margin-top:6px;"><span class="strategy-badge buyback">A股 · 接回策略 · 运行中</span><div style="color:#8a8f9c;font-size:12px;margin-top:2px;">20日高点回撤10%买入，+15%止盈 / 策略止损-5%</div></div><div style="margin-top:6px;"><span class="strategy-badge disabled">港股 · 已停用</span><div style="color:#8a8f9c;font-size:12px;margin-top:2px;">不生成新信号 · 持仓与净值照常跟踪 · 策略待重做</div></div><div style="margin-top:6px;"><span class="strategy-badge disabled">加密货币 · 已停用</span><div style="color:#8a8f9c;font-size:12px;margin-top:2px;">不生成新信号 · 持仓与净值照常跟踪 · 策略待重做</div></div>
+[markdown] <div class="alert-banner danger blocked-banner">⛔ 阻断 · 无持仓 SELL 1 · 过期信号 15 · 新闻面断更</div>
+[markdown] <div class="status-bar danger"><span class="r1-seg"><span class="r1-seg-k">DATA</span><span class="sb-label">数据日期</span> 2026-11-06</span><span class="r1-seg"><span class="r1-seg-k">SYSTEM</span><span class="sb-label">数据健康</span><span class="qs qs-live">A股 正常</span> <span class="qs qs-live">港股 正常</span> <span class="qs qs-live">加密 正常</span></span><span class="sb-ver">运行版本 afff34e5d7c1（来源：git检出）</span></div>
+[markdown] 状态：运行中　模式：自动
+[markdown] <div style="margin-bottom:16px;"><b>A股</b><table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:4px;"><tr style="color:#888;font-size:12px;border-bottom:1px solid #1e2532;"><td style="padding:6px 8px;">代码</td><td style="padding:6px 8px;">名称</td><td style="padding:6px 8px;text-align:right;">现价</td><td style="padding:6px 8px;text-align:right;">涨幅%</td><td style="padding:6px 8px;">技术信号</td><td style="padding:6px 8px;">待建单</td></tr><tr><td style="padding:8px;">300827</td><td style="padding:8px;color:#1890ff;">上能电气</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">28.31</td><td style="padding:8px;color:#2ebd85;text-align:right;">-3.71%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多 均线多</td><td style="padding:8px;color:#666;">SELL 信号平仓 @29.40<br><span style='font-size:11px;color:#888;'>无持仓，仅供观察</span></td></tr><tr><td style="padding:8px;">600150</td><td style="padding:8px;color:#1890ff;">中国船舶</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">35.17</td><td style="padding:8px;color:#2ebd85;text-align:right;">-0.59%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多</td><td style="padding:8px;color:#f0b90b;font-weight:bold;">BUY 开仓 @34.11 | 策略止损 @31.60</td></tr><tr><td style="padding:8px;">688305</td><td style="padding:8px;color:#1890ff;">科德数控</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">42.89</td><td style="padding:8px;color:#2ebd85;text-align:right;">-4.52%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多 趋势 均线空</td><td style="padding:8px;color:#f0b90b;font-weight:bold;">BUY 开仓 @43.02 | 策略止损 @37.81</td></tr><tr><td style="padding:8px;">000938</td><td style="padding:8px;color:#1890ff;">紫光股份</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">24.33</td><td style="padding:8px;color:#2ebd85;text-align:right;">-2.95%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多 趋势 均线空</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">002185</td><td style="padding:8px;color:#1890ff;">华天科技</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">14.40</td><td style="padding:8px;color:#2ebd85;text-align:right;">-4.32%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">002192</td><td style="padding:8px;color:#1890ff;">融捷股份</td><td class="num" style="padding:8px;color:#f6465d;text-align:right;">51.93</td><td style="padding:8px;color:#f6465d;text-align:right;">+3.28%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多 趋势</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">002446</td><td style="padding:8px;color:#1890ff;">盛路通信</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">6.76</td><td style="padding:8px;color:#2ebd85;text-align:right;">-2.17%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多 趋势 均线空</td><td style="padding:8px;color:#f0b90b;font-weight:bold;">-<br><span style='font-size:11px;color:#888;'>🔴 持仓 7200 · 成本 6.94 · 浮盈 -2.6% · 止损参考 7.70</span></td></tr><tr><td style="padding:8px;">002472</td><td style="padding:8px;color:#1890ff;">双环传动</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">42.80</td><td style="padding:8px;color:#2ebd85;text-align:right;">-3.80%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多 均线多</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">002639</td><td style="padding:8px;color:#1890ff;">雪人集团</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">14.50</td><td style="padding:8px;color:#2ebd85;text-align:right;">-2.09%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD空</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">002747</td><td style="padding:8px;color:#1890ff;">埃斯顿</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">28.46</td><td style="padding:8px;color:#2ebd85;text-align:right;">-4.66%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">002812</td><td style="padding:8px;color:#1890ff;">恩捷股份</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">51.39</td><td style="padding:8px;color:#2ebd85;text-align:right;">-2.76%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多 均线多</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">002837</td><td style="padding:8px;color:#1890ff;">英维克</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">37.33</td><td style="padding:8px;color:#2ebd85;text-align:right;">-5.68%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD空 趋势 均线空</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">300499</td><td style="padding:8px;color:#1890ff;">高澜股份</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">23.26</td><td style="padding:8px;color:#2ebd85;text-align:right;">-4.87%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD空 趋势 均线空</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">600522</td><td style="padding:8px;color:#1890ff;">中天科技</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">23.15</td><td style="padding:8px;color:#2ebd85;text-align:right;">-4.42%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD空 趋势 均线空</td><td style="padding:8px;color:#666;">-</td></tr></table></div><div style="margin-bottom:16px;"><b>港股</b><table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:4px;"><tr style="color:#888;font-size:12px;border-bottom:1px solid #1e2532;"><td style="padding:6px 8px;">代码</td><td style="padding:6px 8px;">名称</td><td style="padding:6px 8px;text-align:right;">现价</td><td style="padding:6px 8px;text-align:right;">涨幅%</td><td style="padding:6px 8px;">技术信号</td><td style="padding:6px 8px;">待建单</td></tr><tr><td style="padding:8px;">0354</td><td style="padding:8px;color:#1890ff;">中软国际</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">3.420</td><td style="padding:8px;color:#2ebd85;text-align:right;">-2.15%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD空</td><td style="padding:8px;color:#666;">-</td></tr><tr><td style="padding:8px;">9660</td><td style="padding:8px;color:#1890ff;">地平线机器人</td><td class="num" style="padding:8px;color:#f6465d;text-align:right;">3.780</td><td style="padding:8px;color:#f6465d;text-align:right;">+0.67%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD多 趋势</td><td style="padding:8px;color:#666;">-</td></tr></table></div><div style="margin-bottom:16px;"><b>加密</b><table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:4px;"><tr style="color:#888;font-size:12px;border-bottom:1px solid #1e2532;"><td style="padding:6px 8px;">代码</td><td style="padding:6px 8px;">名称</td><td style="padding:6px 8px;text-align:right;">现价</td><td style="padding:6px 8px;text-align:right;">涨幅%</td><td style="padding:6px 8px;">技术信号</td><td style="padding:6px 8px;">待建单</td></tr><tr><td style="padding:8px;">BTCUSDT</td><td style="padding:8px;color:#1890ff;">比特币</td><td class="num" style="padding:8px;color:#2ebd85;text-align:right;">75,741.60</td><td style="padding:8px;color:#2ebd85;text-align:right;">-0.31%</td><td style="padding:8px;font-size:12px;color:#aaa;">MACD空 均线空</td><td style="padding:8px;color:#666;">-</td></tr></table></div>
+[markdown] <div class="section-head">🏦 机构专用席位连续净买监控（影子 · 只读）</div>
+[markdown] 最近成功抓取日期：**2026-11-06** · 最近一次抓取 2026-11-06（成功）
+[markdown] <div class="kpi-card"><div class="kpi-label">数据可用性</div><div style="font-size:13.5px;">最近可信交易日 <b class="num">2026-11-06</b> · 抓取时间 2026-11-07 09:16:13 · 数据状态 正常 · 样本段：前向积累（回填段与前向段分开登记，不混算）</div></div>
+[markdown] **抓取状态（近 10 个抓取日）**
+[markdown] **影子榜（2026-11-06 · 当日净买为正且连续净买 ≥2 交易日）**
+[markdown] <div class="r1-brand">8502 <span>/ TRADING WORKSTATION</span></div>
+[markdown] <div class="r1-side-note">模拟交易决策系统<br>真实委托由用户在券商端人工执行并回填回执</div>
+[caption] 关注标的行情已收纳至下方「全部行情」（工作台首屏减负 · 方案A）
+[caption] 口径：龙虎榜「机构专用」匿名聚合席位，非机构家数；席位净买 ≠ 具名机构建仓。仅影子监控：不生成信号、不创建交易意图、不改变策略参数。数据源：东财龙虎榜（夜间抓取）。
+[caption] 窗口=累计：多日累计金额，与一日类不相加。
+[expander] label='账户策略'
+[expander] label='⚙️ 控制'
+[expander] label='📊 全部行情（共 17 只）'
+[expander] label='当日聚合全表（2026-11-06 · 共 37 只 · 供复算核对）'
+[table]
+           日期  状态  聚合标的  原始席位记录 失败原因
+0  2026-11-06  成功    37     790    —
+1  2026-11-05  成功    40     690    —
+2  2026-11-04  成功    41     840    —
+3  2026-11-03  成功    50     910    —
+4  2026-11-02  成功    49     810    —
+5  2026-10-30  成功    51     960    —
+6  2026-10-29  成功    42     750    —
+7  2026-10-28  成功    43     780    —
+8  2026-10-27  成功    50     880    —
+9  2026-10-26  成功    48     890    —
+[table]
+       代码    名称 当日净买(万)  连续净买交易日  连续出现交易日 天数确定性
+0  000603  盛达资源  12,637        2        2    确定
+[table]
+        代码    名称   买入(万)   卖出(万)    净买(万)  买席位记录  卖席位记录  窗口
+0   002384  东山精密  88,108  64,016   24,092      3      3  一日
+1   000603  盛达资源  41,924  29,288   12,637      4      3  累计
+2   601595  上海电影   6,955       0    6,955      1      0  一日
+3   301718  通则康威   6,872   1,910    4,962      5      3  一日
+4   002353  杰瑞股份  24,021  20,014    4,007      3      3  一日
+5   000635   英力特  11,776   8,256    3,520      4      4  累计
+6   002172  澳洋健康  39,188  36,970    2,218      5      4  累计
+7   002388  新亚制程   8,203   6,265    1,939      4      3  一日
+8   123290  申菱转债   2,080     201    1,879      3      1  一日
+9   600838  上海九百   1,729       0    1,729      1      0  一日
+10  300237  美晨科技   1,403       0    1,403      1      0  一日
+11  301697   贝特利   1,361       0    1,361      1      0  一日
+12  002929  润建股份   5,615   4,432    1,182      1      1  一日
+13  920770   艾能聚     557       0      557      1      0  一日
+14  002696  百洋股份   1,537   1,324      213      1      1  一日
+15  002652  扬子新材     854   1,044     -190      1      2  一日
+16  920895  花溪科技       0     454     -454      0      1  一日
+17  920175  东方碳素       0     482     -482      0      1  一日
+18  301688  格林生物   1,030   1,525     -496      2      3  一日
+19  688429  时创能源       0     565     -565      0      1  一日
+20  600278  东方创业       0     780     -780      0      1  一日
+21  920196  南方乳业       0     819     -819      0      1  一日
+22  002973  侨银股份   1,862   2,767     -906      3      3  一日
+23  002088  鲁阳节能       0     940     -940      0      1  一日
+24  002903  宇环数控   7,608   9,494   -1,885      3      4  一日
+25  300686   智动力   2,740   5,443   -2,703      2      5  一日
+26  300949  奥雅股份  25,714  28,574   -2,860      5      5  累计
+27  600261  阳光照明       0   2,936   -2,936      0      1  累计
+28  002827  高争民爆   5,606   9,097   -3,491      2      2  一日
+29  003033  征和工业     999   4,735   -3,736      2      3  一日
+30  000530  冰山冷热   1,790   6,092   -4,302      1      2  一日
+31  301052  果麦文化       0   4,364   -4,364      0      3  一日
+32  301569  联亚药业       0   4,582   -4,582      0      4  一日
+33  002343  慈文传媒   6,555  11,892   -5,338      2      2  一日
+34  600371  万向德农       0   5,517   -5,517      0      1  累计
+35  002578  闽发铝业       0   6,543   -6,543      0      3  累计
+36  000995  皇台酒业   1,331  12,106  -10,775      1      4  一日

@@ -1,0 +1,92 @@
+........................................................................ [ 35%]
+........................................................................ [ 70%]
+..........................................................FFF            [100%]
+=================================== FAILURES ===================================
+____________________________ test_brief_normal_week ____________________________
+
+tmp_path = PosixPath('/var/tmp/pytest-of-root/pytest-2/test_brief_normal_week0')
+
+    def test_brief_normal_week(tmp_path):
+        db = _mk_db(tmp_path)
+        base = _mk_base(tmp_path, db)
+        brief = build_brief(db_path=db, base=str(base), today=TODAY)
+        for marker in ("## 8502 周度一致性简报", "1. 运行可靠", "2. 账本完整",
+                       "3. 样本积累", "4. 风险纪律", "5. 复现抽查", "6. 事故"):
+            assert marker in brief, marker
+        assert "日报覆盖 7/7 天" in brief
+        assert "指纹水位线一致" in brief
+        assert "影子样本已到期 sa 1 / shadow 1 / other 0" in brief
+        assert "疑似误杀 1/2" in brief
+        assert "禁入拦截新增 1 条" in brief
+>       assert "全部一致 ✅" in brief
+E       assert '全部一致 ✅' in "## 8502 周度一致性简报（2026-10-26，统计窗 2026-10-20 ~ 2026-10-26）\n1. 运行可靠：近 7 日夜跑日报覆盖 7/7 天；选股落库新增 0 期；发布门禁放行 2 次、拒绝 0 次、绕过 0 ...e left on device: '/var/tmp/pytest-of-root/pytest-2/test_brief_normal_week0/sim.db' -> '/tmp/weekly_repro_xjqagbu_.db'"
+
+tests/test_weekly_consistency.py:137: AssertionError
+____________________ test_reproduce_detects_tampered_score _____________________
+
+tmp_path = PosixPath('/var/tmp/pytest-of-root/pytest-2/test_reproduce_detects_tampere0')
+
+    def test_reproduce_detects_tampered_score(tmp_path):
+        db = _mk_db(tmp_path)
+        con = sqlite3.connect(db)
+        rid, rj = con.execute(
+            "SELECT id, results_json FROM screen_runs").fetchone()
+        rows = json.loads(rj)
+        rows[0]["tech"] = float(rows[0]["tech"]) + 5.0
+        rows[0]["total"] = float(rows[0]["total"]) + 5.0
+        con.execute("UPDATE screen_runs SET results_json=? WHERE id=?",
+                    (json.dumps(rows, ensure_ascii=False, sort_keys=True), rid))
+        con.commit()
+        con.close()
+        txt, rec, anomaly = reproduce_check(
+            db, str(tmp_path / "checks.jsonl"), ENTRIES, _sha256_obj(ENTRIES))
+>       assert rec["result"] == "FAIL"
+E       AssertionError: assert 'ERROR' == 'FAIL'
+E         
+E         - FAIL
+E         + ERROR
+
+tests/test_weekly_consistency.py:160: AssertionError
+___________________ test_reproduce_news_sha_change_not_fail ____________________
+
+tmp_path = PosixPath('/var/tmp/pytest-of-root/pytest-2/test_reproduce_news_sha_change0')
+
+    def test_reproduce_news_sha_change_not_fail(tmp_path):
+        db = _mk_db(tmp_path)
+        # 模拟新闻账被编辑：落库 sha 改掉且落库新闻分/总分随之而变；
+        # 重跑用现行账，新闻分/总分必然不同——但 sha 不同 ⇒ 不可比对，
+        # 技术/母板/封顶未动 ⇒ 不得判 FAIL。
+        con = sqlite3.connect(db)
+        rid, rj = con.execute(
+            "SELECT id, results_json FROM screen_runs").fetchone()
+        rows = json.loads(rj)
+        for r in rows:
+            r["news"] = float(r["news"]) + 7.0
+            r["total"] = float(r["total"]) + 7.0
+        con.execute(
+            "UPDATE screen_runs SET results_json=?, news_sha256='deadbeef'"
+            " WHERE id=?",
+            (json.dumps(rows, ensure_ascii=False, sort_keys=True), rid))
+        con.commit()
+        con.close()
+        txt, rec, anomaly = reproduce_check(
+            db, str(tmp_path / "checks.jsonl"), ENTRIES, _sha256_obj(ENTRIES))
+>       assert rec["result"] == "PASS"
+E       AssertionError: assert 'ERROR' == 'PASS'
+E         
+E         - PASS
+E         + ERROR
+
+tests/test_weekly_consistency.py:186: AssertionError
+=============================== warnings summary ===============================
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=42787) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_weekly_consistency.py::test_brief_normal_week - assert '全...
+FAILED tests/test_weekly_consistency.py::test_reproduce_detects_tampered_score
+FAILED tests/test_weekly_consistency.py::test_reproduce_news_sha_change_not_fail
+3 failed, 202 passed, 2 warnings in 182.98s (0:03:02)

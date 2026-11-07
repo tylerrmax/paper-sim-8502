@@ -1,0 +1,283 @@
+........................................................................ [ 33%]
+........................................................................ [ 66%]
+....................................................F..FFF...........FFF [100%]
+=================================== FAILURES ===================================
+_____________________ test_log_failure_leaves_db_untouched _____________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_log_failure_leaves_db_unt0')
+
+    def test_log_failure_leaves_db_untouched(tmp_path):
+        db = str(tmp_path / "sim.db")
+>       build_fixture_db(db)
+
+tests/test_todo_autoskip.py:195: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_todo_autoskip.py:55: in build_fixture_db
+    shutil.copy2(SRC_DB, path)
+/usr/lib/python3.12/shutil.py:475: in copy2
+    copyfile(src, dst, follow_symlinks=follow_symlinks)
+/usr/lib/python3.12/shutil.py:273: in copyfile
+    _fastcopy_sendfile(fsrc, fdst)
+/usr/lib/python3.12/shutil.py:164: in _fastcopy_sendfile
+    raise err from None
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+fsrc = <_io.BufferedReader name='/home/hatch/workspace/l2-remediation/ui1/db/sim.db'>
+fdst = <_io.BufferedWriter name='/tmp/pytest-of-root/pytest-11/test_log_failure_leaves_db_unt0/sim.db'>
+
+    def _fastcopy_sendfile(fsrc, fdst):
+        """Copy data from one regular mmap-like fd to another by using
+        high-performance sendfile(2) syscall.
+        This should work on Linux >= 2.6.33 only.
+        """
+        # Note: copyfileobj() is left alone in order to not introduce any
+        # unexpected breakage. Possible risks by using zero-copy calls
+        # in copyfileobj() are:
+        # - fdst cannot be open in "a"(ppend) mode
+        # - fsrc and fdst may be open in "t"(ext) mode
+        # - fsrc may be a BufferedReader (which hides unread data in a buffer),
+        #   GzipFile (which decompresses data), HTTPResponse (which decodes
+        #   chunks).
+        # - possibly others (e.g. encrypted fs/partition?)
+        global _USE_CP_SENDFILE
+        try:
+            infd = fsrc.fileno()
+            outfd = fdst.fileno()
+        except Exception as err:
+            raise _GiveupOnFastCopy(err)  # not a regular file
+    
+        # Hopefully the whole file will be copied in a single call.
+        # sendfile() is called in a loop 'till EOF is reached (0 return)
+        # so a bufsize smaller or bigger than the actual file size
+        # should not make any difference, also in case the file content
+        # changes while being copied.
+        try:
+            blocksize = max(os.fstat(infd).st_size, 2 ** 23)  # min 8MiB
+        except OSError:
+            blocksize = 2 ** 27  # 128MiB
+        # On 32-bit architectures truncate to 1GiB to avoid OverflowError,
+        # see bpo-38319.
+        if sys.maxsize < 2 ** 32:
+            blocksize = min(blocksize, 2 ** 30)
+    
+        offset = 0
+        while True:
+            try:
+>               sent = os.sendfile(outfd, infd, offset, blocksize)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E               OSError: [Errno 28] No space left on device: '/home/hatch/workspace/l2-remediation/ui1/db/sim.db' -> '/tmp/pytest-of-root/pytest-11/test_log_failure_leaves_db_unt0/sim.db'
+
+/usr/lib/python3.12/shutil.py:150: OSError
+______________ test_apptest_cloud_readonly_disables_write_buttons ______________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_apptest_cloud_readonly_di0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb448ddc200>
+
+    def test_apptest_cloud_readonly_disables_write_buttons(tmp_path, monkeypatch):
+>       tree, days, expect = _build_app_tree(tmp_path, autoskip=True)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_todo_autoskip.py:290: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_todo_autoskip.py:222: in _build_app_tree
+    shutil.copytree(
+/usr/lib/python3.12/shutil.py:600: in copytree
+    return _copytree(entries=entries, src=src, dst=dst, symlinks=symlinks,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+entries = [<DirEntry '.git'>, <DirEntry '.env.example'>, <DirEntry '.gitignore'>, <DirEntry '.release_gate_light_state.json'>, <DirEntry '.release_gate_state.json'>, <DirEntry '.streamlit'>, ...]
+src = '/home/hatch/workspace/l2-remediation/ui1'
+dst = '/tmp/pytest-of-root/pytest-11/test_apptest_cloud_readonly_di0/tree'
+symlinks = False
+ignore = <function ignore_patterns.<locals>._ignore_patterns at 0x7fb448d17e20>
+copy_function = <function copy2 at 0x7fb464a2c220>
+ignore_dangling_symlinks = False, dirs_exist_ok = False
+
+    def _copytree(entries, src, dst, symlinks, ignore, copy_function,
+                  ignore_dangling_symlinks, dirs_exist_ok=False):
+        if ignore is not None:
+            ignored_names = ignore(os.fspath(src), [x.name for x in entries])
+        else:
+            ignored_names = ()
+    
+        os.makedirs(dst, exist_ok=dirs_exist_ok)
+        errors = []
+        use_srcentry = copy_function is copy2 or copy_function is copy
+    
+        for srcentry in entries:
+            if srcentry.name in ignored_names:
+                continue
+            srcname = os.path.join(src, srcentry.name)
+            dstname = os.path.join(dst, srcentry.name)
+            srcobj = srcentry if use_srcentry else srcname
+            try:
+                is_symlink = srcentry.is_symlink()
+                if is_symlink and os.name == 'nt':
+                    # Special check for directory junctions, which appear as
+                    # symlinks but we want to recurse.
+                    lstat = srcentry.stat(follow_symlinks=False)
+                    if lstat.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT:
+                        is_symlink = False
+                if is_symlink:
+                    linkto = os.readlink(srcname)
+                    if symlinks:
+                        # We can't just leave it to `copy_function` because legacy
+                        # code with a custom `copy_function` may rely on copytree
+                        # doing the right thing.
+                        os.symlink(linkto, dstname)
+                        copystat(srcobj, dstname, follow_symlinks=not symlinks)
+                    else:
+                        # ignore dangling symlink if the flag is on
+                        if not os.path.exists(linkto) and ignore_dangling_symlinks:
+                            continue
+                        # otherwise let the copy occur. copy2 will raise an error
+                        if srcentry.is_dir():
+                            copytree(srcobj, dstname, symlinks, ignore,
+                                     copy_function, ignore_dangling_symlinks,
+                                     dirs_exist_ok)
+                        else:
+                            copy_function(srcobj, dstname)
+                elif srcentry.is_dir():
+                    copytree(srcobj, dstname, symlinks, ignore, copy_function,
+                             ignore_dangling_symlinks, dirs_exist_ok)
+                else:
+                    # Will raise a SpecialFileError for unsupported file types
+                    copy_function(srcobj, dstname)
+            # catch the Error from the recursive copytree so that we can
+            # continue with other files
+            except Error as err:
+                errors.extend(err.args[0])
+            except OSError as why:
+                errors.append((srcname, dstname, str(why)))
+        try:
+            copystat(src, dst)
+        except OSError as why:
+            # Copying file access times may fail on Windows
+            if getattr(why, 'winerror', None) is None:
+                errors.append((src, dst, str(why)))
+        if errors:
+>           raise Error(errors)
+E           shutil.Error: [('/home/hatch/workspace/l2-remediation/ui1/.tmp_pw/playwright-download-pjVjym/playwright-download-chromium-ubuntu24.04-x64-1248.zip', '/tmp/pytest-of-root/pytest-11/test_apptest_cloud_readonly_di0/tree/.tmp_pw/playwright-download-pjVjym/playwright-download-chromium-ubuntu24.04-x64-1248.zip', "[Errno 28] No space left on device: '/home/hatch/workspace/l2-remediation/ui1/.tmp_pw/playwright-download-pjVjym/playwright-download-chromium-ubuntu24.04-x64-1248.zip' -> '/tmp/pytest-of-root/pytest-11/test_apptest_cloud_readonly_di0/tree/.tmp_pw/playwright-download-pjVjym/playwright-download-chromium-ubuntu24.04-x64-1248.zip'")]
+
+/usr/lib/python3.12/shutil.py:554: Error
+___________________ test_topboard_validation_counts_sa_only ____________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_topboard_validation_count0')
+
+    def test_topboard_validation_counts_sa_only(tmp_path):
+        fn = _load_topboard_data()
+>       asof, _ver, rows = fn(_fixture_db(tmp_path))
+                              ^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_topboard_validation_grp.py:86: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_topboard_validation_count0')
+
+    def _fixture_db(tmp_path):
+        db = str(tmp_path / "sim.db")
+        con = sqlite3.connect(db)
+>       con.execute(_RUNS_DDL)
+E       sqlite3.OperationalError: database or disk is full
+
+tests/test_topboard_validation_grp.py:58: OperationalError
+_______________________ test_perf_summary_counts_sa_only _______________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_perf_summary_counts_sa_on0')
+
+    def test_perf_summary_counts_sa_only(tmp_path):
+        sql = _load_perf_summary_sql()
+>       con = sqlite3.connect(_summary_fixture_db(tmp_path))
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_topboard_validation_grp.py:158: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_perf_summary_counts_sa_on0')
+
+    def _summary_fixture_db(tmp_path):
+        db = str(tmp_path / "sim.db")
+        con = sqlite3.connect(db)
+>       con.execute(_PERF_DDL)
+E       sqlite3.OperationalError: database or disk is full
+
+tests/test_topboard_validation_grp.py:137: OperationalError
+____________________________ test_brief_normal_week ____________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_brief_normal_week0')
+
+    def test_brief_normal_week(tmp_path):
+>       db = _mk_db(tmp_path)
+             ^^^^^^^^^^^^^^^^
+
+tests/test_weekly_consistency.py:126: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_brief_normal_week0')
+
+    def _mk_db(tmp_path):
+        db = str(tmp_path / "sim.db")
+        con = sqlite3.connect(db)
+>       con.execute("CREATE TABLE market_data(symbol TEXT, date TEXT,"
+                    " open REAL, high REAL, low REAL, close REAL, volume REAL)")
+E       sqlite3.OperationalError: database or disk is full
+
+tests/test_weekly_consistency.py:52: OperationalError
+____________________ test_reproduce_detects_tampered_score _____________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_reproduce_detects_tampere0')
+
+    def test_reproduce_detects_tampered_score(tmp_path):
+>       db = _mk_db(tmp_path)
+             ^^^^^^^^^^^^^^^^
+
+tests/test_weekly_consistency.py:147: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_reproduce_detects_tampere0')
+
+    def _mk_db(tmp_path):
+        db = str(tmp_path / "sim.db")
+        con = sqlite3.connect(db)
+>       con.execute("CREATE TABLE market_data(symbol TEXT, date TEXT,"
+                    " open REAL, high REAL, low REAL, close REAL, volume REAL)")
+E       sqlite3.OperationalError: database or disk is full
+
+tests/test_weekly_consistency.py:52: OperationalError
+___________________ test_reproduce_news_sha_change_not_fail ____________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_reproduce_news_sha_change0')
+
+    def test_reproduce_news_sha_change_not_fail(tmp_path):
+>       db = _mk_db(tmp_path)
+             ^^^^^^^^^^^^^^^^
+
+tests/test_weekly_consistency.py:167: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-11/test_reproduce_news_sha_change0')
+
+    def _mk_db(tmp_path):
+        db = str(tmp_path / "sim.db")
+        con = sqlite3.connect(db)
+>       con.execute("CREATE TABLE market_data(symbol TEXT, date TEXT,"
+                    " open REAL, high REAL, low REAL, close REAL, volume REAL)")
+E       sqlite3.OperationalError: database or disk is full
+
+tests/test_weekly_consistency.py:52: OperationalError
+=============================== warnings summary ===============================
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=41923) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_todo_autoskip.py::test_log_failure_leaves_db_untouched - OS...
+FAILED tests/test_todo_autoskip.py::test_apptest_cloud_readonly_disables_write_buttons
+FAILED tests/test_topboard_validation_grp.py::test_topboard_validation_counts_sa_only
+FAILED tests/test_topboard_validation_grp.py::test_perf_summary_counts_sa_only
+FAILED tests/test_weekly_consistency.py::test_brief_normal_week - sqlite3.Ope...
+FAILED tests/test_weekly_consistency.py::test_reproduce_detects_tampered_score
+FAILED tests/test_weekly_consistency.py::test_reproduce_news_sha_change_not_fail
+7 failed, 209 passed, 2 warnings in 225.43s (0:03:45)

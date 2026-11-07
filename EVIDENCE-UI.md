@@ -74,7 +74,7 @@ FAIL: OperationalError no such column: date    （工作台「最近拦截」，
 
 ## 最终 Commit
 
-- 分支 `ui/focus-verify`，代码+测试+证据提交 SHA：见本文件入库后 `git log`（交付回报中给出最终 HEAD）。**未合并、未推送、未部署。**
+- 分支 `ui/focus-verify`：代码+测试+截图证据提交 `6feb4db`，测试原始日志补入提交 `702607c`，本行 SHA 注记为其后的小提交；分支最终 HEAD 以交付回报为准。提交不含 db/sim.db 变化（已还原）。**未合并、未推送、未部署。**
 
 ## 剩余风险
 

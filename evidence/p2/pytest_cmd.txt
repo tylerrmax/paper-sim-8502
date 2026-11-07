@@ -1,0 +1,1 @@
+/home/hatch/workspace/l2-remediation/p2/.venv/bin/python -m pytest tests/ -q --ignore=tests/e2e_8stage.py --ignore=tests/stress_test.py --ignore=tests/test_gapfill.py --ignore=tests/test_ui_regression.py --ignore=tests/test_pause_resume.py -p no:cacheprovider

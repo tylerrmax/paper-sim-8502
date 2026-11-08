@@ -1,0 +1,14 @@
+PROD SYNC START 2026-11-08 21:25:18 HEAD=c115d53
+发布门禁[smoke] ✅ 29 个 .py 语法 OK，17 个模块 import OK
+发布门禁[pytest] ✅ pytest 通过：216 passed, 2 warnings in 248.88s (0:04:08)
+发布门禁[fingerprint] ✅ 水位线 OK（水位 51 笔 / max_id 467，本次新增 0 笔）
+发布门禁[ledger] ✅ positions == fills 汇总
+新鲜度检查通过：daily_report 截至 2026-11-07
+构建标识已生成：build_info.json commit=c115d5352083
+已推送: .gitignore -> d43b207
+已推送: db/sim.db -> 9704da7
+已推送: build_info.json -> 20abb3f
+已推送: db/sim.db -> 2f6eba0
+完成：4 个文件有变更
+水位线已推进：fills=51 max_id=467
+PROD SYNC EXIT=0 END 2026-11-08 21:30:39

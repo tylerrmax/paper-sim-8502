@@ -222,7 +222,8 @@ def _build_app_tree(tmp_path, autoskip=True):
     shutil.copytree(
         REPO, tree,
         ignore=shutil.ignore_patterns(".venv", ".git", "__pycache__",
-                                      "evidence", "tests"))
+                                      "evidence", "tests",
+                                      "pytest-of-root", ".tmp_pw"))
     db = os.path.join(tree, "db", "sim.db")
     days, expect = build_fixture_db(db)
     if autoskip:

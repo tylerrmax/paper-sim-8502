@@ -1,6 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
+# 测试临时产物（2026-11-08 环境修复）：AppTest 复制树与 pytest 临时目录不进仓库、不进复制
+pytest-of-root/
+.tmp_pw/
 *.log
 db/*.lock
 .DS_Store

@@ -1,0 +1,29 @@
+GATE2 START 2026-11-08 21:19:58
+{
+ "ok": true,
+ "reason": null,
+ "checks": [
+  {
+   "name": "smoke",
+   "ok": true,
+   "detail": "0 个 .py 语法 OK，17 个模块 import OK"
+  },
+  {
+   "name": "pytest",
+   "ok": true,
+   "detail": "pytest 通过：216 passed, 2 warnings in 257.95s (0:04:17)"
+  },
+  {
+   "name": "fingerprint",
+   "ok": true,
+   "detail": "水位线 OK（水位 51 笔 / max_id 467，本次新增 0 笔）"
+  },
+  {
+   "name": "ledger",
+   "ok": true,
+   "detail": "positions == fills 汇总"
+  }
+ ]
+}
+GATE_OK= True
+GATE2 EXIT=0 END 2026-11-08 21:24:37

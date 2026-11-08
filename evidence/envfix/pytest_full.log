@@ -1,0 +1,21 @@
+START 2026-11-08 21:14:56
+tmpfs           512M  5.7M  507M   2% /tmp
+tmpfs           2.0G     0  2.0G   0% /var/tmp
+........................................................................ [ 33%]
+........................................................................ [ 66%]
+........................................................................ [100%]
+=============================== warnings summary ===============================
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=18963) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+216 passed, 2 warnings in 250.94s (0:04:10)
+
+real	4m14.080s
+user	0m21.930s
+sys	0m2.762s
+EXIT=0 END 2026-11-08 21:19:10
+tmpfs           512M  130M  383M  26% /tmp
+tmpfs           2.0G     0  2.0G   0% /var/tmp

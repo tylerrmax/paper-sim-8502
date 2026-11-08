@@ -1,0 +1,14 @@
+GATE START 2026-11-08 21:19:27
+{
+ "ok": false,
+ "reason": "smoke：import 冒烟失败：ModuleNotFoundError: No module named 'data'",
+ "checks": [
+  {
+   "name": "smoke",
+   "ok": false,
+   "detail": "import 冒烟失败：ModuleNotFoundError: No module named 'data'"
+  }
+ ]
+}
+GATE_OK= False
+GATE EXIT=0 END 2026-11-08 21:19:50

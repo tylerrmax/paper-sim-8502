@@ -740,6 +740,10 @@ def render_ticker():
 
     # 紧凑模式（UI批A G-2）：默认只显示有待建单或持仓的标的；
     # 完整行情保留在下方折叠入口，不得无入口截断。
+    # 2026-11-08 UI 定点批：关注子集表（A股/港股/加密 · 关注）与下方
+    # 「全部行情」完全重复，且在非工作台五页逐页重复渲染——删除子集表，
+    # 全部页面统一为一行 caption（方案A 全页推广）；关注集派生逻辑、
+    # 持仓查询失败告警与「全部行情」折叠区保持原样。
     # 持仓查询失败不得伪装成「没有持仓」（2026-10-31 批A专项）：
     # 失败时显式标注关注列表数据不完整，仅按待建单筛选。
     _held = set()
@@ -755,13 +759,7 @@ def render_ticker():
             '关注列表数据不完整（仅按待建单筛选，持仓标的可能未显示），'
             '完整行情见下方折叠。</div>', unsafe_allow_html=True)
     _total = len(a_syms) + len(hk_syms) + len(crypto_syms)
-    if _focus and not _wb_first:
-        st.markdown(
-            _table([s for s in a_syms if s in _focus], "A股 · 关注")
-            + _table([s for s in hk_syms if s in _focus], "港股 · 关注")
-            + _table([s for s in crypto_syms if s in _focus], "加密 · 关注"),
-            unsafe_allow_html=True)
-    elif _wb_first and _focus:
+    if _focus:
         st.caption("关注标的行情已收纳至下方「全部行情」（工作台首屏减负 · 方案A）")
     else:
         st.caption("当前无待建单或持仓标的，完整行情见下方折叠。")
@@ -1770,7 +1768,7 @@ if tab == "🏠 工作台":
         if _hworst >= 2:
             _items.append(("P0", "block", "<b>数据异常</b>：数据健康处于断连/异常态（见顶栏 SYSTEM），先恢复数据再谈交易"))
         try:
-            _eb = q("SELECT date, symbol, reason FROM risk_block_events WHERE rule='env_gate' ORDER BY date DESC, id DESC LIMIT 1")
+            _eb = q("SELECT trade_date, symbol, reason FROM risk_block_events WHERE rule_name='env_gate' ORDER BY trade_date DESC, ts DESC LIMIT 1")
         except Exception:
             _eb = []
         if _eb:
@@ -1883,7 +1881,7 @@ if tab == "🏠 工作台":
     with _ql:   # 左栏下半：今日执行与重点观察（只渲染一次，接在优先级队列之后）
         _eb2 = ""
         try:
-            _ebr = q("SELECT date, symbol, reason FROM risk_block_events ORDER BY date DESC, id DESC LIMIT 1")
+            _ebr = q("SELECT trade_date, symbol, reason FROM risk_block_events ORDER BY trade_date DESC, ts DESC LIMIT 1")
             if _ebr:
                 _eb2 = (f'<div style="font-size:12.5px;padding:4px 2px;border-bottom:1px solid #1e2532;">'
                         f'最近拦截：<b>{_ebr[0][1]}</b> {_ebr[0][2]}（{_ebr[0][0]}）</div>')
@@ -3111,6 +3109,24 @@ elif tab == "🛡 验证":
                     "当前值": f"行情 {_md2} · 日报 {_dr2}",
                     "结论": "通过" if _md2 and _dr2 and _md2 >= _dr2 else "待核验",
                     "证据来源": "market_data / daily_report"})
+        # 同步（2026-11-08 UI 定点批新增）：只读同步脚本生成的
+        # build_info.json（built_at + commit，与运行版本标识同源）；
+        # 文件缺失/不可解析时如实「待核验」，不编造同步时间。
+        _sync_cur, _sync_ok = "无记录", False
+        try:
+            import json as _json_s
+            with open(os.path.join(BASE, "build_info.json"),
+                      encoding="utf-8") as _bf:
+                _bi2 = _json_s.load(_bf)
+            if _bi2.get("built_at") and _bi2.get("commit"):
+                _sync_cur = f"{_bi2['built_at']} · {_bi2['commit'][:7]}"
+                _sync_ok = True
+        except Exception:
+            pass
+        _ck.append({"检查项": "同步", "标准": "同步脚本构建标识存在且可解析",
+                    "当前值": _sync_cur,
+                    "结论": "通过" if _sync_ok else "待核验",
+                    "证据来源": "build_info.json"})
         _sc2 = q("SELECT MAX(asof) FROM screen_runs")[0][0]
         _ck.append({"检查项": "选股运行", "标准": "夜跑每期一跑",
                     "当前值": f"最近一期 {_sc2}",
@@ -3130,7 +3146,7 @@ elif tab == "🛡 验证":
         st.caption(f"检查表生成失败：{_cke}")
     st.subheader("异常与拦截证据（只追加 · 可追溯）")
     try:
-        _tl = q("SELECT COALESCE(trade_date, substr(ts,1,10)), symbol, side, rule, reason"
+        _tl = q("SELECT COALESCE(trade_date, substr(ts,1,10)), symbol, side, rule_name, reason"
                 " FROM risk_block_events ORDER BY ts DESC LIMIT 8")
         if _tl:
             st.markdown("".join(
@@ -3143,21 +3159,26 @@ elif tab == "🛡 验证":
     except Exception:
         st.write("拦截记录读取失败")
 
-    st.subheader("📄 验收报告")
+    # 历史验收报告统一折叠归档（2026-11-08 UI 定点批）：去掉平铺小标题，
+    # 整体收进一个默认折叠的归档 expander；每份报告原 expander 与全文
+    # 保留，reports/public/*.md 文件本身不增删改。
     try:
         import glob as _glob
         _reports = sorted(_glob.glob(os.path.join(
             BASE, "reports", "public", "*.md")), reverse=True)
         if not _reports:
             st.caption("暂无报告")
-        for _rp in _reports:
-            with open(_rp, encoding="utf-8") as _f:
-                _content = _f.read()
-            _first = _content.lstrip().splitlines()[0] if _content.strip() else ""
-            _title = (_first.lstrip("# ").strip() if _first.startswith("#")
-                      else os.path.splitext(os.path.basename(_rp))[0])
-            with st.expander(_title, expanded=False):
-                st.markdown(_content)
+        else:
+            with st.expander(f"📄 历史验收报告（归档 · {len(_reports)} 份）",
+                             expanded=False):
+                for _rp in _reports:
+                    with open(_rp, encoding="utf-8") as _f:
+                        _content = _f.read()
+                    _first = _content.lstrip().splitlines()[0] if _content.strip() else ""
+                    _title = (_first.lstrip("# ").strip() if _first.startswith("#")
+                              else os.path.splitext(os.path.basename(_rp))[0])
+                    with st.expander(_title, expanded=False):
+                        st.markdown(_content)
     except Exception as _re:
         st.caption(f"验收报告暂不可用：{_re}")
 

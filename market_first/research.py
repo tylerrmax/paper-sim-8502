@@ -138,9 +138,83 @@ class TrendPatternModule:
                 "evidence": evidence}
 
 
+DEDUP_KEY_SPEC = (
+    "(market, symbol, data_date, trade_id) when trade_id is present; "
+    "fallback (market, symbol, data_date, inst_buy, inst_sell, "
+    "seat_buy_records, seat_sell_records) full-tuple equality when "
+    "trade_id is missing"
+)
+
+
+def _evidence_dict(event):
+    """从 event dict 解析 evidence dict（evidence_json str/dict）。
+
+    取不到返回 {}。event 本身若直接带 inst_* 字段（手工构造的
+    context 事件），由调用方另行合并。
+    """
+    ej = event.get("evidence_json")
+    if isinstance(ej, str):
+        try:
+            ej = json.loads(ej)
+        except (ValueError, TypeError):
+            ej = None
+    if isinstance(ej, dict):
+        return ej
+    return {}
+
+
+def dedup_inst_events(events):
+    """机构事件去重（第一轮审计修复 P0-2）：同一底层机构事件经
+    live/stored 两条取得路径重复入账时只保留一份。
+
+    去重键：优先 (market, symbol, data_date, trade_id)；
+    trade_id 缺失时退化为 (market, symbol, data_date, inst_buy,
+    inst_sell, seat_buy_records, seat_sell_records) 全等才视为
+    同一事件。键不同一律保留（不同日期、不同底层事件不得误删），
+    禁止按 symbol 单独去重。候选池中的原始事件不在此删除，
+    本函数只决定研究聚合的计入集合。
+
+    返回 (kept, dropped)：元素均为 (event_id, event, evidence)，
+    event_id 优先 event['id']，缺失时用输入序号。
+    """
+    kept = []
+    dropped = []
+    seen = {}
+    for idx, ev in enumerate(events or []):
+        if not isinstance(ev, dict):
+            continue
+        ev_id = ev.get("id")
+        if ev_id is None:
+            ev_id = idx
+        evidence = _evidence_dict(ev)
+        data_date = (evidence.get("data_date")
+                     or ev.get("price_data_time")
+                     or str(ev.get("discovered_at") or "")[:10])
+        trade_id = evidence.get("trade_id")
+        if trade_id not in (None, ""):
+            key = ("tid", ev.get("market"), ev.get("symbol"),
+                   data_date, str(trade_id))
+        else:
+            key = ("tuple", ev.get("market"), ev.get("symbol"),
+                   data_date, evidence.get("inst_buy"),
+                   evidence.get("inst_sell"),
+                   evidence.get("seat_buy_records"),
+                   evidence.get("seat_sell_records"))
+        if key in seen:
+            dropped.append((ev_id, ev, evidence))
+        else:
+            seen[key] = ev_id
+            kept.append((ev_id, ev, evidence))
+    return kept, dropped
+
+
 class InstFlowModule:
     """机构资金流模块：读候选的 inst* discovery events 的 evidence_json
     中的 inst_net（机构专用席位净额，口径见 engine/inst_lhb.py）。
+
+    聚合前先经 dedup_inst_events 去重：同一底层机构事件（同
+    trade_id，或缺 id 时同全元组）只贡献一次净额，live/stored
+    双路不得重复计数；不同日期/不同底层事件分别保留。
 
     无事件 -> subtotal=None（缺失不充数）；有事件时
     subtotal = +8.0（最新 inst_net>0）/ -8.0（<0）/ 0.0（=0）。
@@ -175,10 +249,18 @@ class InstFlowModule:
 
     def compute(self, candidate: dict, bars, context: dict) -> dict:
         events = (context or {}).get("inst_events") or []
+        kept, dropped = dedup_inst_events(events)
+        dedup_info = {
+            "raw_event_ids": [
+                ev.get("id") if isinstance(ev, dict)
+                and ev.get("id") is not None else i
+                for i, ev in enumerate(events) if isinstance(ev, dict)],
+            "deduped_event_ids": [eid for eid, _, _ in kept],
+            "dropped_duplicate_ids": [eid for eid, _, _ in dropped],
+            "dedup_key": DEDUP_KEY_SPEC,
+        }
         parsed = []
-        for ev in events:
-            if not isinstance(ev, dict):
-                continue
+        for ev_id, ev, _evidence in kept:
             net = self._extract_inst_net(ev)
             if net is None:
                 continue
@@ -190,7 +272,8 @@ class InstFlowModule:
                        "reason": ("no_inst_events" if not events
                                   else "inst_net_missing")}
             return {"factors": factors, "subtotal": None,
-                    "evidence": {"events_count": len(events)}}
+                    "evidence": {"events_count": len(events),
+                                 "dedup": dedup_info}}
         latest_when, latest_net = max(parsed, key=lambda t: t[0])
         total_net = sum(net for _, net in parsed)
         if latest_net > 0:
@@ -201,12 +284,14 @@ class InstFlowModule:
             subtotal = 0.0
         factors = {"available": True,
                    "events_count": len(parsed),
+                   "raw_events_count": len(dedup_info["raw_event_ids"]),
                    "latest_inst_net": latest_net,
                    "total_inst_net": total_net}
         evidence = {"events_count": len(parsed),
                     "latest_discovered_at": latest_when,
                     "latest_inst_net": latest_net,
-                    "total_inst_net": total_net}
+                    "total_inst_net": total_net,
+                    "dedup": dedup_info}
         return {"factors": factors, "subtotal": subtotal,
                 "evidence": evidence}
 

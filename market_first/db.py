@@ -80,7 +80,55 @@ CREATE TABLE IF NOT EXISTS validation_samples (
     evaluated_at TEXT,
     eval_version TEXT,
     created_at TEXT,
+    discovery_event_id INTEGER REFERENCES discovery_events(id),
+    bars_asof TEXT,
+    benchmark_date TEXT,
+    benchmark_price_source TEXT,
+    data_version TEXT,
     UNIQUE(candidate_id, source_id, entry_date)
+);
+
+CREATE TABLE IF NOT EXISTS sample_exclusions (
+    id INTEGER PRIMARY KEY,
+    sample_id INTEGER NOT NULL REFERENCES validation_samples(id),
+    excluded_from TEXT NOT NULL,
+    reason TEXT,
+    decided_by TEXT,
+    created_at TEXT,
+    UNIQUE(sample_id, excluded_from)
+);
+
+CREATE TABLE IF NOT EXISTS validation_decisions (
+    id INTEGER PRIMARY KEY,
+    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
+    rule_version TEXT,
+    sample_scope TEXT,
+    metrics_json TEXT DEFAULT '{}',
+    decision TEXT,
+    basis TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS fetched_bars (
+    symbol TEXT NOT NULL,
+    date TEXT NOT NULL,
+    open REAL,
+    high REAL,
+    low REAL,
+    close REAL,
+    volume REAL,
+    source TEXT,
+    fetched_at TEXT,
+    PRIMARY KEY (symbol, date, source)
+);
+
+CREATE TABLE IF NOT EXISTS fetched_coverage (
+    symbol TEXT NOT NULL,
+    start TEXT NOT NULL,
+    end TEXT,
+    source TEXT,
+    fetched_at TEXT,
+    PRIMARY KEY (symbol, start, end, source)
 );
 
 CREATE TABLE IF NOT EXISTS approvals (
@@ -119,6 +167,79 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
     return conn
 
 
+# 第一轮审计修复（fix1）新增列：旧库靠 ALTER 幂等补齐，新库由
+# SCHEMA_SQL 直接建全。ALTER 只加可空列，不改动既有行数据。
+_FIX1_SAMPLE_COLUMNS = {
+    "discovery_event_id": "INTEGER",
+    "bars_asof": "TEXT",
+    "benchmark_date": "TEXT",
+    "benchmark_price_source": "TEXT",
+    "data_version": "TEXT",
+}
+
+_FIX1_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS sample_exclusions (
+    id INTEGER PRIMARY KEY,
+    sample_id INTEGER NOT NULL REFERENCES validation_samples(id),
+    excluded_from TEXT NOT NULL,
+    reason TEXT,
+    decided_by TEXT,
+    created_at TEXT,
+    UNIQUE(sample_id, excluded_from)
+);
+
+CREATE TABLE IF NOT EXISTS validation_decisions (
+    id INTEGER PRIMARY KEY,
+    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
+    rule_version TEXT,
+    sample_scope TEXT,
+    metrics_json TEXT DEFAULT '{}',
+    decision TEXT,
+    basis TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS fetched_bars (
+    symbol TEXT NOT NULL,
+    date TEXT NOT NULL,
+    open REAL,
+    high REAL,
+    low REAL,
+    close REAL,
+    volume REAL,
+    source TEXT,
+    fetched_at TEXT,
+    PRIMARY KEY (symbol, date, source)
+);
+
+CREATE TABLE IF NOT EXISTS fetched_coverage (
+    symbol TEXT NOT NULL,
+    start TEXT NOT NULL,
+    end TEXT,
+    source TEXT,
+    fetched_at TEXT,
+    PRIMARY KEY (symbol, start, end, source)
+);
+"""
+
+
+def ensure_fix1_schema(conn) -> None:
+    """幂等补齐 fix1 结构：validation_samples 新列 + 三张新表。
+
+    对既有行只新增 NULL 列，绝不 UPDATE/DELETE 既有数据。
+    """
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(validation_samples)")}
+    if cols:
+        for name, typ in _FIX1_SAMPLE_COLUMNS.items():
+            if name not in cols:
+                conn.execute(
+                    "ALTER TABLE validation_samples ADD COLUMN %s %s"
+                    % (name, typ))
+    conn.executescript(_FIX1_TABLES_SQL)
+    conn.commit()
+
+
 def init_db(db_path: str | None = None) -> str:
     """建表（幂等）并返回实际库路径。"""
     path = _resolve(db_path)
@@ -126,6 +247,7 @@ def init_db(db_path: str | None = None) -> str:
     try:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
+        ensure_fix1_schema(conn)
     finally:
         conn.close()
     return path

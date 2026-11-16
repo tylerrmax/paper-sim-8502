@@ -67,6 +67,11 @@ def _reject(pool, cid, current, to_state, actor, detail):
 # 人工审批进入；公开 transition() 直达一律按非法转移处理。
 DECISION_STATES = frozenset({"approved", "rejected"})
 
+# 验证通过态：转移表上 validating 可达，但只能由验证引擎的
+# judge_validation 按版本化规则判定产生；公开 transition() 直达
+# 一律按非法转移处理（第一轮审计修复 P0-3）。
+VALIDATION_GATE_STATES = frozenset({"validation_passed"})
+
 
 def _apply_transition(pool, cid, current, to_state, actor, reason=""):
     """表内流转的实际执行（调用方已完成合法性判定）。"""
@@ -99,6 +104,13 @@ def transition(pool, cid, to_state, actor, reason=""):
             "%s -> %s 属人工审批终态，只能经 decide() 审批进入，"
             "transition() 直达被拒" % (current, to_state),
         )
+    if to_state in VALIDATION_GATE_STATES:
+        _reject(
+            pool, cid, current, to_state, actor,
+            "%s -> %s 属验证引擎判定态，只能由 "
+            "validation.judge_validation 按版本化规则产生，"
+            "transition() 直达被拒" % (current, to_state),
+        )
     allowed = TRANSITIONS.get(current, frozenset())
     if to_state not in allowed:
         _reject(
@@ -108,6 +120,26 @@ def transition(pool, cid, to_state, actor, reason=""):
                ",".join(sorted(allowed)) if allowed else "无，终态"),
         )
     return _apply_transition(pool, cid, current, to_state, actor, reason)
+
+
+def _apply_validation_passed(pool, cid, actor, reason=""):
+    """内部受控入口：validating -> validation_passed。
+
+    唯一合法调用方是 validation.judge_validation 在判定
+    decision='passed' 后调用；当前状态不是 validating 时抛
+    IllegalTransitionError。不经公开 transition()（其对
+    validation_passed 直达一律拒绝）。
+    """
+    cand = pool.get_by_id(cid)
+    if cand is None:
+        raise ValueError("候选不存在：id=%s" % (cid,))
+    current = cand.get("promotion_status")
+    if current != "validating":
+        raise IllegalTransitionError(
+            "validation_passed 只能从 validating 经 judge_validation "
+            "判定流转，当前状态为 %s" % (current,))
+    return _apply_transition(pool, cid, current, "validation_passed",
+                             actor, reason)
 
 
 def decide(pool, cid, approver, decision, basis="", versions=None):

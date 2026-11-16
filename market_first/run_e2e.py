@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 """Market-First 统一架构端到端演示脚本（隔离环境专用）。
 
-流程：发现（机构龙虎榜 live 优先）-> 双来源归并 -> 研究 ->
-验证（前向 + 回填）-> 晋升状态机 -> 人工审批 -> 模拟交接，
-另含拒绝演示与生产安全自检。
+流程：发现（机构龙虎榜 live 优先）-> 双来源归并 -> 研究
+（含机构事件去重）-> 验证（Forward 时间规则 + 回填）->
+验证通过门禁 judge（门槛未定版，not_evaluable）-> 直达/审批/
+交接拒绝演示，另含生产安全自检。
 
 运行：python -m market_first.run_e2e（worktree 根目录）
-或直接执行本文件。只写新库 market_first.db；生产 sim.db
+或直接执行本文件。只写演示库 market_first_e2e.db，规范库
+market_first.db（含审计保留样本）不触碰；生产 sim.db
 全程 sqlite3 URI mode=ro 只读，绝不写入。
 """
 from __future__ import annotations
@@ -122,15 +124,21 @@ def _backfill_demo(pool, cid, symbol):
 
 
 def main():
-    # ---- a. 新库初始化（删旧重建，保证可复跑） --------------------
-    _section("a. 初始化 Market-First 新库")
-    db_path = mf_db.DEFAULT_DB_PATH
+    # ---- a. 演示库初始化（删旧重建，保证可复跑） ------------------
+    # 修复轮起 e2e 只用演示库 market_first_e2e.db：规范库
+    # market_first.db 含独立审计裁定保留的原始样本（样本 1），
+    # e2e 绝不触碰、绝不重建规范库。
+    _section("a. 初始化 Market-First 演示库")
+    db_path = os.path.join(_HERE, "market_first_e2e.db")
     if os.path.exists(db_path):
         os.remove(db_path)
-        print("已删除旧库：%s" % db_path)
+        print("已删除旧演示库：%s" % db_path)
     mf_db.init_db(db_path)
     pool = CandidatePool(db_path)
-    print("DB 路径：%s（与生产 sim.db 隔离）" % db_path)
+    bars_mod.configure(db_path)
+    print("演示 DB 路径：%s（与生产 sim.db 隔离）" % db_path)
+    print("规范库 %s 本次不触碰（审计保留样本所在库）"
+          % mf_db.DEFAULT_DB_PATH)
 
     # ---- b. 发现：InstLhbAdapter live 优先 -----------------------
     _section("b. 市场发现 InstLhbAdapter(prefer='live') %s" % DISCOVERY_DATE)
@@ -211,9 +219,10 @@ def main():
     report_id = ResearchEngine(pool).run(
         cid_main, res_bars, data_asof=data_asof, data_version=res_prov)
     row = pool.conn.execute(
-        "SELECT factors_json, total_score FROM research_reports"
-        " WHERE id=?", (report_id,)).fetchone()
+        "SELECT factors_json, total_score, evidence_json"
+        " FROM research_reports WHERE id=?", (report_id,)).fetchone()
     factors = json.loads(row["factors_json"])
+    ev_modules = json.loads(row["evidence_json"]).get("modules", {})
     print("research_report id=%s bars=%d 根（%s，provenance=%s）"
           % (report_id, len(res_bars),
              "%s..%s" % (res_bars[0][0], res_bars[-1][0]) if res_bars
@@ -223,34 +232,68 @@ def main():
               % (mod_id, mod.get("model_version"), _fmt(mod.get("subtotal")),
                  json.dumps(mod.get("factors"), ensure_ascii=False)))
     print("total_score=%s" % _fmt(row["total_score"]))
+    inst_ev = ev_modules.get("inst_flow") or {}
+    dedup = inst_ev.get("dedup") or {}
+    print("机构事件去重（P0-2）：raw_event_ids=%s deduped_event_ids=%s"
+          " dropped_duplicate_ids=%s total_inst_net=%s（同一底层事件"
+          "只计一次净额）"
+          % (dedup.get("raw_event_ids"), dedup.get("deduped_event_ids"),
+             dedup.get("dropped_duplicate_ids"),
+             _fmt(inst_ev.get("total_inst_net"))))
 
-    # ---- e. 验证：前向样本 -----------------------------------------
-    _section("e. 晋升流转 -> validating + 前向样本（forward）")
+    # ---- e. 验证：Forward 时间规则（P0-1）--------------------------
+    _section("e. 晋升流转 -> validating + Forward 时间规则演示")
     promotion.transition(pool, cid_main, "validating",
                          actor=ACTOR, reason="e2e：研究完成，进入验证")
-    benchmark = main_event.price_at_discovery
-    if benchmark is None:
-        benchmark = close_on(main_event.symbol, DISCOVERY_DATE)
-    assert benchmark is not None, "发现日基准价缺失，无法建前向样本"
-    print("基准价（发现价）=%s（%s 当日收盘，来自 bars）"
-          % (benchmark, DISCOVERY_DATE))
-    fwd_id = validation.create_sample(
-        pool, candidate_id=cid_main, source_id=main_event.source_id,
-        entry_date=DISCOVERY_DATE, benchmark_price=benchmark,
-        kind="forward")
+    main_ev_row = next(
+        r for r in pool.events_for(cid_main)
+        if r["source_id"] == main_event.source_id)
+    print("发现事件 id=%s discovered_at=%s（数据实际可得时间 = "
+          "事件创建时间，运行时刻）；数据所属日期=%s"
+          % (main_ev_row["id"], main_ev_row["discovered_at"],
+             DISCOVERY_DATE))
     fwd_bars, fwd_prov = bars_mod.get_bars(
         main_event.symbol, DISCOVERY_DATE, EVAL_END)
-    fwd = validation.evaluate_sample(pool, fwd_id, fwd_bars)
-    print("前向样本 id=%s kind=forward entry_date=%s benchmark=%s"
-          % (fwd_id, DISCOVERY_DATE, benchmark))
-    print("maturity_status=%s ret_t5=%s ret_t10=%s ret_t20=%s"
-          " max_drawdown=%s missing_reason=%s evaluated_at=%s"
-          % (_fmt(fwd["maturity_status"]), _fmt(fwd["ret_t5"]),
-             _fmt(fwd["ret_t10"]), _fmt(fwd["ret_t20"]),
-             _fmt(fwd["max_drawdown"]), _fmt(fwd["missing_reason"]),
-             _fmt(fwd["evaluated_at"])))
-    print("（未成熟如实：缺失指标为 None，不记 0；bars provenance=%s）"
-          % fwd_prov)
+    print("演示 1：规范 forward 请求（不指定 entry，由代码推导发现"
+          "创建之后第一个交易日）：现有 bars 截止 %s、无发现创建"
+          "之后的 bar、下一交易日收盘尚不可确认，应被拒绝并留痕"
+          % (fwd_bars[-1][0] if fwd_bars else "无"))
+    try:
+        validation.create_sample(
+            pool, candidate_id=cid_main,
+            source_id=main_event.source_id,
+            kind="forward",
+            discovery_event_id=main_ev_row["id"], bars=fwd_bars)
+        raise AssertionError("Forward 时间规则失效：无下一交易日被放行")
+    except validation.ForwardRejectedError as exc:
+        print("Forward 创建被拒（预期）：%s" % exc)
+    rej_hist = [h for h in pool.history_for(cid_main)
+                if "forward_rejected:" in (h["reason"] or "")]
+    print("拒绝留痕：candidate_history 中 forward_rejected 共 %d 条"
+          % len(rej_hist))
+    assert rej_hist, "Forward 拒绝未在 candidate_history 留痕"
+    print("演示 2：以历史 entry=%s 请求 kind='forward'（即原样本 1 "
+          "的错误形态）：按 P0-1 由代码强制改类 backfill，不信任"
+          "调用方 kind" % DISCOVERY_DATE)
+    forced_id = validation.create_sample(
+        pool, candidate_id=cid_main, source_id=main_event.source_id,
+        entry_date=DISCOVERY_DATE,
+        benchmark_price=main_event.price_at_discovery,
+        kind="forward",
+        discovery_event_id=main_ev_row["id"], bars=fwd_bars)
+    forced = validation.get_sample(pool, forced_id)
+    print("落库样本 id=%s kind=%s（请求 forward -> 强制 backfill）"
+          " entry_date=%s benchmark=%s benchmark_date=%s"
+          % (forced_id, forced["kind"], forced["entry_date"],
+             forced["benchmark_price"], forced["benchmark_date"]))
+    assert forced["kind"] == "backfill"
+    forced_eval = validation.evaluate_sample(
+        pool, forced_id, fwd_bars, data_version=fwd_prov)
+    print("评估回写：bars_asof=%s data_version=%s maturity_status=%s"
+          % (forced_eval["bars_asof"], forced_eval["data_version"],
+             forced_eval["maturity_status"]))
+    print("forward 统计（排除审计裁定样本后）：%s"
+          % validation.forward_stats(pool, cid_main))
 
     # ---- f. 验证：回填样本演示 --------------------------------------
     _section("f. 回填样本演示（backfill，与前向严格区分）")
@@ -281,55 +324,52 @@ def main():
             print("当日事件中无其他标的可做回填演示，"
                   "回填演示缺失（不编造）")
 
-    # ---- g. 晋升 -> 人工审批 -> 模拟交接 ------------------------------
-    _section("g. 晋升 validation_passed -> pending_approval -> 审批与交接")
-    print("演示口径：前向样本尚%s，validation_passed 在此仅表示验证"
-          "流程已执行并进入人工审批演示，不代表样本达到任何晋升/"
-          "毕业门槛。" % _fmt(fwd["maturity_status"]))
-    promotion.transition(pool, cid_main, "validation_passed",
-                         actor=ACTOR, reason="e2e：验证流程执行完毕")
-    promotion.transition(pool, cid_main, "pending_approval",
-                         actor=ACTOR, reason="e2e：提交人工审批")
+    # ---- g. 验证通过门禁（P0-3）------------------------------------
+    _section("g. 验证通过门禁：judge 判定与直达拒绝")
+    print("门槛状态：验证数值门槛尚未经用户确认（见 "
+          "THRESHOLD_PROPOSAL.md），规则注册表为空；judge 应输出 "
+          "not_evaluable、状态停在 validating，系统不得产生 "
+          "validation_passed。")
+    try:
+        promotion.transition(pool, cid_main, "validation_passed",
+                             actor=ACTOR,
+                             reason="e2e：试图绕过验证引擎直达通过态")
+        raise AssertionError("validation_passed 直达未被拒，门禁失效")
+    except promotion.IllegalTransitionError as exc:
+        print("transition(validating -> validation_passed) 被拒"
+              "（预期）：%s" % exc)
+    decision = validation.judge_validation(pool, cid_main)
+    print("judge_validation -> decision=%s rule_version=%s"
+          % (decision["decision"], decision["rule_version"]))
+    print("  sample_scope=%s" % decision["sample_scope"])
+    print("  metrics=%s" % decision["metrics_json"])
+    print("  basis=%s" % decision["basis"])
+    assert decision["decision"] == "not_evaluable"
+    status_now = pool.get_by_id(cid_main)["promotion_status"]
+    print("判定后 promotion_status=%s（停在 validating，未产生 "
+          "validation_passed）" % status_now)
+    assert status_now == "validating"
+    try:
+        promotion.decide(pool, cid_main, approver="e2e_operator",
+                         decision="approved",
+                         basis="e2e：未过验证门禁试图审批")
+        raise AssertionError("未达 pending_approval 的 decide 未被拒")
+    except promotion.IllegalTransitionError as exc:
+        print("decide 被拒（预期，状态非 pending_approval）：%s" % exc)
     try:
         handoff.simulate_handoff(pool, cid_main)
-        raise AssertionError("未批准交接未被拒，状态机/交接门禁失效")
+        raise AssertionError("未批准交接未被拒，交接门禁失效")
     except handoff.HandoffNotApprovedError as exc:
         print("未批准交接被拒（预期）：%s" % exc)
-    try:
-        promotion.transition(pool, cid_main, "approved", actor=ACTOR,
-                             reason="e2e：试图绕过人工审批直达 approved")
-        raise AssertionError("非法转移未被拒，状态机失效")
-    except promotion.IllegalTransitionError as exc:
-        print("非法转移 transition(pending_approval -> approved) 被拒"
-              "（预期）：%s" % exc)
     attempts = [h for h in pool.history_for(cid_main)
                 if h["field"] == "promotion_transition_attempt"]
     print("非法转移留痕：candidate_history 中 promotion_transition_"
           "attempt 共 %d 条，最近一条 reason=%s"
           % (len(attempts), attempts[-1]["reason"] if attempts else "无"))
     assert attempts, "非法转移未留痕"
-    approval_id = promotion.decide(
-        pool, cid_main, approver="e2e_operator", decision="approved",
-        basis="e2e 演示：研究与验证流程完整，人工批准模拟交接")
-    print("人工审批 decide=approved -> approval_id=%s，"
-          "promotion_status=%s"
-          % (approval_id, pool.get_by_id(cid_main)["promotion_status"]))
-    payload = handoff.simulate_handoff(pool, cid_main)
-    print("模拟交接 payload：")
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-    trace = payload["source_trace"]
-    print("追溯链：candidate_id=%s discovery_event_ids=%s "
-          "research_report_ids=%s validation_sample_ids=%s "
-          "approval_id=%s handoff_id=%s status=%s"
-          % (trace["candidate_id"], trace["discovery_event_ids"],
-             trace["research_report_ids"], trace["validation_sample_ids"],
-             trace["approval_id"], payload["handoff_id"],
-             payload["status"]))
-    assert payload["status"] == "simulated"
-    assert trace["approval_id"] == approval_id
 
-    # ---- h. 拒绝演示 --------------------------------------------------
-    _section("h. 拒绝演示（另一只标的 decide=rejected）")
+    # ---- h. 第二只标的同样停在验证门禁 --------------------------------
+    _section("h. 第二只标的：流转至 validating 后同样被门禁拦下")
     used = {main_event.symbol, backfill_symbol}
     rej_event = next(
         e for e in sorted(events,
@@ -339,22 +379,21 @@ def main():
         and e.symbol not in MOTHERBOARD_SYMBOLS
         and e.market in ("SH", "SZ"))
     cid_rej, _c = pool.ingest(rej_event, actor=ACTOR)
-    print("拒绝演示标的：%s %s %s（candidate_id=%s）"
+    print("演示标的：%s %s %s（candidate_id=%s）"
           % (rej_event.symbol, rej_event.market, rej_event.name, cid_rej))
-    for to_state in ("pending_research", "researching", "validating",
-                     "validation_passed", "pending_approval"):
+    for to_state in ("pending_research", "researching", "validating"):
         promotion.transition(pool, cid_rej, to_state, actor=ACTOR,
-                             reason="e2e 拒绝演示：快进流转（逐步合法）")
-    rej_approval = promotion.decide(
-        pool, cid_rej, approver="e2e_operator", decision="rejected",
-        basis="e2e 演示拒绝")
-    print("decide=rejected -> approval_id=%s，promotion_status=%s"
-          % (rej_approval, pool.get_by_id(cid_rej)["promotion_status"]))
+                             reason="e2e 门禁演示：逐步合法流转")
+    decision2 = validation.judge_validation(pool, cid_rej)
+    print("judge_validation -> decision=%s，promotion_status=%s"
+          % (decision2["decision"],
+             pool.get_by_id(cid_rej)["promotion_status"]))
+    assert decision2["decision"] == "not_evaluable"
     try:
         handoff.simulate_handoff(pool, cid_rej)
-        raise AssertionError("已拒绝候选的交接未被拒，门禁失效")
+        raise AssertionError("未批准候选的交接未被拒，门禁失效")
     except handoff.HandoffNotApprovedError as exc:
-        print("已拒绝候选交接被拒（预期）：%s" % exc)
+        print("未批准候选交接被拒（预期）：%s" % exc)
 
     # ---- i. 生产安全自检（只读） ---------------------------------------
     _section("i. 生产安全自检（生产 sim.db 只读）")

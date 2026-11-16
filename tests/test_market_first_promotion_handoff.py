@@ -5,16 +5,56 @@
 非法转移抛错且在 candidate_history 留痕；交接只写新库 handoffs 且
 status 恒为 simulated。
 """
+from datetime import date, timedelta
+
 import pytest
 
+from market_first import validation
 from market_first.handoff import HandoffNotApprovedError, simulate_handoff
 from market_first.models import DiscoveryEvent
 from market_first.pool import CandidatePool
 from market_first.promotion import (IllegalTransitionError, decide,
                                     transition)
 
-WALK = ["pending_research", "researching", "validating",
-        "validation_passed", "pending_approval"]
+
+class _TestRule:
+    """测试专用规则（显式传入 judge 的机制验证规则，非注册表
+    规则、不代表用户已确认门槛）。"""
+
+    version = "test-rule-0"
+
+    def evaluate(self, scope, metrics):
+        return "passed", "test rule: mature forward samples present"
+
+
+def _gen_bars():
+    """2026-11-13 起工作日 bars，收盘单调上行。
+
+    事件 discovered 于 2026-11-16 -> forward entry 推导为
+    2026-11-17，其后 >=20 根 -> 样本 mature。
+    """
+    out = []
+    d = date(2026, 11, 13)
+    i = 0
+    while d <= date(2026, 12, 20):
+        if d.weekday() < 5:
+            c = 10.0 + 0.1 * i
+            out.append((d.isoformat(), c, c, c, c, 1000.0))
+            i += 1
+        d += timedelta(days=1)
+    return out
+
+
+def _judge_pass(pool, cid):
+    """经验证引擎判定合法到达 validation_passed（P0-3 路径）。"""
+    ev = pool.events_for(cid)[0]
+    bars = _gen_bars()
+    sid = validation.create_sample(
+        pool, cid, ev["source_id"], kind="forward",
+        discovery_event_id=ev["id"], bars=bars)
+    validation.evaluate_sample(pool, sid, bars)
+    out = validation.judge_validation(pool, cid, rule=_TestRule())
+    assert out["decision"] == "passed"
 
 
 def _candidate(tmp_path, symbol="603893"):
@@ -29,8 +69,13 @@ def _candidate(tmp_path, symbol="603893"):
 
 
 def _walk_to_pending_approval(pool, cid):
-    for state in WALK:
+    # validation_passed 自 P0-3 起只能由 judge_validation 产生，
+    # 不再经 transition() 直达；其余流转照旧。
+    for state in ("pending_research", "researching", "validating"):
         transition(pool, cid, state, actor="tester", reason="walk")
+    _judge_pass(pool, cid)
+    transition(pool, cid, "pending_approval", actor="tester",
+               reason="walk")
 
 
 def test_legal_walk_and_approval_then_simulated_handoff(tmp_path):
@@ -61,8 +106,9 @@ def test_legal_walk_and_approval_then_simulated_handoff(tmp_path):
 
 def test_validation_passed_is_not_auto_approval(tmp_path):
     pool, cid = _candidate(tmp_path)
-    for state in WALK[:4]:  # 到 validation_passed 为止
+    for state in ("pending_research", "researching", "validating"):
         transition(pool, cid, state, actor="tester")
+    _judge_pass(pool, cid)  # 到 validation_passed 为止（经 judge）
     assert pool.get_by_id(cid)["promotion_status"] == "validation_passed"
     with pytest.raises(HandoffNotApprovedError):
         simulate_handoff(pool, cid)

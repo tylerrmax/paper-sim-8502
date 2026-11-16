@@ -73,6 +73,12 @@ list_candidates/events_for/history_for`、`set_fields`（五字段白名单，�
 - 已实现模块：`trend_pattern`（mf-trend-1.0，复用 `engine/screen.py:pattern_factors`
   的形态因子分 + 本模块 MA 趋势分，规则写入 docstring；bars<30 时 subtotal=None
   不充数）、`inst_flow`（mf-inst-1.0，基于候选的机构发现事件证据计分）。
+- **机构事件去重（fix1/P0-2）**：inst_flow 聚合前经 `dedup_inst_events` 去重——
+  同一底层事件（键 =(market, symbol, data_date, trade_id)；trade_id 缺失时退化
+  为含 inst_buy/inst_sell/席位记录数的全元组全等）只贡献一次净额，live/stored
+  双路不重复计数；不同日期/不同底层事件分别保留，禁止按 symbol 单独去重。
+  候选池原始事件全量保留不动；研究报告 evidence 记录 raw/deduped/dropped
+  事件 id 与 dedup_key，保证可复算。
 - **硬约束**：研究报告只有证据与分数；落库前递归扫描禁止键
   （side/action/order/buy/sell/instruction/qty/position_size），命中抛错——
   研究层在代码上无法产出交易指令。
@@ -82,11 +88,25 @@ list_candidates/events_for/history_for`、`set_fields`（五字段白名单，�
 - 表 `validation_samples`：UNIQUE(candidate_id, source_id, entry_date) 防同键重复
   统计（冲突抛 `DuplicateSampleError`）；kind ∈ {forward, backfill} 严格区分，
   前向=发现后真实等待成熟，回填=历史时点演示/评估，两者永不混算。
-- `evaluate_sample(pool, sample_id, bars)` 可复算：基准价为发现时点收盘；
-  ret_tN = 入场后第 N 个交易日收盘/基准−1（N=5/10/20）；max_drawdown 以基准价为
-  初始峰值对入场后 20 日收盘序列计算。成熟状态：≥20 个交易日 `mature`；
-  不足 `immature`（可得的近端指标照实填、远端留 NULL）；无价格数据 `missing`
-  且 missing_reason 单列。**缺失一律 NULL，绝不记 0。**
+- **Forward 时间规则（fix1/P0-1，代码强制）**：发现事件实际创建时间
+  `discovery_events.discovered_at` 即数据实际可得时间；forward 的 entry 必须是
+  其 Asia/Shanghai 日历日期之后第一个交易日（以 bars 实际存在的交易日为准），
+  benchmark = entry 日收盘。entry ≤ 发现创建日期的样本由代码强制改类
+  `backfill`，不信任调用方 kind；无法确认下一交易日或其收盘价时拒绝创建并在
+  candidate_history 留痕（`forward_rejected: ...`）后抛 `ForwardRejectedError`。
+  样本行记录 `discovery_event_id / benchmark_date / benchmark_price_source`，
+  评估回写 `bars_asof / data_version`（另保留 evaluated_at / eval_version）。
+- `evaluate_sample(pool, sample_id, bars)` 可复算：ret_tN = 入场后第 N 个交易日
+  收盘/基准−1（N=5/10/20）；max_drawdown 以基准价为初始峰值对入场后 20 日收盘
+  序列计算。成熟状态：≥20 个交易日 `mature`；不足 `immature`（可得的近端指标
+  照实填、远端留 NULL）；无价格数据 `missing` 且 missing_reason 单列。
+  **缺失一律 NULL，绝不记 0。**
+- 审计排除表 `sample_exclusions`：被裁定样本（如原样本 1）只登记排除、
+  原行不改，`forward_stats` 与 judge 判定均排除之。
+- **验证通过门禁（fix1/P0-3）**：`validation_passed` 只能由
+  `judge_validation()` 按版本化规则产生并写 `validation_decisions` 记录；
+  阈值未定版，规则注册表为空时 judge 一律 `not_evaluable`
+  （no_approved_rule）。门槛方案见 `THRESHOLD_PROPOSAL.md`（待用户确认）。
 - 预留 `delisted` 状态值但本次未实现退市检测（见剩余风险），不伪造。
 
 ### 3.5 promotion（`market_first/promotion.py`）
@@ -106,6 +126,10 @@ validation_passed → pending_approval → approved / rejected（终态）
   终态一律拒绝（留痕+抛错），decide() 内部走私有路径并同事务写 `approvals`
   （审批人、时间、对象、依据 basis、versions_json）。即：验证通过≠自动批准，
   代码上不存在绕过人工审批的路径。
+- **validation_passed 只能经验证引擎判定进入（fix1/P0-3）**：公开 transition()
+  对 validation_passed 同样一律拒绝（留痕+抛错）；唯一入口是
+  `validation.judge_validation` 判定 passed 后调用内部
+  `_apply_validation_passed`（要求当前状态为 validating）。
 
 ### 3.6 handoff（`market_first/handoff.py`）
 
@@ -122,8 +146,13 @@ validation_passed → pending_approval → approved / rejected（终态）
 
 `get_bars(symbol, start, end) -> (bars, provenance)`：优先复用生产同款
 `market_data` 包（腾讯/新浪，`get_bars_as_tuples`），失败回退只读生产 sim.db
-`market_data` 表，provenance 字符串如实标注来源。注：market_data 包自身带缓存
-（其 cache.db 位于仓库外 `~/workspace/market_data/`，是生产管线同款行为）。
+`market_data` 表，provenance 字符串如实标注来源。
+**缓存隔离（fix1/P0-4）**：调行情包恒传 `use_cache=False`，绝不读写生产共享
+`~/workspace/market_data/cache.db`（不修改行情包任何文件/默认配置）；研发自有
+缓存为 market_first 库内 `fetched_bars` + `fetched_coverage` 表，取数成功写入
+自有表、同日重跑可命中自有缓存（provenance='market_first fetched_bars
+cache'）。机构发现的 live 抓取（`engine.inst_lhb.fetch_inst_daily`）只走 HTTP
+抓龙虎榜报表，不经行情包缓存路径。
 
 ## 4. 复用与迁移清单
 

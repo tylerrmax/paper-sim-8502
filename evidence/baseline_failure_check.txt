@@ -1,0 +1,9 @@
+# 既有失败基线对照（2026-11-16）
+# 全量运行唯一失败：tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent
+# 失败内容：assert fp1["fills"]["rows"] == baseline["fills"]["rows"] → 50 == 51
+# 原因：该测试复制仓库内 db/sim.db 并与 reports 基线 JSON（按生产活库 51 笔）比对；
+#       git 提交版 sim.db 快照为 50 笔，属环境/基线口径差异，与本分支改动无关。
+# 对照方法：在 /tmp/mf-baseline-check 以纯净 1ce2370（零本分支改动）单独跑该用例：
+# 结果：FAILED（1 failed in 0.44s），与本分支全量运行中的失败逐字一致 → 既有失败，非回归。
+# 本分支全量：239 collected = 216 既有 + 23 新增；238 passed, 1 failed（即此既有失败）。
+# 基线提交自述 216 passed 系生产工作区（活库 51 笔）环境下的结果。

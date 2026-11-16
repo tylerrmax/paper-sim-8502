@@ -1,0 +1,10 @@
+# 生产基线（开工前，2026-11-16，只读采集）
+# 采集方式：git rev-parse / sha256sum / sqlite3 URI mode=ro
+master_HEAD=1ce237026c0ff7a0871f22bd2d7d4872dbc0d6a9
+sim_db_sha256=4b6e512022abe5a836b8077cbb6cad93e105afaba5ebb081b0ca41fab703ee41
+sim_db_fills_count=51
+sim_db_fills_max_id=467
+sim_db_market_data_max_date=2026-11-14
+sim_db_market_data_rows=3509
+sim_db_inst_lhb_daily_rows=890
+sim_db_inst_lhb_daily_max_date=2026-11-13

@@ -1,0 +1,118 @@
+
+====================================================================
+a. 初始化 Market-First 新库
+====================================================================
+已删除旧库：/home/hatch/workspace/l2-remediation/market-first/market_first/market_first.db
+DB 路径：/home/hatch/workspace/l2-remediation/market-first/market_first/market_first.db（与生产 sim.db 隔离）
+
+====================================================================
+b. 市场发现 InstLhbAdapter(prefer='live') 2026-11-13
+====================================================================
+WARN 123291 tencent 返回空，试下一个源
+WARN 920021 tencent 返回空，试下一个源
+WARN 301697 tencent 返回空，试下一个源
+WARN 920085 tencent 返回空，试下一个源
+WARN 920157 tencent 返回空，试下一个源
+WARN 920202 tencent 返回空，试下一个源
+WARN 127117 tencent 返回空，试下一个源
+事件数（inst_net>0）：11
+obtained_via：live
+运行说明：数据日期 2026-11-13：via=live 取得 37 行（过滤 inst_net>0 前）；live: state=normal 机构专用席位聚合 37 只（原始席位 690 条）；覆盖：A股龙虎榜当日上榜标的（机构专用席位聚合口径）；覆盖范围为当日触发龙虎榜披露的股票，不是沪深京全部上市公司，不得称全市场扫描
+覆盖声明：A股龙虎榜当日上榜标的（机构专用席位聚合口径）；覆盖范围为当日触发龙虎榜披露的股票，不是沪深京全部上市公司，不得称全市场扫描
+  002623 SZ 亚玛顿 inst_net=31318542.800000004 price_at_discovery=26.25 source=inst_lhb_live
+  000530 SZ 冰山冷热 inst_net=17355207.150000006 price_at_discovery=10.33 source=inst_lhb_live
+  601566 SH 九牧王 inst_net=13351633.52 price_at_discovery=11.6 source=inst_lhb_live
+  123291 CB 佐力转债 inst_net=13200000.0 price_at_discovery=132.0 source=inst_lhb_live
+  920021 BJ 流金科技 inst_net=9643122.49 price_at_discovery=9.45 source=inst_lhb_live
+  301697 SZ 贝特利 inst_net=7224954.870000001 price_at_discovery=29.8 source=inst_lhb_live
+  920085 BJ 森峰激光 inst_net=6856366.5600000005 price_at_discovery=31.42 source=inst_lhb_live
+  001358 SZ 兴欣新材 inst_net=5124878.0 price_at_discovery=26.64 source=inst_lhb_live
+  920157 BJ 宇特光电 inst_net=3830719.379999999 price_at_discovery=61.0 source=inst_lhb_live
+  920202 BJ 安达股份 inst_net=153027.08000000007 price_at_discovery=14.05 source=inst_lhb_live
+  127117 CB 奥士转债 inst_net=73148.73000000417 price_at_discovery=181.984 source=inst_lhb_live
+
+====================================================================
+c. 主标的选择与双来源归并（live + stored 同一标的）
+====================================================================
+选中主标的：002623 SZ 亚玛顿 inst_net=31318542.800000004
+理由：当日事件中 symbol 不在母板 17 只、market ∈ {SH, SZ}、inst_net 最大者
+ingest #1（inst_lhb_live）-> candidate_id=1 created=True，候选总数=1
+ingest #2（inst_lhb_stored）-> candidate_id=1 created=False，候选总数=1
+双来源归并证明：同一 candidate_id=1 下 events_for=2 行，来源分别为 ['inst_lhb_live', 'inst_lhb_stored']（不同来源历史并存、未覆盖）
+
+====================================================================
+d. 晋升流转 -> researching + ResearchEngine 研究
+====================================================================
+research_report id=1 bars=43 根（2026-09-01..2026-11-13，provenance=market_data package (tencent/sina)）
+  模块 trend_pattern（model_version=mf-trend-1.0）subtotal=9.0 factors={"available": true, "pattern_points": 4.0, "pattern_flags": ["channel_near_breakout"], "trend_points": 5.0, "ma20": 19.427500000000002, "ma60": null, "ma60_available": false, "close_vs_ma20_pct": 35.1177, "ret_20d": 0.5112262521588946, "ma60_note": "insufficient_bars_for_ma60"}
+  模块 inst_flow（model_version=mf-inst-1.0）subtotal=8.0 factors={"available": true, "events_count": 2, "latest_inst_net": 31318542.800000004, "total_inst_net": 62637085.60000001}
+total_score=17.0
+
+====================================================================
+e. 晋升流转 -> validating + 前向样本（forward）
+====================================================================
+基准价（发现价）=26.25（2026-11-13 当日收盘，来自 bars）
+前向样本 id=1 kind=forward entry_date=2026-11-13 benchmark=26.25
+maturity_status=immature ret_t5=None ret_t10=None ret_t20=None max_drawdown=None missing_reason=None evaluated_at=2026-11-16T07:58:49+00:00
+（未成熟如实：缺失指标为 None，不记 0；bars provenance=market_data package (tencent/sina)）
+
+====================================================================
+f. 回填样本演示（backfill，与前向严格区分）
+====================================================================
+主标的无更早机构上榜记录，回填演示缺失（不编造）：002623 在 2026-10-23 或更早无 inst_net>0 的 inst_lhb_daily 行
+改用当日另一只非母板标的 000530 冰山冷热（candidate_id=2）做回填演示：
+  回填样本 id=2 candidate_id=2 symbol=000530 kind=backfill entry_date=2026-10-21 benchmark=8.63（bars 收盘，provenance=market_data package (tencent/sina)）
+  maturity_status=immature ret_t5=-0.1332560834298957 ret_t10=0.0961761297798378 ret_t20=None max_drawdown=-0.21511017838405022 missing_reason=None
+
+====================================================================
+g. 晋升 validation_passed -> pending_approval -> 审批与交接
+====================================================================
+演示口径：前向样本尚immature，validation_passed 在此仅表示验证流程已执行并进入人工审批演示，不代表样本达到任何晋升/毕业门槛。
+未批准交接被拒（预期）：模拟交接被拒：candidate_id=1 promotion_status=pending_approval，approved 审批行=无（须先经人工 decide 批准）
+非法转移 transition(pending_approval -> approved) 被拒（预期）：ILLEGAL TRANSITION REJECTED: pending_approval -> approved 属人工审批终态，只能经 decide() 审批进入，transition() 直达被拒
+非法转移留痕：candidate_history 中 promotion_transition_attempt 共 1 条，最近一条 reason=ILLEGAL TRANSITION REJECTED: pending_approval -> approved 属人工审批终态，只能经 decide() 审批进入，transition() 直达被拒
+人工审批 decide=approved -> approval_id=1，promotion_status=approved
+模拟交接 payload：
+{
+  "date": "2026-11-16",
+  "account": null,
+  "symbol": "002623",
+  "market": "SZ",
+  "side": "BUY",
+  "intent_placeholder": true,
+  "decision": "approved",
+  "source_trace": {
+    "candidate_id": 1,
+    "discovery_event_ids": [
+      1,
+      2
+    ],
+    "research_report_ids": [
+      1
+    ],
+    "validation_sample_ids": [
+      1
+    ],
+    "approval_id": 1
+  },
+  "status": "simulated",
+  "note": "模拟交接：未写入生产 approvals/signals/trade_intents，未生成真实交易意图",
+  "handoff_id": 1
+}
+追溯链：candidate_id=1 discovery_event_ids=[1, 2] research_report_ids=[1] validation_sample_ids=[1] approval_id=1 handoff_id=1 status=simulated
+
+====================================================================
+h. 拒绝演示（另一只标的 decide=rejected）
+====================================================================
+拒绝演示标的：601566 SH 九牧王（candidate_id=3）
+decide=rejected -> approval_id=2，promotion_status=rejected
+已拒绝候选交接被拒（预期）：模拟交接被拒：candidate_id=3 promotion_status=rejected，approved 审批行=无（须先经人工 decide 批准）
+
+====================================================================
+i. 生产安全自检（生产 sim.db 只读）
+====================================================================
+生产 sim.db（mode=ro 只读）：fills=51（max_id=467） signals=22 approvals=21 trade_intents=0
+说明：本脚本对生产库仅以 sqlite3 URI mode=ro 读取，未写入生产任何表；起止不变的基线对照由交付方复测。
+新库 handoffs 共 1 行（全部 status='simulated'）：[{'id': 1, 'candidate_id': 1, 'approval_id': 1, 'status': 'simulated'}]
+
+E2E RESULT: PASS

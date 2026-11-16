@@ -1,0 +1,11 @@
+# 生产基线（交付复测，2026-11-16，只读采集，方法同开工前）
+master_HEAD=1ce237026c0ff7a0871f22bd2d7d4872dbc0d6a9
+sim_db_sha256=4b6e512022abe5a836b8077cbb6cad93e105afaba5ebb081b0ca41fab703ee41
+sim_db_fills_count=51
+sim_db_fills_max_id=467
+sim_db_market_data_max_date=2026-11-14
+sim_db_market_data_rows=3509
+sim_db_approvals_rows=21
+sim_db_signals_rows=22
+sim_db_trade_intents_rows=0
+# 结论：与 production_baseline_before.txt 逐项一致，本分支对生产零写入。

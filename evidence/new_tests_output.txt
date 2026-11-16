@@ -1,0 +1,31 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
+rootdir: /home/hatch/workspace/l2-remediation/market-first
+plugins: anyio-4.15.1
+collecting ... collected 23 items
+
+tests/test_market_first_discovery_pool.py::test_classify_market PASSED   [  4%]
+tests/test_market_first_discovery_pool.py::test_adapter_stored_filters_and_declares_coverage PASSED [  8%]
+tests/test_market_first_discovery_pool.py::test_adapter_empty_date_returns_empty PASSED [ 13%]
+tests/test_market_first_discovery_pool.py::test_pool_merge_dedup_keeps_all_sources PASSED [ 17%]
+tests/test_market_first_discovery_pool.py::test_pool_distinct_symbols_distinct_candidates PASSED [ 21%]
+tests/test_market_first_discovery_pool.py::test_pool_set_fields_whitelist_and_history PASSED [ 26%]
+tests/test_market_first_research.py::test_assert_no_instruction_keys PASSED [ 30%]
+tests/test_market_first_research.py::test_trend_module_insufficient_bars_not_zero PASSED [ 34%]
+tests/test_market_first_research.py::test_research_engine_report_breakdown_and_no_instructions PASSED [ 39%]
+tests/test_market_first_validation.py::test_evaluate_mature_exact_values PASSED [ 43%]
+tests/test_market_first_validation.py::test_evaluate_drawdown_uses_benchmark_peak PASSED [ 47%]
+tests/test_market_first_validation.py::test_evaluate_immature_partial_horizons PASSED [ 52%]
+tests/test_market_first_validation.py::test_evaluate_missing_never_zero PASSED [ 56%]
+tests/test_market_first_validation.py::test_duplicate_sample_rejected PASSED [ 60%]
+tests/test_market_first_validation.py::test_create_sample_invalid_kind PASSED [ 65%]
+tests/test_market_first_promotion_handoff.py::test_legal_walk_and_approval_then_simulated_handoff PASSED [ 69%]
+tests/test_market_first_promotion_handoff.py::test_validation_passed_is_not_auto_approval PASSED [ 73%]
+tests/test_market_first_promotion_handoff.py::test_unapproved_handoff_rejected PASSED [ 78%]
+tests/test_market_first_promotion_handoff.py::test_illegal_transition_raises_and_leaves_trace PASSED [ 82%]
+tests/test_market_first_promotion_handoff.py::test_transition_cannot_bypass_decide PASSED [ 86%]
+tests/test_market_first_promotion_handoff.py::test_decide_requires_pending_approval PASSED [ 91%]
+tests/test_market_first_promotion_handoff.py::test_rejected_candidate_cannot_handoff PASSED [ 95%]
+tests/test_market_first_promotion_handoff.py::test_terminal_states_have_no_outgoing_transition PASSED [100%]
+
+============================== 23 passed in 0.43s ==============================

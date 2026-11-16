@@ -1,0 +1,7 @@
+candidate_id=1 raw=2 kept=[1] dropped=[2] independent_total_inst_net=31318542.800000004
+  report total_inst_net=31318542.800000004 events_count=1 MATCH=True
+candidate_id=2 raw=1 kept=[3] dropped=[] independent_total_inst_net=17355207.150000006
+  (no research report for this candidate; skip compare)
+candidate_id=3 raw=1 kept=[4] dropped=[] independent_total_inst_net=13351633.52
+  (no research report for this candidate; skip compare)
+RECOMPUTE RESULT: MATCH

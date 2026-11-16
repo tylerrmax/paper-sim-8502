@@ -1,0 +1,18 @@
+CREATE TABLE validation_samples (
+    id INTEGER PRIMARY KEY,
+    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
+    source_id TEXT,
+    kind TEXT CHECK (kind IN ('forward', 'backfill')),
+    entry_date TEXT,
+    benchmark_price REAL,
+    ret_t5 REAL,
+    ret_t10 REAL,
+    ret_t20 REAL,
+    max_drawdown REAL,
+    maturity_status TEXT DEFAULT 'immature',
+    missing_reason TEXT,
+    evaluated_at TEXT,
+    eval_version TEXT,
+    created_at TEXT,
+    UNIQUE(candidate_id, source_id, entry_date)
+)

@@ -1,0 +1,155 @@
+"""Promotion & Approval：晋升状态机与人工审批。
+
+状态机由显式转移表 TRANSITIONS 强制流转，任何表外转移都会
+先在 candidate_history 留痕（field='promotion_transition_attempt'）
+再抛 IllegalTransitionError，绝不静默放行。
+
+验证通过 != 自动批准：进入 approved 的唯一入口是 decide()
+（人工审批，approver/basis/versions 全量留痕于 approvals 表）。
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime
+
+# 全部状态（顺序即生命周期顺序）
+STATES = (
+    "discovered",
+    "pending_research",
+    "researching",
+    "validating",
+    "validation_passed",
+    "validation_failed",
+    "pending_approval",
+    "approved",
+    "rejected",
+)
+
+# 显式转移表：当前状态 -> 允许的下一状态集合（终态为空集）
+TRANSITIONS = {
+    "discovered": frozenset({"pending_research"}),
+    "pending_research": frozenset({"researching"}),
+    "researching": frozenset({"validating"}),
+    "validating": frozenset({"validation_passed", "validation_failed"}),
+    "validation_failed": frozenset({"pending_research"}),
+    "validation_passed": frozenset({"pending_approval"}),
+    "pending_approval": frozenset({"approved", "rejected"}),
+    "approved": frozenset(),
+    "rejected": frozenset(),
+}
+
+DEFAULT_VERSIONS = {"promotion_engine": "mf-promo-1.0"}
+
+
+class IllegalTransitionError(Exception):
+    """非法状态转移（已在 candidate_history 留痕后抛出）。"""
+
+
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _reject(pool, cid, current, to_state, actor, detail):
+    """非法转移统一路径：先留痕，再抛错。"""
+    reason = "ILLEGAL TRANSITION REJECTED: %s" % detail
+    pool.record_history(
+        cid,
+        field="promotion_transition_attempt",
+        old=current,
+        new=to_state,
+        actor=actor,
+        reason=reason,
+    )
+    raise IllegalTransitionError(reason)
+
+
+# 审批终态：转移表上 pending_approval 可达，但只能经 decide()
+# 人工审批进入；公开 transition() 直达一律按非法转移处理。
+DECISION_STATES = frozenset({"approved", "rejected"})
+
+
+def _apply_transition(pool, cid, current, to_state, actor, reason=""):
+    """表内流转的实际执行（调用方已完成合法性判定）。"""
+    pool.set_fields(
+        cid,
+        actor=actor,
+        reason=reason if reason else None,
+        promotion_status=to_state,
+    )
+    return to_state
+
+
+def transition(pool, cid, to_state, actor, reason=""):
+    """按转移表流转 promotion_status。
+
+    合法：经 pool.set_fields 写字段（逐字段记 history）。
+    非法：先 record_history 留痕，再抛 IllegalTransitionError。
+    approved / rejected 虽在转移表中（pending_approval 可达），
+    但只能经 decide() 进入，transition() 直达按非法处理——
+    验证通过 != 自动批准，除 decide 外没有任何函数能进入 approved。
+    返回流转后的状态字符串。
+    """
+    cand = pool.get_by_id(cid)
+    if cand is None:
+        raise ValueError("候选不存在：id=%s" % (cid,))
+    current = cand.get("promotion_status")
+    if to_state in DECISION_STATES:
+        _reject(
+            pool, cid, current, to_state, actor,
+            "%s -> %s 属人工审批终态，只能经 decide() 审批进入，"
+            "transition() 直达被拒" % (current, to_state),
+        )
+    allowed = TRANSITIONS.get(current, frozenset())
+    if to_state not in allowed:
+        _reject(
+            pool, cid, current, to_state, actor,
+            "%s -> %s 不在允许转移内（当前状态允许：%s）"
+            % (current, to_state,
+               ",".join(sorted(allowed)) if allowed else "无，终态"),
+        )
+    return _apply_transition(pool, cid, current, to_state, actor, reason)
+
+
+def decide(pool, cid, approver, decision, basis="", versions=None):
+    """人工审批：唯一能进入 approved / rejected 终态的入口。
+
+    decision 只接受 'approved' / 'rejected'；当前状态必须为
+    pending_approval，否则走非法路径（留痕 + IllegalTransitionError）。
+    同一事务内写 approvals 一行并流转到对应终态，返回 approval_id。
+    """
+    if decision not in ("approved", "rejected"):
+        raise ValueError(
+            "decision 只接受 'approved' / 'rejected'，收到：%r" % (decision,))
+    cand = pool.get_by_id(cid)
+    if cand is None:
+        raise ValueError("候选不存在：id=%s" % (cid,))
+    current = cand.get("promotion_status")
+    if current != "pending_approval":
+        _reject(
+            pool, cid, current, decision, approver,
+            "decide(decision=%s) 要求当前状态为 pending_approval，"
+            "实际为 %s" % (decision, current),
+        )
+    versions_payload = versions if versions is not None else dict(DEFAULT_VERSIONS)
+    conn = pool.conn
+    try:
+        cur = conn.execute(
+            "INSERT INTO approvals (candidate_id, decision, approver,"
+            " decided_at, basis, versions_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (cid, decision, approver, _now_iso(), basis,
+             json.dumps(versions_payload, ensure_ascii=False)),
+        )
+        approval_id = cur.lastrowid
+        # 不单独 commit：与随后的状态流转同事务提交
+        # （pool.set_fields 内部 commit 一并落盘两处写入）。
+        # 审批终态只能经本函数进入，故此处走内部 _apply_transition，
+        # 不经公开 transition()（其对 approved/rejected 直达一律拒绝）。
+        _apply_transition(
+            pool, cid, current, decision, actor=approver,
+            reason="人工审批 decide=%s approver=%s approval_id=%s"
+                   % (decision, approver, approval_id),
+        )
+    except Exception:
+        conn.rollback()
+        raise
+    return approval_id

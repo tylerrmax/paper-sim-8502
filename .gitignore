@@ -29,3 +29,7 @@ risk_block_chain_head*.json
 
 # 构建标识（同步时生成，2026-10-31 整改 P2-04）：只推公开仓、不入主仓
 build_info.json
+
+# Market-First 新系统独立库（与生产 sim.db 隔离，不进 git）
+market_first/*.db
+market_first/*.db-journal

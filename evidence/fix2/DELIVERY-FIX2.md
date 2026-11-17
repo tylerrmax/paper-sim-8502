@@ -2,11 +2,12 @@
 
 - 分支：`market-first/unified-arch`（隔离 worktree，未合并、未推送、
   未部署、未启用调度、未接入生产）
-- 基线：`13ff9e5`（fix1 证据提交）；代码提交：`7e4e7e3`；证据提交：见本目录
-  所在提交。完整 diff（相对 13ff9e5）：`full_diff.patch`
-  （10 文件，+1086/−108，不含证据文件本身）；关键文件修改前后源码：
-  `src_before/`（13ff9e5 版）与 `src_after/`（7e4e7e3 版）并列存放
-  validation/research/promotion/db 四文件。
+- 基线：`13ff9e5`（fix1 证据提交）；代码提交：`7e4e7e3`；证据提交：
+  `c7a9533` + `82e6898`。完整 diff（相对 13ff9e5）：`full_diff.patch`
+  （覆盖代码/测试/文档/证据全部变更，仅不含 patch 文件自身；其中
+  代码+测试+ARCHITECTURE 部分为 10 文件、+1086/−108）；关键文件
+  修改前后源码：`src_before/`（13ff9e5 版）与 `src_after/`
+  （7e4e7e3 版）并列存放 validation/research/promotion/db 四文件。
 - 本文件为开发方交付与自检记录，**不构成独立验收结论**；结论词仅用
   「已验证通过 / 存在故障 / 缺乏证据 / 不适用」。
 

@@ -1,0 +1,30 @@
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 002623 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 000530 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 601566 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 123291 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 920021 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 301697 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 920085 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 001358 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 920157 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 920202 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 127117 数据陈旧: 最新 2026-11-13（距今4天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:31: DataQualityWarning: 002623 日期断层: 2026-09-30 → 2026-10-08（间隔8天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:31: DataQualityWarning: 002623 日期断层: 2026-11-02 → 2026-11-10（间隔8天）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:75: DataQualityWarning: 002623 量能突变: 2026-11-12 量1514500 → 2026-11-13 量46637300（30.8 倍，疑单位混杂）
+  warnings.warn(
+/home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 000530 数据陈旧: 最新 2026-10-21（距今27天）
+  warnings.warn(

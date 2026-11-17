@@ -45,6 +45,4422 @@ index 304c170..769a302 100644
  - 预留 `delisted` 状态值但本次未实现退市检测（见剩余风险），不伪造。
  
  ### 3.5 promotion（`market_first/promotion.py`）
+diff --git a/evidence/fix2/DELIVERY-FIX2.md b/evidence/fix2/DELIVERY-FIX2.md
+new file mode 100644
+index 0000000..ae2c50b
+--- /dev/null
++++ b/evidence/fix2/DELIVERY-FIX2.md
+@@ -0,0 +1,225 @@
++# Market-First fix2 交付：fix1 独立验收前补正（三项）
++
++- 分支：`market-first/unified-arch`（隔离 worktree，未合并、未推送、
++  未部署、未启用调度、未接入生产）
++- 基线：`13ff9e5`（fix1 证据提交）；代码提交：`7e4e7e3`；证据提交：见本目录
++  所在提交。完整 diff（相对 13ff9e5）：`full_diff.patch`
++  （10 文件，+1086/−108，不含证据文件本身）；关键文件修改前后源码：
++  `src_before/`（13ff9e5 版）与 `src_after/`（7e4e7e3 版）并列存放
++  validation/research/promotion/db 四文件。
++- 本文件为开发方交付与自检记录，**不构成独立验收结论**；结论词仅用
++  「已验证通过 / 存在故障 / 缺乏证据 / 不适用」。
++
++---
++
++## 补正 1：Forward benchmark 收盘完整性确认
++
++- **① 检查对象**：`validation.create_sample` 的 forward/backfill 两条
++  建样路径、`evaluate_sample` 的 benchmark 使用、样本 1 与 exclusions
++  记录的迁移安全性。
++- **② 实际证据**：
++  - 新增唯一判定入口 `bar_close_confirmed(bar_date, fetched_at,
++    provenance=None, market=None)`（validation.py）：bar 日期严格早于
++    取数上海日期 → 确认；同日 → 取数时刻 ≥ 收盘确认时刻（常量
++    `CLOSE_CONFIRM_TIME`：SH/SZ/BJ/CB 15:30 = 15:00 收盘 + 30 分钟
++    缓冲，HK 16:30）且 provenance 无 intraday 标记才确认；未来日 →
++    不确认。检视 `~/workspace/market_data` 包：`service.py` 返回纯
++    OHLCV Bar 元组、`quality.py` 仅有陈旧/量能告警，**无 bar 完整性
++    或 intraday 标记**，故按指令以时间规则为准（依据边界如实记录）。
++  - forward 推导出的 entry bar 未确认 → `_reject_forward` 留痕拒绝，
++    reason 含 `benchmark_close_unconfirmed`；backfill 同日盘中 entry
++    同样留痕拒绝（`ForwardRejectedError` 改为 `ValueError` 子类兼容
++    既有捕获）。
++  - benchmark 不可变：`evaluate_sample` 发现 entry 日收盘与已记
++    benchmark 不一致时，只写样本行 `benchmark_revision_json`
++    （COALESCE 只保留首次：旧值/新值/发现时间）+ candidate_history
++    留痕，评估继续用原 benchmark（迁移新增列
++    `benchmark_revision_json TEXT`，幂等 ALTER）。
++  - 新增测试 7 项（tests/test_market_first_benchmark_integrity.py）：
++    判定单元（历史日/未来日/盘中 10:30/15:30 整/收盘后 16:00/
++    intraday 否决/港股 16:30）、盘中不完整 bar 拒绝+留痕、收盘后
++    当日 bar 通过、历史补取通过、backfill 当日盘中拒绝、行情源
++    修订记录不覆盖、对抗测试（见验收重点专节 1）。全过。
++  - 样本 1 迁移前后对比（canonical_migration_and_registry_proof.txt）：
++    迁移前快照 sample1_before.json 与迁移后原列逐字段全等 = True，
++    exclusions 行全等 = True，新列为 NULL，未被触碰。
++  - 独立核对（check_benchmark_independent.py，不依赖 create_sample，
++    时间规则在脚本内独立重写）：规范库 2 样本 benchmark 与 entry 日
++    收盘逐一相等（002623 26.25、000530 8.63）、created_at 时刻确认
++    成立 → OVERALL OK；e2e 演示库同样 OK。
++  - e2e 实跑 exit 0 / E2E RESULT: PASS（e2e_run.log）：judge 停在
++    validating（not_evaluable/NO_RULE），未产生 validation_passed。
++- **③ 复核方法**：新增单元/集成测试 + 独立脚本直读库复算 + 迁移前后
++  dump 程序化对比 + grep 写入路径枚举（验收重点专节 1）。
++- **④ 结论**：已验证通过（开发方自检，待独立验收）。
++- **⑤ 剩余风险**：收盘确认以时间规则为准，源端在 15:30 后再修订
++  当日 bar 的情形规则本身无法感知，靠 benchmark_revision_detected
++  事后留痕兜底；provenance 的 intraday 否决为预留项（现行 provenance
++  串均不含该标记，实际判定只走时间规则）。
++
++## 补正 2：去重退化改 uncertain 保留（三态 mf-dedup-2.0）
++
++- **① 检查对象**：`research.dedup_inst_events` 与 `InstFlowModule`
++  的聚合与研究报告 evidence 披露。
++- **② 实际证据**：
++  - `dedup_inst_events` 改三态并返回 `(kept, dropped, uncertain_ids)`，
++    规则版本 `DEDUP_VERSION = "mf-dedup-2.0"`：有 trade_id 且键
++    (market, symbol, data_date, trade_id) 相同 → confirmed 只计一次；
++    任一侧缺 trade_id → 一律不自动合并，全元组相同（或与有 id 事件
++    全元组相同）标 uncertain、全部保留计入；其余 independent。
++  - 研究报告 evidence 完整披露：`raw_event_ids`、
++    `confirmed_duplicate_dropped_ids`（另保留 `dropped_duplicate_ids`
++    别名）、`uncertain_event_ids`、`uncertain_events`（逐条
++    {id, inst_net, dedup_status}）、`uncertain_inst_net_total`、
++    `uncertain_note`（明示「身份不确定、未合并」）、`dedup_key`、
++    `dedup_version`；factors 增 `uncertain_events_count`。
++  - 含 uncertain 事件的研究报告 JSON 原文：
++    `audit_focus_uncertain_report.json`（构造场景经真实 ResearchEngine
++    产出：confirmed 对只计一次 100 + uncertain 对双计 40×2，
++    total_inst_net = 180，uncertain_inst_net_total = 80）。
++  - 独立复算（recompute_dedup_v2.py，不导入 research，独立实现三态
++    口径）：演示库五项逐项 MATCH（kept/dropped/uncertain/total/
++    version）；e2e 库候选 1（002623 真实双路事件）五项 MATCH
++    （total 31,318,542.80 只计一次），候选 2/3 无研究报告记 SKIP。
++  - 测试：fix1 的缺 id 用例按新口径重写（见「既有测试改动明示」3），
++    新增三态直测 1 项；fix1 的 confirmed 用例（同 trade_id 只计
++    一次、不同 trade_id/不同日期分别保留、池内原始事件不动）
++    原样通过。
++- **③ 复核方法**：独立复算脚本双库对照 + 报告 JSON 原文逐字核查 +
++  测试断言报告 evidence 字段完整。
++- **④ 结论**：已验证通过（开发方自检，待独立验收）。
++- **⑤ 剩余风险**：uncertain 按「全部计入」是补正指令定的保守口径：
++  若两条实为同一事件，净额将高估——报告已单列 uncertain 影响额
++  （uncertain_inst_net_total）供人工判断，未静默处理；有 id 与无 id
++  事件全元组相同时无 id 侧标 uncertain（有 id 侧照常计入），此为
++  口径选择，已写入 DEDUP_KEY_SPEC。
++
++## 补正 3：RULE_REGISTRY 注册保护
++
++- **① 检查对象**：`validation.judge_validation` 的规则来源、
++  `rule_registry` 落库表、`promotion._apply_validation_passed`
++  受控流转、历史判定留痕。
++- **② 实际证据**：
++  - 新增落库表 `rule_registry`（rule_id, version, status ∈
++    {draft, approved, disabled, test}, approved_by, approved_at,
++    params_json, created_at，PK (rule_id, version)），`register_rule /
++    set_rule_status / get_registered_rule` 三个治理函数；approved
++    登记强制要求 approved_by。
++  - judge 签名改为 `judge_validation(pool, candidate_id, rule_id=None,
++    rule_version=None, actor=...)`，**rule 对象直传参数已删除**
++    （传入触发 TypeError）；判定链：未登记/版本不符 →
++    `rule_not_registered`；status≠approved → `rule_not_approved`；
++    无代码实现 → `rule_implementation_missing`；均记
++    not_evaluable 并写 validation_decisions 留痕。硬门槛（无
++    forward/未成熟/NULL）仍在数值判定之前。
++  - `_apply_validation_passed` 加固：必须携带 decision_id 并在函数内
++    核验该 validation_decisions 记录真实存在、属该候选且
++    decision='passed'，核验不过先留痕再抛 IllegalTransitionError。
++  - 新增测试 10 项（tests/test_market_first_rule_registry.py）：未登记
++    规则、伪造版本、直传对象 TypeError、缺 version、draft/test 状态
++    拒绝、测试库 approved 正常通过、停用后 not_evaluable 且历史
++    passed 行逐字段不变、版本变更 v1→v2 旧记录仍标 v1、受控流转
++    直调（decision_id=None 与伪造 id）双路被拒+留痕、新库注册表
++    为空。全过。
++  - **规范库查询证明**（canonical_migration_and_registry_proof.txt）：
++    `rule_registry` 总行数 0、approved 行数 0——本轮未登记任何
++    approved 规则；规范库 validation_decisions 仍 0 行，未产生
++    validation_passed。
++- **③ 复核方法**：绕过测试组 + grep 入口枚举（验收重点专节 3）+
++  规范库实查。
++- **④ 结论**：已验证通过（开发方自检，待独立验收）。
++- **⑤ 剩余风险**：`RULE_IMPLEMENTATIONS` 为进程内字典，与落库表
++  是双轨（登记 approved 但无实现时 judge 安全地返回
++  not_evaluable）；规则登记的治理纪律（谁可登记 approved）靠流程
++  约束而非代码权限，本轮按指令以「规范库零 approved 行」实证
++  收口。THRESHOLD_PROPOSAL 三案仍待用户确认，未确认前正式判定
++  恒 not_evaluable。
++
++---
++
++## 验收重点专节（三条审查口径逐条对应）
++
++1. **Benchmark 真不可变**：证据 `audit_focus_benchmark_writes.txt`
++   ——grep 枚举证明 benchmark_price 的写入只有 create_sample 的
++   INSERT 一处（validation.py:378-382）；唯一 UPDATE 语句的 SET
++   列表不含 benchmark_price；evaluate_sample 只读；重复 create
++   抛 DuplicateSampleError；迁移仅 ALTER ADD COLUMN；judge 不写
++   validation_samples。对抗测试
++   `test_benchmark_adversarial_immutable`：建样后以修订 bar 评估 +
++   同键重复创建 + judge 三路施压，benchmark_price 与建样值全等。
++2. **uncertain 报告完整披露**：证据 `audit_focus_uncertain_report.json`
++   ——真实 ResearchEngine 产出的研究报告原文，evidence.dedup 内可
++   直接读到 uncertain_event_ids=[3,4]、逐条 inst_net=40.0、
++   uncertain_inst_net_total=80.0、「身份不确定、未合并」明示说明，
++   及 confirmed dropped=[2]、total=180 的完整勾稽；测试
++   `test_missing_trade_id_uncertain_kept_and_counted` 对报告
++   evidence 的 uncertain 字段完整性逐项断言。
++3. **RULE_REGISTRY 绕过面枚举**：证据 `audit_focus_judge_entries.txt`
++   ——grep 枚举证明 validation_decisions 的 INSERT 仅 judge 一处
++   （validation.py:830），进入 validation_passed 的唯一链为
++   judge→_apply_validation_passed（唯一生产调用点
++   validation.py:849）；受控流转已加 decision_id 核验，直调被拒
++   并留痕；旧 rule= 直传仅剩一处负测试（断言 TypeError）；测试
++   注册域（pytest tmp 库 + 进程内实现字典）与正式注册域
++   （规范库落库表，实测 0 行）隔离方式与绕过测试逐条对应表均在
++   该文件内。
++
++## 既有测试改动明示（按新规则更新路径，断言未弱化）
++
++1. `tests/test_market_first_validation_gate.py`：新增
++   `_register_test_rule/_judge_with_test_rule` 辅助（测试库内登记
++   approved 行 + 代码侧登记实现），4 处 judge 调用由
++   `rule=_Rule()` 直传改注册表路径；全部原断言逐字保留（含
++   `rule_version == "test-rule-0"`、basis 关键词、状态断言）。
++2. `tests/test_market_first_promotion_handoff.py`：`_judge_pass` 同改
++   注册表路径；`create_sample` 显式传
++   `fetched_at="2026-11-17T16:00:00+08:00"`——该用例为模拟时钟
++   （事件 2026-11-16 发现、forward entry 推导为 2026-11-17），
++   fix2-1 完整性规则要求取数时刻与样本时间线一致，此为显式化
++   模拟取数时刻，非放宽规则；原断言保留。
++3. `tests/test_market_first_inst_dedup.py`：
++   `test_missing_trade_id_falls_back_to_full_tuple` 按补正 2 新口径
++   重写为 `test_missing_trade_id_uncertain_kept_and_counted`——
++   预期由「去重为 2 条、净额 999、dropped 1 条」改为「3 条全
++   保留、净额 1099（100+100+899）、confirmed dropped 0 条、
++   uncertain 2 条」，并新增报告披露字段断言。此为指令口径变更
++   （禁止缺 id 自动合并），非弱化；同文件其余 fix1 用例未改。
++4. 其余既有测试（forward_time 8、validation round-1、
++   discovery_pool、research、cache_isolation 等）未改动、原样通过。
++
++## 测试与基线数字（原始日志见同目录）
++
++- market_first 专项：**61 passed**（new_tests_output.txt；fix1 时
++  43 项，本轮新增 18：benchmark_integrity 7 + rule_registry 10 +
++  dedup 三态直测 1，另重写 1）。
++- 全量 pytest（门禁口径五 ignore）：**277 collected，276 passed，
++  1 failed，263.24s**（full_pytest_output.txt）。唯一失败
++  `test_e2e_batch2.py::test_ledger_fingerprint_idempotent` 为既有
++  基线失败：纯净 1ce2370 临时 worktree 复跑同失败
++  （baseline_failure_rerun.txt，0.76s 单测复现），与本批无关。
++- e2e：exit 0，E2E RESULT: PASS（e2e_run.log / e2e_run.stderr.log）。
++- 生产与缓存前后对照（baseline_start.txt / baseline_end.txt /
++  cache_window_before.txt / cache_window_after.txt）：
++  - 生产 master HEAD：`1ce2370` → `1ce2370`（未变）；
++  - 生产 sim.db sha256：`e1646ee9…` → `e1646ee9…`（未变），
++    fills 51 / max_id 467（未变）；
++  - 生产 cache.db sha256（受控窗口：专项测试正式跑、e2e、独立
++    脚本与全量 pytest 均在窗口内）：`5b10f251…` → `5b10f251…`
++    （未变；窗口起点值与 fix1 的 c2f718aa 不同，系生产自身夜间
++    任务在两批之间写入，隔离口径为受控窗口前后对照）。
++- 规范库：新增 rule_registry 表（0 行）+ benchmark_revision_json
++  列（样本行均为 NULL）；样本 1 与 exclusions 原样未动（程序化
++  对比 = True）。
++
++## 未完成 / 风险项汇总
++
++- 数值门槛仍未定版：THRESHOLD_PROPOSAL 三案待用户确认；未确认前
++  judge 对任何候选恒 not_evaluable，系统不产生 validation_passed
++  （本轮实证：规范库 decisions 0 行、e2e 停在 validating）。
++- Promotion 存储层下沉保护（pool.set_fields 字段级封锁 + DB 层
++  约束）与 handoff 的 BUY placeholder 改名，按 2026-11-16 独立
++  复核裁定属**下一批必要加固**，本轮按指令未扩围。
++- 全量 pytest 263.24s 接近 300s 门禁上限（既有观察项，本批未
++  调阈值、未降标准）；后续若继续增长需另行处置。
++- 本轮全部工作仅在隔离分支 `market-first/unified-arch`，停等
++  独立审计；未合并、未推送、未部署、未启用调度。
+diff --git a/evidence/fix2/audit_focus_benchmark_writes.txt b/evidence/fix2/audit_focus_benchmark_writes.txt
+new file mode 100644
+index 0000000..472a7b7
+--- /dev/null
++++ b/evidence/fix2/audit_focus_benchmark_writes.txt
+@@ -0,0 +1,68 @@
++=== audit_focus_benchmark_writes (fix2 验收重点 1) ===
++生成: 2026-11-17T02:46:32+00:00  分支 HEAD: 7e4e7e3
++
++--- [1] grep -n 'benchmark_price' market_first/*.py（全部出现位置）---
++market_first/db.py:73:    benchmark_price REAL,
++market_first/db.py:86:    benchmark_price_source TEXT,
++market_first/db.py:189:    "benchmark_price_source": "TEXT",
++market_first/run_e2e.py:111:        entry_date=entry_date, benchmark_price=bench, kind="backfill")
++market_first/run_e2e.py:281:        benchmark_price=main_event.price_at_discovery,
++market_first/run_e2e.py:288:             forced["benchmark_price"], forced["benchmark_date"]))
++market_first/validation.py:11:  after[N-1] 收盘 / benchmark_price - 1（N=5/10/20，数据可得才填）；
++market_first/validation.py:12:  max_drawdown 以 benchmark_price 为初始峰值，对 after[:20] 收盘
++market_first/validation.py:24:  entry_date，benchmark_price_source 记录价格来源。
++market_first/validation.py:54:  的 entry 日收盘与已记录 benchmark_price 不一致（行情源
++market_first/validation.py:273:                  benchmark_price=None, kind="backfill",
++market_first/validation.py:275:                  benchmark_price_source=None, data_version=None,
++market_first/validation.py:284:    - kind='backfill' 必须显式给 entry_date 与 benchmark_price。
++market_first/validation.py:312:        bench_source = benchmark_price_source
++market_first/validation.py:351:            if req_entry is None or benchmark_price is None:
++market_first/validation.py:354:                    "benchmark_price")
++market_first/validation.py:356:            final_bench = float(benchmark_price)
++market_first/validation.py:380:                " benchmark_price, maturity_status, created_at, "
++market_first/validation.py:382:                " benchmark_price_source, data_version) "
++market_first/validation.py:427:    benchmark = float(sample["benchmark_price"])
++
++--- [2] grep -n 'UPDATE validation_samples' market_first/*.py（全部 UPDATE 语句）---
++market_first/validation.py:491:            "UPDATE validation_samples SET ret_t5 = ?, ret_t10 = ?, "
++
++--- [3] grep -n 'INSERT INTO validation_samples' market_first/*.py ---
++market_first/validation.py:378:                "INSERT INTO validation_samples "
++
++--- [4] grep -n 'benchmark_revision' market_first/*.py ---
++market_first/db.py:88:    benchmark_revision_json TEXT,
++market_first/db.py:260:    "benchmark_revision_json": "TEXT",
++market_first/db.py:279:    """幂等补齐 fix2 结构：benchmark_revision_json 列 +
++market_first/validation.py:56:  benchmark_revision_json（旧值/新值/发现时间），每次发现
++market_first/validation.py:451:            sample["candidate_id"], field="benchmark_revision",
++market_first/validation.py:454:            reason="benchmark_revision_detected: entry=%s "
++market_first/validation.py:495:            "benchmark_revision_json = COALESCE("
++market_first/validation.py:496:            "benchmark_revision_json, ?) "
++
++--- [5] 写入路径枚举结论（人工核对上表）---
++全部能写 validation_samples.benchmark_price 的位置：仅 1 处
++  - validation.py:378-382 create_sample 的 INSERT（建样时一次写入）。
++其余出现位置均非写入：
++  - db.py:73/86/189 列定义与 fix1 迁移列清单（schema，无值写入）；
++  - validation.py:427 evaluate_sample 只读 sample["benchmark_price"]；
++  - validation.py:491 起的唯一 UPDATE 语句 SET 列表为
++    ret_t5/ret_t10/ret_t20/max_drawdown/maturity_status/
++    missing_reason/evaluated_at/eval_version/bars_asof/
++    data_version/benchmark_revision_json —— 不含 benchmark_price；
++  - run_e2e.py:111/281 为演示脚本调用 create_sample 的入参；
++  - judge_validation 全文无 validation_samples 的 UPDATE/INSERT
++    （只写 validation_decisions，见 audit_focus_judge_entries.txt）。
++路径逐项核对：
++  - evaluate_sample：只读 benchmark；发现 entry 日收盘被修订时
++    写 benchmark_revision_json（COALESCE 只保留首次）+
++    candidate_history，不改 benchmark_price。
++  - 重复 create_sample：UNIQUE(candidate_id, source_id,
++    entry_date) 冲突抛 DuplicateSampleError，不覆盖既有行。
++  - schema 迁移（ensure_fix1/fix2_schema）：仅 ALTER ADD COLUMN，
++    无 UPDATE；样本 1 迁移前后 dump 对比见
++    canonical_migration_and_registry_proof.txt（原列全等）。
++  - judge_validation：不写 validation_samples 任何列。
++对抗测试：tests/test_market_first_benchmark_integrity.py::
++  test_benchmark_adversarial_immutable —— 建样后依次施压
++  (1) 修订 bar 评估 (2) 同键重复创建 (3) judge 判定，三步后
++  benchmark_price 与建样值全等，断言通过（见 new_tests_output.txt）。
+diff --git a/evidence/fix2/audit_focus_judge_entries.txt b/evidence/fix2/audit_focus_judge_entries.txt
+new file mode 100644
+index 0000000..80dab88
+--- /dev/null
++++ b/evidence/fix2/audit_focus_judge_entries.txt
+@@ -0,0 +1,89 @@
++=== audit_focus_judge_entries (fix2 验收重点 3) ===
++生成: 2026-11-17T02:46:45+00:00  分支 HEAD: 7e4e7e3
++
++--- [1] grep -n 'validation_decisions' market_first/*.py（全部出现）---
++market_first/db.py:114:CREATE TABLE IF NOT EXISTS validation_decisions (
++market_first/db.py:204:CREATE TABLE IF NOT EXISTS validation_decisions (
++market_first/promotion.py:132:    'passed' 的 validation_decisions 记录；核验不过先在
++market_first/promotion.py:145:            "SELECT candidate_id, decision FROM validation_decisions"
++market_first/promotion.py:154:            "validation_decisions passed 记录，绕过 "
++market_first/validation.py:33:按版本化规则产生并留 validation_decisions 记录；阈值未经用户
++market_first/validation.py:683:    只影响之后的判定；既有 validation_decisions 记录（含其
++market_first/validation.py:723:    validation_decisions 一行，返回该行 dict。
++market_first/validation.py:830:            "INSERT INTO validation_decisions "
++market_first/validation.py:840:            "SELECT * FROM validation_decisions WHERE id = ?",
++
++--- [2] grep -n '_apply_validation_passed' market_first/*.py tests/*.py ---
++market_first/promotion.py:125:def _apply_validation_passed(pool, cid, actor, reason="",
++market_first/validation.py:849:        promotion._apply_validation_passed(
++tests/test_market_first_rule_registry.py:213:def test_apply_validation_passed_direct_call_rejected(tmp_path):
++tests/test_market_first_rule_registry.py:218:        promotion._apply_validation_passed(
++tests/test_market_first_rule_registry.py:222:        promotion._apply_validation_passed(
++
++--- [3] grep -n 'validation_passed' market_first/promotion.py market_first/validation.py ---
++market_first/promotion.py:21:    "validation_passed",
++market_first/promotion.py:33:    "validating": frozenset({"validation_passed", "validation_failed"}),
++market_first/promotion.py:35:    "validation_passed": frozenset({"pending_approval"}),
++market_first/promotion.py:73:VALIDATION_GATE_STATES = frozenset({"validation_passed"})
++market_first/promotion.py:125:def _apply_validation_passed(pool, cid, actor, reason="",
++market_first/promotion.py:127:    """内部受控入口：validating -> validation_passed。
++market_first/promotion.py:136:    validation_passed 直达一律拒绝）。
++market_first/promotion.py:152:            pool, cid, current, "validation_passed", actor,
++market_first/promotion.py:158:            "validation_passed 只能从 validating 经 judge_validation "
++market_first/promotion.py:160:    return _apply_transition(pool, cid, current, "validation_passed",
++market_first/validation.py:32:验证通过门禁（P0-3）：validation_passed 只能由 judge_validation
++market_first/validation.py:35:系统不得产生 validation_passed。未成熟样本、指标 NULL、仅有
++market_first/validation.py:600:# 验证通过判定（P0-3 门禁）：validation_passed 的唯一产生路径
++market_first/validation.py:737:      本次判定记录 id 供其核验）流转到 validation_passed。
++market_first/validation.py:774:                     "结果，不得产生 validation_passed")
++market_first/validation.py:849:        promotion._apply_validation_passed(
++
++--- [4] grep -n 'rule=' tests 与 market_first（旧直传参数残留检查）---
++tests/test_market_first_rule_registry.py:108:        validation.judge_validation(pool, cid, rule=_Rule())
++720:def judge_validation(pool, candidate_id, rule_id=None,
++
++--- [5] 正式判定入口枚举结论（人工核对上表）---
++能写 validation_decisions 的代码路径：仅 1 处
++  - validation.py:830 judge_validation 内的 INSERT（判定留痕，
++    含 not_evaluable/not_passed/passed 三种结果）。
++  promotion.py:145 仅 SELECT 核验，不写；db.py:114/204 为表定义。
++能使候选进入 validation_passed 的代码路径：仅 1 条链
++  - judge_validation（decision='passed'）-> promotion.
++    _apply_validation_passed（promotion.py:125 定义，
++    validation.py:849 唯一生产调用点）。
++逐项核对：
++  - promotion.transition() 公开入口对 validation_passed 直达
++    拒绝并留痕（fix1 既有行为，promotion.py 状态表与
++    _reject_transition 实现）；decide() 只处理审批态，不写
++    validation_decisions、不进 validation_passed。
++  - _apply_validation_passed 虽为模块级函数可被 import，但
++    fix2-3 起必须携带 decision_id 且函数内 SELECT 核验该
++    判定记录真实存在、属于该候选、decision='passed'；核验
++    不过先写 candidate_history 留痕再抛 IllegalTransitionError
++    ——validation 之外模块直接调用无法完成流转（对抗测试
++    test_apply_validation_passed_direct_call_rejected 覆盖
++    decision_id=None 与伪造 id=99999 两路，均被拒且留痕 2 条）。
++  - judge 旧 rule 直传参数已彻底删除：签名（validation.py:720）
++    为 judge_validation(pool, candidate_id, rule_id=None,
++    rule_version=None, actor='validation')；全文仅剩
++    test_market_first_rule_registry.py:108 一处 rule=_Rule()
++    调用，是断言 TypeError 的负测试（test_rule_object_
++    injection_closed），无任何生产/测试正路径使用直传。
++  - 测试注册域与正式注册域隔离：注册表为落库表 rule_registry
++    （按库隔离），测试只在 pytest tmp 库内登记（含一条
++    status='approved', approved_by='unit-test' 的路径验证行）；
++    代码实现注册表 RULE_IMPLEMENTATIONS 为进程内字典，测试
++    进程退出即消失。规范库 market_first.db 的 rule_registry
++    实测 0 行、approved 0 行（见
++    canonical_migration_and_registry_proof.txt）。
++绕过测试与枚举逐条对应（tests/test_market_first_rule_registry.py）：
++  - 未登记规则 -> test_unregistered_rule_rejected_and_traced
++  - 伪造版本 -> test_forged_version_rejected
++  - 规则对象直传 -> test_rule_object_injection_closed
++  - 缺 version -> test_missing_version_rejected
++  - draft/test 状态 -> test_draft_and_test_status_rules_rejected
++  - 停用规则+历史不变 -> test_disabled_rule_stops_passing_history_kept
++  - 版本变更 -> test_rule_version_change_new_decisions_use_new_version
++  - 受控流转直调 -> test_apply_validation_passed_direct_call_rejected
++  - approved 正常路径（仅测试库）-> test_approved_rule_in_test_db_can_pass
++  - 新库注册表为空 -> test_fresh_db_registry_empty
+diff --git a/evidence/fix2/audit_focus_uncertain_report.json b/evidence/fix2/audit_focus_uncertain_report.json
+new file mode 100644
+index 0000000..ec12767
+--- /dev/null
++++ b/evidence/fix2/audit_focus_uncertain_report.json
+@@ -0,0 +1,77 @@
++{
++  "scenario": "confirmed pair (trade_id=T001, live+stored) + uncertain pair (no trade_id, identical tuple, live+stored) on one candidate",
++  "expected_total_inst_net": 180.0,
++  "report_row": {
++    "id": 1,
++    "candidate_id": 1,
++    "engine_version": "mf-research-1.0",
++    "computed_at": "2026-11-17T02:45:14+00:00",
++    "total_score": 8.0,
++    "factors": {
++      "inst_flow": {
++        "factors": {
++          "available": true,
++          "events_count": 3,
++          "raw_events_count": 4,
++          "uncertain_events_count": 2,
++          "latest_inst_net": 40.0,
++          "total_inst_net": 180.0
++        },
++        "subtotal": 8.0,
++        "model_version": "mf-inst-1.0"
++      }
++    },
++    "evidence": {
++      "modules": {
++        "inst_flow": {
++          "events_count": 3,
++          "latest_discovered_at": "2026-11-16T09:05:00+08:00",
++          "latest_inst_net": 40.0,
++          "total_inst_net": 180.0,
++          "dedup": {
++            "raw_event_ids": [
++              1,
++              2,
++              3,
++              4
++            ],
++            "deduped_event_ids": [
++              1,
++              3,
++              4
++            ],
++            "confirmed_duplicate_dropped_ids": [
++              2
++            ],
++            "dropped_duplicate_ids": [
++              2
++            ],
++            "uncertain_event_ids": [
++              3,
++              4
++            ],
++            "uncertain_events": [
++              {
++                "id": 3,
++                "inst_net": 40.0,
++                "dedup_status": "uncertain"
++              },
++              {
++                "id": 4,
++                "inst_net": 40.0,
++                "dedup_status": "uncertain"
++              }
++            ],
++            "uncertain_inst_net_total": 80.0,
++            "uncertain_note": "身份不确定、未合并：以下事件缺少 trade_id 且全元组相同，无法确认是否为同一底层机构事件；按未合并处理，全部保留并计入净额（存在重复计入的可能，金额影响单列）。",
++            "dedup_key": "mf-dedup-2.0 three-state: (1) trade_id present and key (market, symbol, data_date, trade_id) equal -> confirmed duplicate, counted once; (2) trade_id missing on either side -> NEVER auto-merged: identical full tuple (market, symbol, data_date, inst_buy, inst_sell, seat_buy_records, seat_sell_records) is flagged dedup_status='uncertain', all copies kept and counted; (3) otherwise independent, kept.",
++            "dedup_version": "mf-dedup-2.0"
++          }
++        }
++      },
++      "bars_count": 0,
++      "bars_first_date": null,
++      "bars_last_date": null
++    }
++  }
++}
+\ No newline at end of file
+diff --git a/evidence/fix2/baseline_end.txt b/evidence/fix2/baseline_end.txt
+new file mode 100644
+index 0000000..1c7e238
+--- /dev/null
++++ b/evidence/fix2/baseline_end.txt
+@@ -0,0 +1,7 @@
++=== fix2 baseline END 2026-11-17T02:52:07+00:00 ===
++branch HEAD: 7e4e7e3bba1c9df528529fc3589ee3a921c7870e
++production master HEAD: 1ce237026c0ff7a0871f22bd2d7d4872dbc0d6a9
++sim.db sha256: e1646ee9f8f8405618be1873ed2edb52028b12e96d6ff5f1b713fc8676e64617
++fills count/max_id: (51, 467)
++cache.db rows check skipped (sha compared separately)
++prod cache.db sha256: 5b10f251ab9c4635fc73277a6466973f65be071da3d6b110257c94d60ea0dc28
+diff --git a/evidence/fix2/baseline_failure_rerun.txt b/evidence/fix2/baseline_failure_rerun.txt
+new file mode 100644
+index 0000000..a77a048
+--- /dev/null
++++ b/evidence/fix2/baseline_failure_rerun.txt
+@@ -0,0 +1,40 @@
++F                                                                        [100%]
++=================================== FAILURES ===================================
++______________________ test_ledger_fingerprint_idempotent ______________________
++
++tmp_path = PosixPath('/tmp/pytest-of-root/pytest-3/test_ledger_fingerprint_idempo0')
++
++    def test_ledger_fingerprint_idempotent(tmp_path):
++        """同库连跑两次（模拟重复跑批/进程重启重跑）：账本指纹不变、
++        不产生重复成交，且与改造前基线全等。"""
++        db = str(tmp_path / "prod_copy.db")
++        shutil.copy2(PROD_DB, db)
++        cfg = _load_cfg()
++        pipeline_run(db, cfg)
++        fp1 = _fingerprint(db)
++        pipeline_run(db, cfg)
++        fp2 = _fingerprint(db)
++        base = json.load(open(os.path.join(EVID, "ledger_fingerprint.json"),
++                              encoding="utf-8"))["baseline_pre_batch2"]
++        _evidence("ledger_fingerprint_idempotent", {
++            "input": "生产库副本 + 现行管线连跑两次",
++            "expected": "两次指纹相等且与改造前基线（行数/逐行哈希/Σqty/Σamount/Σpnl）全等",
++            "actual": {"after_run1": fp1, "after_run2": fp2, "baseline": base},
++            "fills": fp2["fills"]})
++        assert fp1 == fp2
++        for k in ("rows", "sha256", "sum_qty", "sum_amount", "sum_pnl"):
++>           assert fp1["fills"][k] == base["fills"][k], k
++E           AssertionError: rows
++E           assert 50 == 51
++
++tests/test_e2e_batch2.py:609: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++=========================== short test summary info ============================
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
++1 failed in 0.76s
+diff --git a/evidence/fix2/baseline_start.txt b/evidence/fix2/baseline_start.txt
+new file mode 100644
+index 0000000..51f2439
+--- /dev/null
++++ b/evidence/fix2/baseline_start.txt
+@@ -0,0 +1,7 @@
++fix2 开工基线（2026-11-17 采集）
++分支 HEAD: 13ff9e5（fix1 证据提交）
++生产 master HEAD: 1ce237026c0ff7a0871f22bd2d7d4872dbc0d6a9
++生产 sim.db sha256: e1646ee9f8f8405618be1873ed2edb52028b12e96d6ff5f1b713fc8676e64617
++生产 sim.db fills: count=51, max_id=467
++生产 cache.db sha256（窗口起点）: 5b10f251ab9c4635fc73277a6466973f65be071da3d6b110257c94d60ea0dc28
++注：cache.db 由生产自身任务持续写入，隔离口径沿用 fix1 受控窗口前后对照。
+diff --git a/evidence/fix2/benchmark_check_canonical.txt b/evidence/fix2/benchmark_check_canonical.txt
+new file mode 100644
+index 0000000..97c24b6
+--- /dev/null
++++ b/evidence/fix2/benchmark_check_canonical.txt
+@@ -0,0 +1,4 @@
++DB=market_first/market_first.db samples=2
++sample id=1 SZ 002623 kind=forward entry=2026-11-13 benchmark=26.25 close_on_entry=26.25 price_match=True confirmed_at_created=True revision=None -> OK
++sample id=2 SZ 000530 kind=backfill entry=2026-10-21 benchmark=8.63 close_on_entry=8.63 price_match=True confirmed_at_created=True revision=None -> OK
++OVERALL: OK
+diff --git a/evidence/fix2/benchmark_check_e2e.txt b/evidence/fix2/benchmark_check_e2e.txt
+new file mode 100644
+index 0000000..bcc0745
+--- /dev/null
++++ b/evidence/fix2/benchmark_check_e2e.txt
+@@ -0,0 +1,4 @@
++DB=market_first/market_first_e2e.db samples=2
++sample id=1 SZ 002623 kind=backfill entry=2026-11-13 benchmark=26.25 close_on_entry=26.25 price_match=True confirmed_at_created=True revision=None -> OK
++sample id=2 SZ 000530 kind=backfill entry=2026-10-21 benchmark=8.63 close_on_entry=8.63 price_match=True confirmed_at_created=True revision=None -> OK
++OVERALL: OK
+diff --git a/evidence/fix2/cache_window_after.txt b/evidence/fix2/cache_window_after.txt
+new file mode 100644
+index 0000000..6cb1808
+--- /dev/null
++++ b/evidence/fix2/cache_window_after.txt
+@@ -0,0 +1 @@
++5b10f251ab9c4635fc73277a6466973f65be071da3d6b110257c94d60ea0dc28  /home/hatch/workspace/market_data/cache.db
+diff --git a/evidence/fix2/cache_window_before.txt b/evidence/fix2/cache_window_before.txt
+new file mode 100644
+index 0000000..6cb1808
+--- /dev/null
++++ b/evidence/fix2/cache_window_before.txt
+@@ -0,0 +1 @@
++5b10f251ab9c4635fc73277a6466973f65be071da3d6b110257c94d60ea0dc28  /home/hatch/workspace/market_data/cache.db
+diff --git a/evidence/fix2/canonical_migration_and_registry_proof.txt b/evidence/fix2/canonical_migration_and_registry_proof.txt
+new file mode 100644
+index 0000000..146d35c
+--- /dev/null
++++ b/evidence/fix2/canonical_migration_and_registry_proof.txt
+@@ -0,0 +1,10 @@
++sample1 original columns equal to pre-migration snapshot: True
++sample1 new column benchmark_revision_json: None
++sample1 exclusion row equal to pre-migration snapshot: True
++exclusion row: {"id": 1, "sample_id": 1, "excluded_from": "forward_stats", "reason": "独立审计 2026-11-16 裁定：entry 2026-11-13 早于发现创建 2026-11-16，改类为历史回填/时间口径演示样本", "decided_by": "independent_audit_2026-11-16", "created_at": "2026-11-16T16:37:47+00:00"}
++rule_registry total rows: 0
++rule_registry approved rows: 0
++rule_registry all rows: []
++tables after migration: ['approvals', 'candidate_history', 'candidates', 'discovery_events', 'fetched_bars', 'fetched_coverage', 'handoffs', 'research_reports', 'rule_registry', 'sample_exclusions', 'validation_decisions', 'validation_samples']
++samples total: 2
++validation_decisions total: 0
+diff --git a/evidence/fix2/check_benchmark_independent.py b/evidence/fix2/check_benchmark_independent.py
+new file mode 100644
+index 0000000..42c2b82
+--- /dev/null
++++ b/evidence/fix2/check_benchmark_independent.py
+@@ -0,0 +1,83 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""Forward benchmark 独立核对（不依赖 validation.create_sample）：
++直读指定库 validation_samples 全部样本，逐一：
++1. 经 market_first.bars 取 bars（use_cache=False 研发通路），
++   核对 benchmark_price == entry 日收盘（容差 1e-9）；
++2. 以本脚本内独立重写的时间规则（不调用 bar_close_confirmed）
++   复核：以样本 created_at 为取数时刻，entry 日 bar 在该时刻
++   是否已收盘确认（历史样本应全部确认）；
++3. 打印 benchmark_revision_json 现状（应为 NULL 或含修订记录）。
++只读：样本库以 mode=ro 打开，bars 层只写研发自有 fetched_bars。
++"""
++import json
++import sqlite3
++import sys
++from datetime import datetime
++
++sys.path.insert(0, "/home/hatch/workspace/l2-remediation/market-first")
++from market_first.bars import get_bars  # noqa: E402
++
++SH = "+08:00"
++
++
++def confirmed_inline(bar_date, fetched_at, market=None):
++    """独立重写的收盘确认规则（与 fix2-1 口径一致）：
++    bar 日 < 取数日 -> True；> -> False；同日须取数时刻 >=
++    收盘确认时刻（HK 16:30，其余 15:30）。"""
++    fdt = datetime.fromisoformat(str(fetched_at))
++    fd = fdt.date().isoformat()
++    bd = str(bar_date)[:10]
++    if bd < fd:
++        return True
++    if bd > fd:
++        return False
++    cutoff = "16:30" if str(market or "").upper() == "HK" else "15:30"
++    return fdt.strftime("%H:%M") >= cutoff
++
++
++SCRATCH_BARS_DB = "/tmp/fix2_bars_cache.db"
++
++
++def main(db_path):
++    conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
++    conn.row_factory = sqlite3.Row
++    samples = conn.execute(
++        "SELECT s.*, c.market, c.symbol FROM validation_samples s"
++        " JOIN candidates c ON c.id = s.candidate_id"
++        " ORDER BY s.id").fetchall()
++    print("DB=%s samples=%d" % (db_path, len(samples)))
++    all_ok = True
++    for s in samples:
++        # bars 经研发通路现取（use_cache=False；研发缓存写
++        # /tmp 暂存库，不触碰被核对库与生产缓存）
++        rows, _prov = get_bars(s["symbol"], s["entry_date"],
++                               "2026-12-31", db_path=SCRATCH_BARS_DB)
++        close_on_entry = None
++        for b in rows:
++            if str(b[0])[:10] == s["entry_date"]:
++                close_on_entry = float(b[4])
++                break
++        price_ok = (close_on_entry is not None
++                    and abs(close_on_entry - s["benchmark_price"]) < 1e-9)
++        conf_ok = confirmed_inline(s["entry_date"], s["created_at"],
++                                   s["market"])
++        rev = s["benchmark_revision_json"] \
++            if "benchmark_revision_json" in s.keys() else "<no column>"
++        ok = price_ok and conf_ok
++        all_ok = all_ok and ok
++        print("sample id=%s %s %s kind=%s entry=%s benchmark=%s "
++              "close_on_entry=%s price_match=%s "
++              "confirmed_at_created=%s revision=%s -> %s"
++              % (s["id"], s["market"], s["symbol"], s["kind"],
++                 s["entry_date"], s["benchmark_price"], close_on_entry,
++                 price_ok, conf_ok,
++                 (rev[:60] + "...") if isinstance(rev, str) and rev
++                 else rev,
++                 "OK" if ok else "FAIL"))
++    print("OVERALL:", "OK" if all_ok else "FAIL")
++    return 0 if all_ok else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1]))
+diff --git a/evidence/fix2/full_pytest_output.txt b/evidence/fix2/full_pytest_output.txt
+new file mode 100644
+index 0000000..8896d25
+--- /dev/null
++++ b/evidence/fix2/full_pytest_output.txt
+@@ -0,0 +1,54 @@
++..........................................................F............. [ 25%]
++........................................................................ [ 51%]
++........................................................................ [ 77%]
++.............................................................            [100%]
++=================================== FAILURES ===================================
++______________________ test_ledger_fingerprint_idempotent ______________________
++
++tmp_path = PosixPath('/tmp/pytest-of-root/pytest-2/test_ledger_fingerprint_idempo0')
++
++    def test_ledger_fingerprint_idempotent(tmp_path):
++        """同库连跑两次（模拟重复跑批/进程重启重跑）：账本指纹不变、
++        不产生重复成交，且与改造前基线全等。"""
++        db = str(tmp_path / "prod_copy.db")
++        shutil.copy2(PROD_DB, db)
++        cfg = _load_cfg()
++        pipeline_run(db, cfg)
++        fp1 = _fingerprint(db)
++        pipeline_run(db, cfg)
++        fp2 = _fingerprint(db)
++        base = json.load(open(os.path.join(EVID, "ledger_fingerprint.json"),
++                              encoding="utf-8"))["baseline_pre_batch2"]
++        _evidence("ledger_fingerprint_idempotent", {
++            "input": "生产库副本 + 现行管线连跑两次",
++            "expected": "两次指纹相等且与改造前基线（行数/逐行哈希/Σqty/Σamount/Σpnl）全等",
++            "actual": {"after_run1": fp1, "after_run2": fp2, "baseline": base},
++            "fills": fp2["fills"]})
++        assert fp1 == fp2
++        for k in ("rows", "sha256", "sum_qty", "sum_amount", "sum_pnl"):
++>           assert fp1["fills"][k] == base["fills"][k], k
++E           AssertionError: rows
++E           assert 50 == 51
++
++tests/test_e2e_batch2.py:609: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++=============================== warnings summary ===============================
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=49296) is multi-threaded, use of fork() may lead to deadlocks in the child.
++    self.pid = os.fork()
++
++tests/test_market_first_cache_isolation.py::test_get_bars_never_touches_prod_shared_cache
++  /home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 002446 数据陈旧: 最新 2026-11-13（距今4天）
++    warnings.warn(
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++=========================== short test summary info ============================
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
++1 failed, 276 passed, 3 warnings in 263.24s (0:04:23)
+diff --git a/evidence/fix2/gen_uncertain_report.py b/evidence/fix2/gen_uncertain_report.py
+new file mode 100644
+index 0000000..6238187
+--- /dev/null
++++ b/evidence/fix2/gen_uncertain_report.py
+@@ -0,0 +1,82 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""fix2-2 证据生成：在独立演示库中构造同时含 confirmed 与
++uncertain 两类事件的候选，经真实 ResearchEngine 产出研究
++报告，把 research_reports 行的 factors/evidence 原文导出为
++audit_focus_uncertain_report.json 供逐字核查。
++
++场景（同一候选 002623 亚玛顿）：
++- 2026-11-13 事件对：带 trade_id=T001，live/stored 双路
++  -> confirmed duplicate，只计一次（inst_net=100）。
++- 2026-11-12 事件对：无 trade_id、全元组相同、来源路径
++  不同 -> uncertain，两条都保留计入（inst_net=40 x2）。
++期望 total_inst_net = 100 + 40 + 40 = 180。
++"""
++import json
++import os
++import sys
++
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
++
++from market_first.models import DiscoveryEvent  # noqa: E402
++from market_first.pool import CandidatePool  # noqa: E402
++from market_first.research import InstFlowModule, ResearchEngine  # noqa: E402
++
++BASE = os.path.join(os.path.dirname(__file__), "..", "..")
++DB = os.path.join(BASE, "market_first", "market_first_fix2_demo.db")
++OUT = os.path.join(os.path.dirname(__file__),
++                   "audit_focus_uncertain_report.json")
++
++if os.path.exists(DB):
++    os.remove(DB)
++pool = CandidatePool(db_path=DB)
++
++CONFIRMED = {
++    "data_date": "2026-11-13", "trade_id": "T001",
++    "inst_buy": 500.0, "inst_sell": 400.0, "inst_net": 100.0,
++    "seat_buy_records": 3, "seat_sell_records": 2,
++}
++UNCERTAIN = {
++    "data_date": "2026-11-12",
++    "inst_buy": 240.0, "inst_sell": 200.0, "inst_net": 40.0,
++    "seat_buy_records": 2, "seat_sell_records": 1,
++}
++
++cid = None
++for source, evidence, when in (
++        ("inst_lhb_live", CONFIRMED, "2026-11-13T18:01:00+08:00"),
++        ("inst_lhb_stored", CONFIRMED, "2026-11-16T09:00:00+08:00"),
++        ("inst_lhb_live", UNCERTAIN, "2026-11-12T18:01:00+08:00"),
++        ("inst_lhb_stored", UNCERTAIN, "2026-11-16T09:05:00+08:00")):
++    ev = DiscoveryEvent(
++        market="SZ", symbol="002623", name="亚玛顿",
++        source_id=source, discovered_at=when,
++        trigger_condition="inst_net>0", evidence=dict(evidence))
++    cid, _ = pool.ingest(ev)
++
++engine = ResearchEngine(pool, modules=[InstFlowModule()])
++report_id = engine.run(cid, bars=[], data_asof="2026-11-16",
++                       data_version="fix2-demo-1")
++
++row = pool.conn.execute(
++    "SELECT * FROM research_reports WHERE id = ?",
++    (report_id,)).fetchone()
++out = {
++    "scenario": ("confirmed pair (trade_id=T001, live+stored) + "
++                 "uncertain pair (no trade_id, identical tuple, "
++                 "live+stored) on one candidate"),
++    "expected_total_inst_net": 180.0,
++    "report_row": {
++        "id": row["id"], "candidate_id": row["candidate_id"],
++        "engine_version": row["engine_version"],
++        "computed_at": row["computed_at"],
++        "total_score": row["total_score"],
++        "factors": json.loads(row["factors_json"]),
++        "evidence": json.loads(row["evidence_json"]),
++    },
++}
++with open(OUT, "w", encoding="utf-8") as f:
++    json.dump(out, f, ensure_ascii=False, indent=2)
++print("wrote", OUT)
++print(json.dumps(out["report_row"]["evidence"], ensure_ascii=False,
++                 indent=2))
+diff --git a/evidence/fix2/new_tests_output.txt b/evidence/fix2/new_tests_output.txt
+new file mode 100644
+index 0000000..896aab5
+--- /dev/null
++++ b/evidence/fix2/new_tests_output.txt
+@@ -0,0 +1,75 @@
++============================= test session starts ==============================
++platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
++rootdir: /home/hatch/workspace/l2-remediation/market-first
++plugins: anyio-4.15.1
++collecting ... collected 61 items
++
++tests/test_market_first_forward_time.py::test_forward_entry_is_next_trading_day_after_close_discovery PASSED [  1%]
++tests/test_market_first_forward_time.py::test_forward_intraday_discovery_still_next_trading_day PASSED [  3%]
++tests/test_market_first_forward_time.py::test_forward_weekend_discovery_entry_monday PASSED [  4%]
++tests/test_market_first_forward_time.py::test_entry_before_discovery_forced_backfill PASSED [  6%]
++tests/test_market_first_forward_time.py::test_historical_backfill_long_gap PASSED [  8%]
++tests/test_market_first_forward_time.py::test_forward_price_missing_rejected_and_traced PASSED [  9%]
++tests/test_market_first_forward_time.py::test_forward_without_discovery_event_rejected PASSED [ 11%]
++tests/test_market_first_forward_time.py::test_excluded_sample_not_in_forward_stats_and_row_unchanged PASSED [ 13%]
++tests/test_market_first_inst_dedup.py::test_live_stored_same_event_counted_once PASSED [ 14%]
++tests/test_market_first_inst_dedup.py::test_different_dates_both_kept PASSED [ 16%]
++tests/test_market_first_inst_dedup.py::test_different_trade_id_same_day_both_kept PASSED [ 18%]
++tests/test_market_first_inst_dedup.py::test_missing_trade_id_uncertain_kept_and_counted PASSED [ 19%]
++tests/test_market_first_inst_dedup.py::test_dedup_function_three_states PASSED [ 21%]
++tests/test_market_first_inst_dedup.py::test_dedup_report_reproducible PASSED [ 22%]
++tests/test_market_first_validation_gate.py::test_transition_validation_passed_direct_rejected PASSED [ 24%]
++tests/test_market_first_validation_gate.py::test_judge_no_rule_not_evaluable PASSED [ 26%]
++tests/test_market_first_validation_gate.py::test_judge_backfill_only_not_passed PASSED [ 27%]
++tests/test_market_first_validation_gate.py::test_judge_immature_forward_not_passed PASSED [ 29%]
++tests/test_market_first_validation_gate.py::test_judge_mature_forward_passes_and_flows PASSED [ 31%]
++tests/test_market_first_validation_gate.py::test_judge_excluded_forward_sample_not_counted PASSED [ 32%]
++tests/test_market_first_promotion_handoff.py::test_legal_walk_and_approval_then_simulated_handoff PASSED [ 34%]
++tests/test_market_first_promotion_handoff.py::test_validation_passed_is_not_auto_approval PASSED [ 36%]
++tests/test_market_first_promotion_handoff.py::test_unapproved_handoff_rejected PASSED [ 37%]
++tests/test_market_first_promotion_handoff.py::test_illegal_transition_raises_and_leaves_trace PASSED [ 39%]
++tests/test_market_first_promotion_handoff.py::test_transition_cannot_bypass_decide PASSED [ 40%]
++tests/test_market_first_promotion_handoff.py::test_decide_requires_pending_approval PASSED [ 42%]
++tests/test_market_first_promotion_handoff.py::test_rejected_candidate_cannot_handoff PASSED [ 44%]
++tests/test_market_first_promotion_handoff.py::test_terminal_states_have_no_outgoing_transition PASSED [ 45%]
++tests/test_market_first_benchmark_integrity.py::test_bar_close_confirmed_time_rules PASSED [ 47%]
++tests/test_market_first_benchmark_integrity.py::test_forward_intraday_incomplete_bar_rejected PASSED [ 49%]
++tests/test_market_first_benchmark_integrity.py::test_forward_same_day_bar_after_close_confirmed PASSED [ 50%]
++tests/test_market_first_benchmark_integrity.py::test_forward_historical_bar_confirmed PASSED [ 52%]
++tests/test_market_first_benchmark_integrity.py::test_backfill_today_entry_intraday_rejected PASSED [ 54%]
++tests/test_market_first_benchmark_integrity.py::test_source_revision_recorded_benchmark_unchanged PASSED [ 55%]
++tests/test_market_first_benchmark_integrity.py::test_benchmark_adversarial_immutable PASSED [ 57%]
++tests/test_market_first_rule_registry.py::test_unregistered_rule_rejected_and_traced PASSED [ 59%]
++tests/test_market_first_rule_registry.py::test_forged_version_rejected PASSED [ 60%]
++tests/test_market_first_rule_registry.py::test_rule_object_injection_closed PASSED [ 62%]
++tests/test_market_first_rule_registry.py::test_missing_version_rejected PASSED [ 63%]
++tests/test_market_first_rule_registry.py::test_draft_and_test_status_rules_rejected PASSED [ 65%]
++tests/test_market_first_rule_registry.py::test_approved_rule_in_test_db_can_pass PASSED [ 67%]
++tests/test_market_first_rule_registry.py::test_disabled_rule_stops_passing_history_kept PASSED [ 68%]
++tests/test_market_first_rule_registry.py::test_rule_version_change_new_decisions_use_new_version PASSED [ 70%]
++tests/test_market_first_rule_registry.py::test_apply_validation_passed_direct_call_rejected PASSED [ 72%]
++tests/test_market_first_rule_registry.py::test_fresh_db_registry_empty PASSED [ 73%]
++tests/test_market_first_validation.py::test_evaluate_mature_exact_values PASSED [ 75%]
++tests/test_market_first_validation.py::test_evaluate_drawdown_uses_benchmark_peak PASSED [ 77%]
++tests/test_market_first_validation.py::test_evaluate_immature_partial_horizons PASSED [ 78%]
++tests/test_market_first_validation.py::test_evaluate_missing_never_zero PASSED [ 80%]
++tests/test_market_first_validation.py::test_duplicate_sample_rejected PASSED [ 81%]
++tests/test_market_first_validation.py::test_create_sample_invalid_kind PASSED [ 83%]
++tests/test_market_first_research.py::test_assert_no_instruction_keys PASSED [ 85%]
++tests/test_market_first_research.py::test_trend_module_insufficient_bars_not_zero PASSED [ 86%]
++tests/test_market_first_research.py::test_research_engine_report_breakdown_and_no_instructions PASSED [ 88%]
++tests/test_market_first_discovery_pool.py::test_classify_market PASSED   [ 90%]
++tests/test_market_first_discovery_pool.py::test_adapter_stored_filters_and_declares_coverage PASSED [ 91%]
++tests/test_market_first_discovery_pool.py::test_adapter_empty_date_returns_empty PASSED [ 93%]
++tests/test_market_first_discovery_pool.py::test_pool_merge_dedup_keeps_all_sources PASSED [ 95%]
++tests/test_market_first_discovery_pool.py::test_pool_distinct_symbols_distinct_candidates PASSED [ 96%]
++tests/test_market_first_discovery_pool.py::test_pool_set_fields_whitelist_and_history PASSED [ 98%]
++tests/test_market_first_cache_isolation.py::test_get_bars_never_touches_prod_shared_cache PASSED [100%]
++
++=============================== warnings summary ===============================
++tests/test_market_first_cache_isolation.py::test_get_bars_never_touches_prod_shared_cache
++  /home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 002446 数据陈旧: 最新 2026-11-13（距今4天）
++    warnings.warn(
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++======================== 61 passed, 1 warning in 3.01s =========================
+diff --git a/evidence/fix2/recompute_dedup_v2.py b/evidence/fix2/recompute_dedup_v2.py
+new file mode 100644
+index 0000000..410edd9
+--- /dev/null
++++ b/evidence/fix2/recompute_dedup_v2.py
+@@ -0,0 +1,123 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""独立复算 v2（不导入 market_first.research）：直读指定库的
++discovery_events，按 mf-dedup-2.0 三态口径独立分类并汇总
++inst_net，与该库最新 research_reports 的 inst_flow
++factors/evidence 逐项对比，输出 MATCH/MISMATCH。
++
++三态口径（与补正指令一致，独立实现）：
++- 有 trade_id 且 (market, symbol, data_date, trade_id) 相同
++  -> confirmed duplicate，只计一次；
++- 任一侧缺 trade_id -> 一律不合并；全元组相同的缺 id 事件
++  标 uncertain、全部保留计入；
++- 其余 independent 保留。
++"""
++import json
++import sqlite3
++import sys
++
++DB = sys.argv[1]
++
++
++def classify(events):
++    """events: list[sqlite3.Row] -> (kept_ids, dropped_ids,
++    uncertain_ids, total_inst_net)"""
++    parsed = []
++    for ev in events:
++        ej = json.loads(ev["evidence_json"] or "{}")
++        data_date = (ej.get("data_date") or ev["price_data_time"]
++                     or str(ev["discovered_at"] or "")[:10])
++        tid = ej.get("trade_id")
++        has_id = tid not in (None, "")
++        parsed.append({
++            "id": ev["id"], "net": ej.get("inst_net"),
++            "has_id": has_id,
++            "tid_key": (ev["market"], ev["symbol"], data_date,
++                        str(tid)) if has_id else None,
++            "tuple_key": (ev["market"], ev["symbol"], data_date,
++                          ej.get("inst_buy"), ej.get("inst_sell"),
++                          ej.get("seat_buy_records"),
++                          ej.get("seat_sell_records")),
++            "dropped": False, "uncertain": False,
++        })
++    seen = set()
++    for p in parsed:
++        if not p["has_id"]:
++            continue
++        if p["tid_key"] in seen:
++            p["dropped"] = True
++        else:
++            seen.add(p["tid_key"])
++    id_tuples = {p["tuple_key"] for p in parsed
++                 if p["has_id"] and not p["dropped"]}
++    groups = {}
++    for p in parsed:
++        if not p["has_id"]:
++            groups.setdefault(p["tuple_key"], []).append(p)
++    for p in parsed:
++        if p["has_id"]:
++            continue
++        if len(groups[p["tuple_key"]]) > 1 or \
++                p["tuple_key"] in id_tuples:
++            p["uncertain"] = True
++    kept = [p for p in parsed if not p["dropped"]]
++    total = sum(float(p["net"]) for p in kept
++                if isinstance(p["net"], (int, float)))
++    return ([p["id"] for p in kept],
++            [p["id"] for p in parsed if p["dropped"]],
++            [p["id"] for p in parsed if p["uncertain"]],
++            total)
++
++
++conn = sqlite3.connect("file:%s?mode=ro" % DB, uri=True)
++conn.row_factory = sqlite3.Row
++cands = [r["candidate_id"] for r in conn.execute(
++    "SELECT DISTINCT candidate_id FROM discovery_events ORDER BY 1")]
++all_ok = True
++for cid in cands:
++    events = conn.execute(
++        "SELECT * FROM discovery_events WHERE candidate_id = ?"
++        " ORDER BY id", (cid,)).fetchall()
++    if not any((json.loads(e["evidence_json"] or "{}").get("inst_net")
++                is not None) for e in events):
++        print("candidate_id=%s: no inst events, skipped" % cid)
++        continue
++    kept, dropped, uncertain, total = classify(events)
++    rep = conn.execute(
++        "SELECT factors_json, evidence_json FROM research_reports"
++        " WHERE candidate_id = ? ORDER BY id DESC LIMIT 1",
++        (cid,)).fetchone()
++    print("candidate_id=%s independent: kept=%s dropped=%s "
++          "uncertain=%s total_inst_net=%s"
++          % (cid, kept, dropped, uncertain, total))
++    if rep is None:
++        # 该候选在本库无研究报告（如 e2e 仅对主标的产报告）：
++        # 无可比对象，记 SKIP 而非失败；独立分类结果已在上方
++        # 打印，可与日后报告人工比对。
++        print("  SKIP: no research report for this candidate in "
++              "this DB (nothing to compare)")
++        continue
++    factors_all = json.loads(rep["factors_json"])
++    evidence_all = json.loads(rep["evidence_json"])
++    inst_factors = (factors_all.get("inst_flow") or {}).get(
++        "factors") or {}
++    inst_evidence = (evidence_all.get("modules") or {}).get(
++        "inst_flow") or {}
++    dedup = inst_evidence.get("dedup") or {}
++    checks = {
++        "kept_ids": (kept, dedup.get("deduped_event_ids")),
++        "confirmed_dropped_ids": (
++            dropped, dedup.get("confirmed_duplicate_dropped_ids")),
++        "uncertain_ids": (uncertain, dedup.get("uncertain_event_ids")),
++        "total_inst_net": (total, inst_factors.get("total_inst_net")),
++        "dedup_version": ("mf-dedup-2.0", dedup.get("dedup_version")),
++    }
++    for name, (exp, got) in checks.items():
++        match = (exp == got) or (
++            isinstance(exp, float) and isinstance(got, (int, float))
++            and abs(exp - float(got)) < 1e-9)
++        print("  %-24s expected=%r report=%r -> %s"
++              % (name, exp, got, "MATCH" if match else "MISMATCH"))
++        all_ok = all_ok and match
++print("OVERALL:", "MATCH" if all_ok else "MISMATCH")
++sys.exit(0 if all_ok else 1)
+diff --git a/evidence/fix2/recompute_dedup_v2_demo_output.txt b/evidence/fix2/recompute_dedup_v2_demo_output.txt
+new file mode 100644
+index 0000000..cdd68d2
+--- /dev/null
++++ b/evidence/fix2/recompute_dedup_v2_demo_output.txt
+@@ -0,0 +1,7 @@
++candidate_id=1 independent: kept=[1, 3, 4] dropped=[2] uncertain=[3, 4] total_inst_net=180.0
++  kept_ids                 expected=[1, 3, 4] report=[1, 3, 4] -> MATCH
++  confirmed_dropped_ids    expected=[2] report=[2] -> MATCH
++  uncertain_ids            expected=[3, 4] report=[3, 4] -> MATCH
++  total_inst_net           expected=180.0 report=180.0 -> MATCH
++  dedup_version            expected='mf-dedup-2.0' report='mf-dedup-2.0' -> MATCH
++OVERALL: MATCH
+diff --git a/evidence/fix2/recompute_dedup_v2_e2e_output.txt b/evidence/fix2/recompute_dedup_v2_e2e_output.txt
+new file mode 100644
+index 0000000..035d2c5
+--- /dev/null
++++ b/evidence/fix2/recompute_dedup_v2_e2e_output.txt
+@@ -0,0 +1,11 @@
++candidate_id=1 independent: kept=[1] dropped=[2] uncertain=[] total_inst_net=31318542.800000004
++  kept_ids                 expected=[1] report=[1] -> MATCH
++  confirmed_dropped_ids    expected=[2] report=[2] -> MATCH
++  uncertain_ids            expected=[] report=[] -> MATCH
++  total_inst_net           expected=31318542.800000004 report=31318542.800000004 -> MATCH
++  dedup_version            expected='mf-dedup-2.0' report='mf-dedup-2.0' -> MATCH
++candidate_id=2 independent: kept=[3] dropped=[] uncertain=[] total_inst_net=17355207.150000006
++  SKIP: no research report for this candidate in this DB (nothing to compare)
++candidate_id=3 independent: kept=[4] dropped=[] uncertain=[] total_inst_net=13351633.52
++  SKIP: no research report for this candidate in this DB (nothing to compare)
++OVERALL: MATCH
+diff --git a/evidence/fix2/sample1_before.json b/evidence/fix2/sample1_before.json
+new file mode 100644
+index 0000000..2e462a3
+--- /dev/null
++++ b/evidence/fix2/sample1_before.json
+@@ -0,0 +1,115 @@
++{
++ "sample_columns": [
++  "id",
++  "candidate_id",
++  "source_id",
++  "kind",
++  "entry_date",
++  "benchmark_price",
++  "ret_t5",
++  "ret_t10",
++  "ret_t20",
++  "max_drawdown",
++  "maturity_status",
++  "missing_reason",
++  "evaluated_at",
++  "eval_version",
++  "created_at",
++  "discovery_event_id",
++  "bars_asof",
++  "benchmark_date",
++  "benchmark_price_source",
++  "data_version"
++ ],
++ "sample1": {
++  "id": 1,
++  "candidate_id": 1,
++  "source_id": "inst_lhb_live",
++  "kind": "forward",
++  "entry_date": "2026-11-13",
++  "benchmark_price": 26.25,
++  "ret_t5": null,
++  "ret_t10": null,
++  "ret_t20": null,
++  "max_drawdown": null,
++  "maturity_status": "immature",
++  "missing_reason": null,
++  "evaluated_at": "2026-11-16T07:58:49+00:00",
++  "eval_version": "mf-val-1.0",
++  "created_at": "2026-11-16T07:58:48+00:00",
++  "discovery_event_id": null,
++  "bars_asof": null,
++  "benchmark_date": null,
++  "benchmark_price_source": null,
++  "data_version": null
++ },
++ "exclusions": [
++  {
++   "id": 1,
++   "sample_id": 1,
++   "excluded_from": "forward_stats",
++   "reason": "独立审计 2026-11-16 裁定：entry 2026-11-13 早于发现创建 2026-11-16，改类为历史回填/时间口径演示样本",
++   "decided_by": "independent_audit_2026-11-16",
++   "created_at": "2026-11-16T16:37:47+00:00"
++  }
++ ],
++ "all_samples": [
++  {
++   "id": 1,
++   "candidate_id": 1,
++   "source_id": "inst_lhb_live",
++   "kind": "forward",
++   "entry_date": "2026-11-13",
++   "benchmark_price": 26.25,
++   "ret_t5": null,
++   "ret_t10": null,
++   "ret_t20": null,
++   "max_drawdown": null,
++   "maturity_status": "immature",
++   "missing_reason": null,
++   "evaluated_at": "2026-11-16T07:58:49+00:00",
++   "eval_version": "mf-val-1.0",
++   "created_at": "2026-11-16T07:58:48+00:00",
++   "discovery_event_id": null,
++   "bars_asof": null,
++   "benchmark_date": null,
++   "benchmark_price_source": null,
++   "data_version": null
++  },
++  {
++   "id": 2,
++   "candidate_id": 2,
++   "source_id": "inst_lhb_stored",
++   "kind": "backfill",
++   "entry_date": "2026-10-21",
++   "benchmark_price": 8.63,
++   "ret_t5": -0.1332560834298957,
++   "ret_t10": 0.0961761297798378,
++   "ret_t20": null,
++   "max_drawdown": -0.21511017838405022,
++   "maturity_status": "immature",
++   "missing_reason": null,
++   "evaluated_at": "2026-11-16T07:58:52+00:00",
++   "eval_version": "mf-val-1.0",
++   "created_at": "2026-11-16T07:58:51+00:00",
++   "discovery_event_id": null,
++   "bars_asof": null,
++   "benchmark_date": null,
++   "benchmark_price_source": null,
++   "data_version": null
++  }
++ ],
++ "decisions": [],
++ "tables": [
++  "approvals",
++  "candidate_history",
++  "candidates",
++  "discovery_events",
++  "fetched_bars",
++  "handoffs",
++  "research_reports",
++  "sample_exclusions",
++  "validation_decisions",
++  "validation_samples"
++ ]
++}
+\ No newline at end of file
+diff --git a/evidence/fix2/src_after/db.py b/evidence/fix2/src_after/db.py
+new file mode 100644
+index 0000000..53a0532
+--- /dev/null
++++ b/evidence/fix2/src_after/db.py
+@@ -0,0 +1,304 @@
++"""Market-First 独立 SQLite 存储：建表与连接。
++
++新库默认路径为本包目录下的 market_first.db，与生产 sim.db 隔离。
++SCHEMA_SQL 一次建全（含研究/验证/审批/交接模块的表）。
++"""
++from __future__ import annotations
++
++import sqlite3
++from pathlib import Path
++
++DEFAULT_DB_PATH = str(Path(__file__).resolve().parent / "market_first.db")
++
++SCHEMA_SQL = """
++CREATE TABLE IF NOT EXISTS candidates (
++    id INTEGER PRIMARY KEY,
++    market TEXT NOT NULL,
++    symbol TEXT NOT NULL,
++    name TEXT,
++    first_seen_at TEXT,
++    last_seen_at TEXT,
++    research_status TEXT DEFAULT 'pending',
++    validation_status TEXT DEFAULT 'none',
++    promotion_status TEXT DEFAULT 'discovered',
++    risk_status TEXT DEFAULT 'normal',
++    created_at TEXT,
++    updated_at TEXT,
++    UNIQUE(market, symbol)
++);
++
++CREATE TABLE IF NOT EXISTS discovery_events (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    source_id TEXT,
++    market TEXT,
++    symbol TEXT,
++    discovered_at TEXT,
++    trigger_condition TEXT,
++    price_at_discovery REAL,
++    price_data_time TEXT,
++    evidence_json TEXT DEFAULT '{}',
++    created_at TEXT
++);
++
++CREATE TABLE IF NOT EXISTS candidate_history (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    field TEXT,
++    old_value TEXT,
++    new_value TEXT,
++    actor TEXT,
++    reason TEXT,
++    created_at TEXT
++);
++
++CREATE TABLE IF NOT EXISTS research_reports (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    engine_version TEXT,
++    computed_at TEXT,
++    data_asof TEXT,
++    data_version TEXT,
++    factors_json TEXT,
++    total_score REAL,
++    evidence_json TEXT DEFAULT '{}'
++);
++
++CREATE TABLE IF NOT EXISTS validation_samples (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    source_id TEXT,
++    kind TEXT CHECK (kind IN ('forward', 'backfill')),
++    entry_date TEXT,
++    benchmark_price REAL,
++    ret_t5 REAL,
++    ret_t10 REAL,
++    ret_t20 REAL,
++    max_drawdown REAL,
++    maturity_status TEXT DEFAULT 'immature',
++    missing_reason TEXT,
++    evaluated_at TEXT,
++    eval_version TEXT,
++    created_at TEXT,
++    discovery_event_id INTEGER REFERENCES discovery_events(id),
++    bars_asof TEXT,
++    benchmark_date TEXT,
++    benchmark_price_source TEXT,
++    data_version TEXT,
++    benchmark_revision_json TEXT,
++    UNIQUE(candidate_id, source_id, entry_date)
++);
++
++CREATE TABLE IF NOT EXISTS rule_registry (
++    rule_id TEXT NOT NULL,
++    version TEXT NOT NULL,
++    status TEXT NOT NULL DEFAULT 'draft'
++        CHECK (status IN ('draft', 'approved', 'disabled', 'test')),
++    approved_by TEXT,
++    approved_at TEXT,
++    params_json TEXT DEFAULT '{}',
++    created_at TEXT,
++    PRIMARY KEY (rule_id, version)
++);
++
++CREATE TABLE IF NOT EXISTS sample_exclusions (
++    id INTEGER PRIMARY KEY,
++    sample_id INTEGER NOT NULL REFERENCES validation_samples(id),
++    excluded_from TEXT NOT NULL,
++    reason TEXT,
++    decided_by TEXT,
++    created_at TEXT,
++    UNIQUE(sample_id, excluded_from)
++);
++
++CREATE TABLE IF NOT EXISTS validation_decisions (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    rule_version TEXT,
++    sample_scope TEXT,
++    metrics_json TEXT DEFAULT '{}',
++    decision TEXT,
++    basis TEXT,
++    created_at TEXT
++);
++
++CREATE TABLE IF NOT EXISTS fetched_bars (
++    symbol TEXT NOT NULL,
++    date TEXT NOT NULL,
++    open REAL,
++    high REAL,
++    low REAL,
++    close REAL,
++    volume REAL,
++    source TEXT,
++    fetched_at TEXT,
++    PRIMARY KEY (symbol, date, source)
++);
++
++CREATE TABLE IF NOT EXISTS fetched_coverage (
++    symbol TEXT NOT NULL,
++    start TEXT NOT NULL,
++    end TEXT,
++    source TEXT,
++    fetched_at TEXT,
++    PRIMARY KEY (symbol, start, end, source)
++);
++
++CREATE TABLE IF NOT EXISTS approvals (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    decision TEXT CHECK (decision IN ('approved', 'rejected')),
++    approver TEXT,
++    decided_at TEXT,
++    basis TEXT,
++    versions_json TEXT DEFAULT '{}'
++);
++
++CREATE TABLE IF NOT EXISTS handoffs (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    approval_id INTEGER REFERENCES approvals(id),
++    payload_json TEXT,
++    status TEXT DEFAULT 'simulated',
++    created_at TEXT
++);
++"""
++
++
++def _resolve(db_path: str | None) -> str:
++    return str(db_path) if db_path is not None else DEFAULT_DB_PATH
++
++
++def connect(db_path: str | None = None) -> sqlite3.Connection:
++    """打开连接：row_factory=sqlite3.Row、外键开启。"""
++    path = _resolve(db_path)
++    if path != ":memory:":
++        Path(path).parent.mkdir(parents=True, exist_ok=True)
++    conn = sqlite3.connect(path)
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys=ON")
++    return conn
++
++
++# 第一轮审计修复（fix1）新增列：旧库靠 ALTER 幂等补齐，新库由
++# SCHEMA_SQL 直接建全。ALTER 只加可空列，不改动既有行数据。
++_FIX1_SAMPLE_COLUMNS = {
++    "discovery_event_id": "INTEGER",
++    "bars_asof": "TEXT",
++    "benchmark_date": "TEXT",
++    "benchmark_price_source": "TEXT",
++    "data_version": "TEXT",
++}
++
++_FIX1_TABLES_SQL = """
++CREATE TABLE IF NOT EXISTS sample_exclusions (
++    id INTEGER PRIMARY KEY,
++    sample_id INTEGER NOT NULL REFERENCES validation_samples(id),
++    excluded_from TEXT NOT NULL,
++    reason TEXT,
++    decided_by TEXT,
++    created_at TEXT,
++    UNIQUE(sample_id, excluded_from)
++);
++
++CREATE TABLE IF NOT EXISTS validation_decisions (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    rule_version TEXT,
++    sample_scope TEXT,
++    metrics_json TEXT DEFAULT '{}',
++    decision TEXT,
++    basis TEXT,
++    created_at TEXT
++);
++
++CREATE TABLE IF NOT EXISTS fetched_bars (
++    symbol TEXT NOT NULL,
++    date TEXT NOT NULL,
++    open REAL,
++    high REAL,
++    low REAL,
++    close REAL,
++    volume REAL,
++    source TEXT,
++    fetched_at TEXT,
++    PRIMARY KEY (symbol, date, source)
++);
++
++CREATE TABLE IF NOT EXISTS fetched_coverage (
++    symbol TEXT NOT NULL,
++    start TEXT NOT NULL,
++    end TEXT,
++    source TEXT,
++    fetched_at TEXT,
++    PRIMARY KEY (symbol, start, end, source)
++);
++"""
++
++
++def ensure_fix1_schema(conn) -> None:
++    """幂等补齐 fix1 结构：validation_samples 新列 + 三张新表。
++
++    对既有行只新增 NULL 列，绝不 UPDATE/DELETE 既有数据。
++    """
++    cols = {r[1] for r in conn.execute(
++        "PRAGMA table_info(validation_samples)")}
++    if cols:
++        for name, typ in _FIX1_SAMPLE_COLUMNS.items():
++            if name not in cols:
++                conn.execute(
++                    "ALTER TABLE validation_samples ADD COLUMN %s %s"
++                    % (name, typ))
++    conn.executescript(_FIX1_TABLES_SQL)
++    conn.commit()
++
++
++# 独立验收前补正（fix2）新增结构：validation_samples 的
++# benchmark 修订记录列 + rule_registry 规则注册表。同样只加
++# 可空列/新表，绝不 UPDATE/DELETE 既有数据。
++_FIX2_SAMPLE_COLUMNS = {
++    "benchmark_revision_json": "TEXT",
++}
++
++_FIX2_TABLES_SQL = """
++CREATE TABLE IF NOT EXISTS rule_registry (
++    rule_id TEXT NOT NULL,
++    version TEXT NOT NULL,
++    status TEXT NOT NULL DEFAULT 'draft'
++        CHECK (status IN ('draft', 'approved', 'disabled', 'test')),
++    approved_by TEXT,
++    approved_at TEXT,
++    params_json TEXT DEFAULT '{}',
++    created_at TEXT,
++    PRIMARY KEY (rule_id, version)
++);
++"""
++
++
++def ensure_fix2_schema(conn) -> None:
++    """幂等补齐 fix2 结构：benchmark_revision_json 列 +
++    rule_registry 表。对既有行只新增 NULL 列。"""
++    cols = {r[1] for r in conn.execute(
++        "PRAGMA table_info(validation_samples)")}
++    if cols:
++        for name, typ in _FIX2_SAMPLE_COLUMNS.items():
++            if name not in cols:
++                conn.execute(
++                    "ALTER TABLE validation_samples ADD COLUMN %s %s"
++                    % (name, typ))
++    conn.executescript(_FIX2_TABLES_SQL)
++    conn.commit()
++
++
++def init_db(db_path: str | None = None) -> str:
++    """建表（幂等）并返回实际库路径。"""
++    path = _resolve(db_path)
++    conn = connect(path)
++    try:
++        conn.executescript(SCHEMA_SQL)
++        conn.commit()
++        ensure_fix1_schema(conn)
++        ensure_fix2_schema(conn)
++    finally:
++        conn.close()
++    return path
+diff --git a/evidence/fix2/src_after/promotion.py b/evidence/fix2/src_after/promotion.py
+new file mode 100644
+index 0000000..399747f
+--- /dev/null
++++ b/evidence/fix2/src_after/promotion.py
+@@ -0,0 +1,206 @@
++"""Promotion & Approval：晋升状态机与人工审批。
++
++状态机由显式转移表 TRANSITIONS 强制流转，任何表外转移都会
++先在 candidate_history 留痕（field='promotion_transition_attempt'）
++再抛 IllegalTransitionError，绝不静默放行。
++
++验证通过 != 自动批准：进入 approved 的唯一入口是 decide()
++（人工审批，approver/basis/versions 全量留痕于 approvals 表）。
++"""
++from __future__ import annotations
++
++import json
++from datetime import datetime
++
++# 全部状态（顺序即生命周期顺序）
++STATES = (
++    "discovered",
++    "pending_research",
++    "researching",
++    "validating",
++    "validation_passed",
++    "validation_failed",
++    "pending_approval",
++    "approved",
++    "rejected",
++)
++
++# 显式转移表：当前状态 -> 允许的下一状态集合（终态为空集）
++TRANSITIONS = {
++    "discovered": frozenset({"pending_research"}),
++    "pending_research": frozenset({"researching"}),
++    "researching": frozenset({"validating"}),
++    "validating": frozenset({"validation_passed", "validation_failed"}),
++    "validation_failed": frozenset({"pending_research"}),
++    "validation_passed": frozenset({"pending_approval"}),
++    "pending_approval": frozenset({"approved", "rejected"}),
++    "approved": frozenset(),
++    "rejected": frozenset(),
++}
++
++DEFAULT_VERSIONS = {"promotion_engine": "mf-promo-1.0"}
++
++
++class IllegalTransitionError(Exception):
++    """非法状态转移（已在 candidate_history 留痕后抛出）。"""
++
++
++def _now_iso() -> str:
++    return datetime.now().astimezone().isoformat(timespec="seconds")
++
++
++def _reject(pool, cid, current, to_state, actor, detail):
++    """非法转移统一路径：先留痕，再抛错。"""
++    reason = "ILLEGAL TRANSITION REJECTED: %s" % detail
++    pool.record_history(
++        cid,
++        field="promotion_transition_attempt",
++        old=current,
++        new=to_state,
++        actor=actor,
++        reason=reason,
++    )
++    raise IllegalTransitionError(reason)
++
++
++# 审批终态：转移表上 pending_approval 可达，但只能经 decide()
++# 人工审批进入；公开 transition() 直达一律按非法转移处理。
++DECISION_STATES = frozenset({"approved", "rejected"})
++
++# 验证通过态：转移表上 validating 可达，但只能由验证引擎的
++# judge_validation 按版本化规则判定产生；公开 transition() 直达
++# 一律按非法转移处理（第一轮审计修复 P0-3）。
++VALIDATION_GATE_STATES = frozenset({"validation_passed"})
++
++
++def _apply_transition(pool, cid, current, to_state, actor, reason=""):
++    """表内流转的实际执行（调用方已完成合法性判定）。"""
++    pool.set_fields(
++        cid,
++        actor=actor,
++        reason=reason if reason else None,
++        promotion_status=to_state,
++    )
++    return to_state
++
++
++def transition(pool, cid, to_state, actor, reason=""):
++    """按转移表流转 promotion_status。
++
++    合法：经 pool.set_fields 写字段（逐字段记 history）。
++    非法：先 record_history 留痕，再抛 IllegalTransitionError。
++    approved / rejected 虽在转移表中（pending_approval 可达），
++    但只能经 decide() 进入，transition() 直达按非法处理——
++    验证通过 != 自动批准，除 decide 外没有任何函数能进入 approved。
++    返回流转后的状态字符串。
++    """
++    cand = pool.get_by_id(cid)
++    if cand is None:
++        raise ValueError("候选不存在：id=%s" % (cid,))
++    current = cand.get("promotion_status")
++    if to_state in DECISION_STATES:
++        _reject(
++            pool, cid, current, to_state, actor,
++            "%s -> %s 属人工审批终态，只能经 decide() 审批进入，"
++            "transition() 直达被拒" % (current, to_state),
++        )
++    if to_state in VALIDATION_GATE_STATES:
++        _reject(
++            pool, cid, current, to_state, actor,
++            "%s -> %s 属验证引擎判定态，只能由 "
++            "validation.judge_validation 按版本化规则产生，"
++            "transition() 直达被拒" % (current, to_state),
++        )
++    allowed = TRANSITIONS.get(current, frozenset())
++    if to_state not in allowed:
++        _reject(
++            pool, cid, current, to_state, actor,
++            "%s -> %s 不在允许转移内（当前状态允许：%s）"
++            % (current, to_state,
++               ",".join(sorted(allowed)) if allowed else "无，终态"),
++        )
++    return _apply_transition(pool, cid, current, to_state, actor, reason)
++
++
++def _apply_validation_passed(pool, cid, actor, reason="",
++                             decision_id=None):
++    """内部受控入口：validating -> validation_passed。
++
++    唯一合法调用方是 validation.judge_validation 在判定
++    decision='passed' 后调用（fix2-3 加固）：必须携带
++    decision_id，且库内须存在该 id、属于该候选、decision=
++    'passed' 的 validation_decisions 记录；核验不过先在
++    candidate_history 留痕再抛 IllegalTransitionError——任何
++    模块绕过 judge 直接调用本函数都无法完成流转。当前状态
++    不是 validating 时同样拒绝。不经公开 transition()（其对
++    validation_passed 直达一律拒绝）。
++    """
++    cand = pool.get_by_id(cid)
++    if cand is None:
++        raise ValueError("候选不存在：id=%s" % (cid,))
++    current = cand.get("promotion_status")
++    verified = False
++    if decision_id is not None:
++        row = pool.conn.execute(
++            "SELECT candidate_id, decision FROM validation_decisions"
++            " WHERE id = ?", (decision_id,)).fetchone()
++        verified = (row is not None
++                    and row["candidate_id"] == cid
++                    and row["decision"] == "passed")
++    if not verified:
++        _reject(
++            pool, cid, current, "validation_passed", actor,
++            "受控流转核验失败：decision_id=%s 无对应的 "
++            "validation_decisions passed 记录，绕过 "
++            "judge_validation 的直接调用被拒" % (decision_id,))
++    if current != "validating":
++        raise IllegalTransitionError(
++            "validation_passed 只能从 validating 经 judge_validation "
++            "判定流转，当前状态为 %s" % (current,))
++    return _apply_transition(pool, cid, current, "validation_passed",
++                             actor, reason)
++
++
++def decide(pool, cid, approver, decision, basis="", versions=None):
++    """人工审批：唯一能进入 approved / rejected 终态的入口。
++
++    decision 只接受 'approved' / 'rejected'；当前状态必须为
++    pending_approval，否则走非法路径（留痕 + IllegalTransitionError）。
++    同一事务内写 approvals 一行并流转到对应终态，返回 approval_id。
++    """
++    if decision not in ("approved", "rejected"):
++        raise ValueError(
++            "decision 只接受 'approved' / 'rejected'，收到：%r" % (decision,))
++    cand = pool.get_by_id(cid)
++    if cand is None:
++        raise ValueError("候选不存在：id=%s" % (cid,))
++    current = cand.get("promotion_status")
++    if current != "pending_approval":
++        _reject(
++            pool, cid, current, decision, approver,
++            "decide(decision=%s) 要求当前状态为 pending_approval，"
++            "实际为 %s" % (decision, current),
++        )
++    versions_payload = versions if versions is not None else dict(DEFAULT_VERSIONS)
++    conn = pool.conn
++    try:
++        cur = conn.execute(
++            "INSERT INTO approvals (candidate_id, decision, approver,"
++            " decided_at, basis, versions_json) VALUES (?, ?, ?, ?, ?, ?)",
++            (cid, decision, approver, _now_iso(), basis,
++             json.dumps(versions_payload, ensure_ascii=False)),
++        )
++        approval_id = cur.lastrowid
++        # 不单独 commit：与随后的状态流转同事务提交
++        # （pool.set_fields 内部 commit 一并落盘两处写入）。
++        # 审批终态只能经本函数进入，故此处走内部 _apply_transition，
++        # 不经公开 transition()（其对 approved/rejected 直达一律拒绝）。
++        _apply_transition(
++            pool, cid, current, decision, actor=approver,
++            reason="人工审批 decide=%s approver=%s approval_id=%s"
++                   % (decision, approver, approval_id),
++        )
++    except Exception:
++        conn.rollback()
++        raise
++    return approval_id
+diff --git a/evidence/fix2/src_after/research.py b/evidence/fix2/src_after/research.py
+new file mode 100644
+index 0000000..970c30f
+--- /dev/null
++++ b/evidence/fix2/src_after/research.py
+@@ -0,0 +1,432 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""Market-First 研究层：只产证据与分项分数，不产任何交易指令。
++
++边界（架构硬约束）：
++- 研究报告（research_reports）只含 factors/total_score/evidence，
++  禁止出现 side/action/order/buy/sell/instruction/qty/position_size
++  等交易指令字段；落库前 assert_no_instruction_keys 递归拦截，
++  命中即抛 ValueError、整份报告不写。
++- 模块 compute() 为纯计算（除 ResearchEngine.run 的落库/状态更新外），
++  同输入同输出；数据不足时 subtotal=None（缺失不记 0 分充数）。
++"""
++from __future__ import annotations
++
++import json
++import os
++import sqlite3
++import sys
++from datetime import datetime
++
++ENGINE_VERSION = "mf-research-1.0"
++
++FORBIDDEN_KEYS = {"side", "action", "order", "buy", "sell",
++                  "instruction", "qty", "position_size"}
++
++
++def _now_iso():
++    return datetime.now().astimezone().isoformat(timespec="seconds")
++
++
++def assert_no_instruction_keys(obj):
++    """递归检查 dict 键（小写比对），命中禁用键抛 ValueError。
++
++    覆盖嵌套 dict 与 list/tuple 内的 dict；非 dict 键忽略。
++    """
++    if isinstance(obj, dict):
++        for k, v in obj.items():
++            if isinstance(k, str) and k.lower() in FORBIDDEN_KEYS:
++                raise ValueError(
++                    "forbidden instruction key in research output: %r" % k)
++            assert_no_instruction_keys(v)
++    elif isinstance(obj, (list, tuple)):
++        for item in obj:
++            assert_no_instruction_keys(item)
++
++
++def _resolve_conn(pool):
++    """从 CandidatePool 解析 sqlite 连接 -> (conn, owns_conn)。
++
++    依次尝试：pool.conn/connection/_conn/db（Connection 实例）、
++    pool.db_path/path/db_file/_db_path/db（路径，经 market_first.db.connect
++    优先、sqlite3.connect 兜底）。解析不到抛 AttributeError。
++    """
++    for attr in ("conn", "connection", "_conn", "db"):
++        c = getattr(pool, attr, None)
++        if isinstance(c, sqlite3.Connection):
++            return c, False
++    for attr in ("db_path", "path", "db_file", "_db_path", "db"):
++        p = getattr(pool, attr, None)
++        if p:
++            try:
++                from market_first.db import connect as _mf_connect
++                return _mf_connect(str(p)), True
++            except Exception:  # noqa: BLE001
++                return sqlite3.connect(str(p)), True
++    raise AttributeError(
++        "cannot resolve sqlite connection from pool %r: no conn/db_path"
++        % (pool,))
++
++
++class TrendPatternModule:
++    """趋势 + 形态模块：复用 engine.screen.pattern_factors 形态分，
++    自算均线趋势分。
++
++    trend_points 规则：
++    - close > ma20 得 +5，否则 -5；
++    - ma60 可用时 ma20 > ma60 得 +5，否则 -5；
++    - ma60 不可用时该项 0。
++    subtotal = pattern_points + trend_points。
++    """
++
++    module_id = "trend_pattern"
++    model_version = "mf-trend-1.0"
++
++    def compute(self, candidate: dict, bars, context: dict) -> dict:
++        bars = bars or []
++        n = len(bars)
++        if n < 30:
++            factors = {"available": False, "reason": "insufficient_bars",
++                       "bars": n}
++            return {"factors": factors, "subtotal": None,
++                    "evidence": dict(factors)}
++
++        # 延迟导入：保证 engine 包路径（worktree 根）在 sys.path 上
++        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++        if root not in sys.path:
++            sys.path.insert(0, root)
++        from engine.screen import pattern_factors
++        pattern_points, pattern_ev = pattern_factors(bars)
++        pattern_flags = []
++        if isinstance(pattern_ev, dict):
++            pattern_flags = pattern_ev.get("flags") or []
++
++        closes = [float(b[4]) for b in bars]
++        close = closes[-1]
++        ma20 = sum(closes[-20:]) / 20.0
++        ma60 = sum(closes[-60:]) / 60.0 if n >= 60 else None
++        close_vs_ma20_pct = (close / ma20 - 1.0) * 100.0 if ma20 else None
++        ret_20d = (close / closes[-21] - 1.0) if n >= 21 else None
++
++        trend_points = 5.0 if close > ma20 else -5.0
++        if ma60 is not None:
++            trend_points += 5.0 if ma20 > ma60 else -5.0
++        # ma60 不可用时该项 0（不加不减），factors 里注明
++
++        factors = {
++            "available": True,
++            "pattern_points": float(pattern_points),
++            "pattern_flags": list(pattern_flags),
++            "trend_points": float(trend_points),
++            "ma20": ma20,
++            "ma60": ma60,
++            "ma60_available": ma60 is not None,
++            "close_vs_ma20_pct": (round(close_vs_ma20_pct, 4)
++                                  if close_vs_ma20_pct is not None
++                                  else None),
++            "ret_20d": ret_20d,
++        }
++        if ma60 is None:
++            factors["ma60_note"] = "insufficient_bars_for_ma60"
++        evidence = {"pattern": pattern_ev,
++                    "bars": n,
++                    "close": close,
++                    "ma20": ma20,
++                    "ma60": ma60}
++        return {"factors": factors,
++                "subtotal": float(pattern_points) + float(trend_points),
++                "evidence": evidence}
++
++
++DEDUP_VERSION = "mf-dedup-2.0"
++
++DEDUP_KEY_SPEC = (
++    "mf-dedup-2.0 three-state: (1) trade_id present and key "
++    "(market, symbol, data_date, trade_id) equal -> confirmed "
++    "duplicate, counted once; (2) trade_id missing on either side "
++    "-> NEVER auto-merged: identical full tuple (market, symbol, "
++    "data_date, inst_buy, inst_sell, seat_buy_records, "
++    "seat_sell_records) is flagged dedup_status='uncertain', all "
++    "copies kept and counted; (3) otherwise independent, kept."
++)
++
++UNCERTAIN_NOTE = (
++    "身份不确定、未合并：以下事件缺少 trade_id 且全元组相同，"
++    "无法确认是否为同一底层机构事件；按未合并处理，全部保留"
++    "并计入净额（存在重复计入的可能，金额影响单列）。"
++)
++
++
++def _evidence_dict(event):
++    """从 event dict 解析 evidence dict（evidence_json str/dict）。
++
++    取不到返回 {}。event 本身若直接带 inst_* 字段（手工构造的
++    context 事件），由调用方另行合并。
++    """
++    ej = event.get("evidence_json")
++    if isinstance(ej, str):
++        try:
++            ej = json.loads(ej)
++        except (ValueError, TypeError):
++            ej = None
++    if isinstance(ej, dict):
++        return ej
++    return {}
++
++
++def dedup_inst_events(events):
++    """机构事件去重（fix2-2 三态，规则版本 mf-dedup-2.0）：
++
++    - confirmed duplicate：trade_id 存在且键 (market, symbol,
++      data_date, trade_id) 相同 -> 同一底层事件，只保留先到
++      一份，其余计入 dropped（留痕）。
++    - uncertain：任一侧 trade_id 缺失时一律不自动合并。缺 id
++      事件之间全元组 (market, symbol, data_date, inst_buy,
++      inst_sell, seat_buy_records, seat_sell_records) 相同，
++      或与某条有 id 事件的全元组相同 -> 身份不确定，标记
++      dedup_status='uncertain'，全部保留并计入净额。
++    - independent：其余事件分别保留。
++
++    禁止按 symbol 单独去重；候选池原始事件不在此删除，本
++    函数只决定研究聚合的计入集合与披露口径。
++
++    返回 (kept, dropped, uncertain_ids)：kept/dropped 元素为
++    (event_id, event, evidence)，event_id 优先 event['id']，
++    缺失时用输入序号；uncertain_ids 为 kept 中被标记不确定
++    的 event_id 列表（按输入顺序）。
++    """
++    entries = []
++    for idx, ev in enumerate(events or []):
++        if not isinstance(ev, dict):
++            continue
++        ev_id = ev.get("id")
++        if ev_id is None:
++            ev_id = idx
++        evidence = _evidence_dict(ev)
++        data_date = (evidence.get("data_date")
++                     or ev.get("price_data_time")
++                     or str(ev.get("discovered_at") or "")[:10])
++        trade_id = evidence.get("trade_id")
++        has_id = trade_id not in (None, "")
++        tuple_key = (ev.get("market"), ev.get("symbol"), data_date,
++                     evidence.get("inst_buy"), evidence.get("inst_sell"),
++                     evidence.get("seat_buy_records"),
++                     evidence.get("seat_sell_records"))
++        entries.append({
++            "id": ev_id, "ev": ev, "evidence": evidence,
++            "has_id": has_id,
++            "tid_key": (ev.get("market"), ev.get("symbol"), data_date,
++                        str(trade_id)) if has_id else None,
++            "tuple_key": tuple_key,
++            "status": None,
++        })
++
++    dropped = []
++    seen_tid = {}
++    for e in entries:
++        if not e["has_id"]:
++            continue
++        if e["tid_key"] in seen_tid:
++            e["status"] = "confirmed_duplicate"
++            dropped.append((e["id"], e["ev"], e["evidence"]))
++        else:
++            seen_tid[e["tid_key"]] = e["id"]
++            e["status"] = "unique"
++
++    id_tuple_keys = {e["tuple_key"] for e in entries
++                     if e["has_id"] and e["status"] == "unique"}
++    noid_groups = {}
++    for e in entries:
++        if not e["has_id"]:
++            noid_groups.setdefault(e["tuple_key"], []).append(e)
++    uncertain_ids = []
++    for e in entries:
++        if e["has_id"]:
++            continue
++        group = noid_groups[e["tuple_key"]]
++        if len(group) > 1 or e["tuple_key"] in id_tuple_keys:
++            e["status"] = "uncertain"
++            uncertain_ids.append(e["id"])
++        else:
++            e["status"] = "independent"
++
++    kept = [(e["id"], e["ev"], e["evidence"]) for e in entries
++            if e["status"] != "confirmed_duplicate"]
++    return kept, dropped, uncertain_ids
++
++
++class InstFlowModule:
++    """机构资金流模块：读候选的 inst* discovery events 的 evidence_json
++    中的 inst_net（机构专用席位净额，口径见 engine/inst_lhb.py）。
++
++    聚合前先经 dedup_inst_events 三态去重（mf-dedup-2.0）：有
++    trade_id 的同一底层事件只贡献一次净额（confirmed）；缺
++    trade_id 而身份不确定的事件不合并、全部保留计入并在
++    evidence 中完整披露（uncertain_ids/逐条 inst_net/合计
++    影响额/明示说明）；不同日期/不同底层事件分别保留。
++
++    无事件 -> subtotal=None（缺失不充数）；有事件时
++    subtotal = +8.0（最新 inst_net>0）/ -8.0（<0）/ 0.0（=0）。
++    """
++
++    module_id = "inst_flow"
++    model_version = "mf-inst-1.0"
++
++    @staticmethod
++    def _extract_inst_net(event):
++        """从单个 event dict 取 inst_net（float），取不到返回 None。
++
++        优先 event['inst_net'] 数值列；其次 evidence_json（str 需
++        json.loads，或已解析 dict）顶层/一层嵌套的 'inst_net'。
++        """
++        if isinstance(event.get("inst_net"), (int, float)):
++            return float(event["inst_net"])
++        ej = event.get("evidence_json")
++        if isinstance(ej, str):
++            try:
++                ej = json.loads(ej)
++            except (ValueError, TypeError):
++                ej = None
++        if isinstance(ej, dict):
++            if isinstance(ej.get("inst_net"), (int, float)):
++                return float(ej["inst_net"])
++            for v in ej.values():
++                if isinstance(v, dict) and isinstance(
++                        v.get("inst_net"), (int, float)):
++                    return float(v["inst_net"])
++        return None
++
++    def compute(self, candidate: dict, bars, context: dict) -> dict:
++        events = (context or {}).get("inst_events") or []
++        kept, dropped, uncertain_ids = dedup_inst_events(events)
++        uncertain_set = set(uncertain_ids)
++        uncertain_events = []
++        for ev_id, ev, _evidence in kept:
++            if ev_id in uncertain_set:
++                uncertain_events.append({
++                    "id": ev_id,
++                    "inst_net": self._extract_inst_net(ev),
++                    "dedup_status": "uncertain",
++                })
++        uncertain_net_total = sum(
++            u["inst_net"] for u in uncertain_events
++            if u["inst_net"] is not None)
++        dedup_info = {
++            "raw_event_ids": [
++                ev.get("id") if isinstance(ev, dict)
++                and ev.get("id") is not None else i
++                for i, ev in enumerate(events) if isinstance(ev, dict)],
++            "deduped_event_ids": [eid for eid, _, _ in kept],
++            "confirmed_duplicate_dropped_ids":
++                [eid for eid, _, _ in dropped],
++            "dropped_duplicate_ids": [eid for eid, _, _ in dropped],
++            "uncertain_event_ids": list(uncertain_ids),
++            "uncertain_events": uncertain_events,
++            "uncertain_inst_net_total": uncertain_net_total,
++            "uncertain_note": UNCERTAIN_NOTE if uncertain_ids else None,
++            "dedup_key": DEDUP_KEY_SPEC,
++            "dedup_version": DEDUP_VERSION,
++        }
++        parsed = []
++        for ev_id, ev, _evidence in kept:
++            net = self._extract_inst_net(ev)
++            if net is None:
++                continue
++            when = str(ev.get("discovered_at") or ev.get("created_at")
++                       or "")
++            parsed.append((when, net))
++        if not parsed:
++            factors = {"available": False,
++                       "reason": ("no_inst_events" if not events
++                                  else "inst_net_missing"),
++                       "uncertain_events_count": len(uncertain_ids)}
++            return {"factors": factors, "subtotal": None,
++                    "evidence": {"events_count": len(events),
++                                 "dedup": dedup_info}}
++        latest_when, latest_net = max(parsed, key=lambda t: t[0])
++        total_net = sum(net for _, net in parsed)
++        if latest_net > 0:
++            subtotal = 8.0
++        elif latest_net < 0:
++            subtotal = -8.0
++        else:
++            subtotal = 0.0
++        factors = {"available": True,
++                   "events_count": len(parsed),
++                   "raw_events_count": len(dedup_info["raw_event_ids"]),
++                   "uncertain_events_count": len(uncertain_ids),
++                   "latest_inst_net": latest_net,
++                   "total_inst_net": total_net}
++        evidence = {"events_count": len(parsed),
++                    "latest_discovered_at": latest_when,
++                    "latest_inst_net": latest_net,
++                    "total_inst_net": total_net,
++                    "dedup": dedup_info}
++        return {"factors": factors, "subtotal": subtotal,
++                "evidence": evidence}
++
++
++class ResearchEngine:
++    """研究引擎：逐模块 compute -> 组装 factors -> 落 research_reports
++    一行 -> pool.set_fields(research_status='done')。返回 report_id。"""
++
++    def __init__(self, pool, modules=None):
++        self.pool = pool
++        self.modules = (list(modules) if modules is not None
++                        else [TrendPatternModule(), InstFlowModule()])
++
++    def run(self, candidate_id, bars, data_asof, data_version,
++            context=None) -> int:
++        bars = bars or []
++        context = dict(context) if context else {}
++        if "inst_events" not in context:
++            rows = self.pool.events_for(candidate_id) or []
++            context["inst_events"] = [
++                r for r in rows
++                if str(r.get("source_id") or "").startswith("inst")]
++        candidate = self.pool.get_by_id(candidate_id) or {}
++
++        factors = {}
++        evidence_modules = {}
++        subtotals = []
++        for mod in self.modules:
++            out = mod.compute(candidate, bars, context)
++            factors[mod.module_id] = {
++                "factors": out.get("factors"),
++                "subtotal": out.get("subtotal"),
++                "model_version": mod.model_version,
++            }
++            evidence_modules[mod.module_id] = out.get("evidence")
++            if out.get("subtotal") is not None:
++                subtotals.append(float(out["subtotal"]))
++        total_score = sum(subtotals) if subtotals else None
++
++        # 落库前硬拦截：研究报告禁止任何交易指令字段
++        assert_no_instruction_keys(factors)
++        assert_no_instruction_keys(evidence_modules)
++
++        evidence = {
++            "modules": evidence_modules,
++            "bars_count": len(bars),
++            "bars_first_date": bars[0][0] if bars else None,
++            "bars_last_date": bars[-1][0] if bars else None,
++        }
++        conn, owns = _resolve_conn(self.pool)
++        try:
++            cur = conn.execute(
++                "INSERT INTO research_reports "
++                "(candidate_id, engine_version, computed_at, data_asof, "
++                " data_version, factors_json, total_score, evidence_json) "
++                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
++                (candidate_id, ENGINE_VERSION, _now_iso(),
++                 str(data_asof), str(data_version),
++                 json.dumps(factors, ensure_ascii=False), total_score,
++                 json.dumps(evidence, ensure_ascii=False)))
++            report_id = cur.lastrowid
++            conn.commit()
++        finally:
++            if owns:
++                conn.close()
++        self.pool.set_fields(candidate_id, actor="research",
++                             research_status="done")
++        return report_id
+diff --git a/evidence/fix2/src_after/validation.py b/evidence/fix2/src_after/validation.py
+new file mode 100644
+index 0000000..6217c66
+--- /dev/null
++++ b/evidence/fix2/src_after/validation.py
+@@ -0,0 +1,854 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""Market-First 验证层：前向/回填样本的创建、到期评估与晋升判定。
++
++口径（冻结）：
++- 样本以 (candidate_id, source_id, entry_date) 唯一，重复创建抛
++  DuplicateSampleError，绝不覆盖既有样本。
++- kind 只许 'forward'（发现时点真实前向）与 'backfill'（事后回填），
++  两类严格区分、不得混算。
++- 评估只用 entry_date 之后（严格大于）的 bars：ret_tN =
++  after[N-1] 收盘 / benchmark_price - 1（N=5/10/20，数据可得才填）；
++  max_drawdown 以 benchmark_price 为初始峰值，对 after[:20] 收盘
++  序列算 min(close/running_peak - 1)。
++- 成熟度：无 bars -> 'missing'（missing_reason='no_price_data'）；
++  after 为空或不足 20 根 -> 'immature'；after >= 20 根 -> 'mature'。
++- 缺失值一律 NULL，绝不写 0 充数。
++
++Forward 时间规则（第一轮审计修复 P0-1，代码强制，写死）：
++- 发现事件实际创建时间 = discovery_events.discovered_at，即数据
++  实际可得时间。取其 Asia/Shanghai 日历日期为 discovered_date。
++- Forward 的 entry_date 必须是 discovered_date 之后第一个交易日
++  （以该标的 bars 序列中实际存在的交易日为准，不用自然日推算）；
++  benchmark = entry_date 当日收盘（qfq 序列），benchmark_date =
++  entry_date，benchmark_price_source 记录价格来源。
++- entry_date <= discovered_date 的样本由代码强制 kind='backfill'，
++  不信任调用方传入的 kind。
++- Forward 无法确认下一交易日或其收盘价（该日尚未收盘、bars
++  缺失）时拒绝创建：candidate_history 留痕（actor='validation'，
++  reason 含 'forward_rejected: ...'）后抛 ForwardRejectedError，
++  不得猜测、不得用后来取得的行情回填历史入场价。
++
++验证通过门禁（P0-3）：validation_passed 只能由 judge_validation
++按版本化规则产生并留 validation_decisions 记录；阈值未经用户
++确认前规则注册表为空（NO_RULE），judge 一律 not_evaluable，
++系统不得产生 validation_passed。未成熟样本、指标 NULL、仅有
++backfill 样本三条硬门槛在判定函数前置拦截，与数值阈值分离。
++
++Benchmark 收盘完整性（独立验收前补正 fix2-1，写死）：
++- 不得仅凭 bars 中存在某日记录就认定该日收盘价已经形成。
++  bar_close_confirmed(bar_date, fetched_at, provenance, market)
++  为唯一判定入口：bar 日期严格早于取数日期（Asia/Shanghai）
++  -> 已收盘确认；bar 日期等于取数日期 -> 仅当取数时刻已过该
++  市场收盘确认时刻（A股/北交所/可转债 15:30 = 15:00 收盘 +
++  30 分钟缓冲；港股 16:30）且 provenance 无 intraday 标记时
++  才确认；bar 日期晚于取数日期 -> 数据异常，不确认。
++  依据边界：market_data 包/service 不提供 bar 完整性或
++  intraday 标记（检视 service.py/quality.py 无此字段，返回的
++  Bar 仅含 OHLCV），故以时间规则为准，provenance 的
++  intraday 标记为预留否决项（当前 provenance 串均不含该标记）。
++- create_sample 的 forward/backfill 路径都必须以通过完整性
++  确认的收盘作为 benchmark；不确认 -> 留痕拒绝
++  （ForwardRejectedError，reason 含 benchmark_close_unconfirmed）。
++- benchmark 一经记录不可变：evaluate_sample 若发现当前取到
++  的 entry 日收盘与已记录 benchmark_price 不一致（行情源
++  修订），不得静默覆盖——把首次发现的修订记入样本行
++  benchmark_revision_json（旧值/新值/发现时间），每次发现
++  另在 candidate_history 留痕，评估始终以原 benchmark 计算。
++
++规则注册保护（fix2-3）：正式 judge 只接受 rule_id+version，
++从 rule_registry 注册表（落库）加载并核对状态；规则对象
++直传参数已删除。status != 'approved'（draft/test/disabled）
++一律 not_evaluable；未经用户确认，本轮注册表不得出现
++approved 规则，judge 恒 not_evaluable。
++"""
++from __future__ import annotations
++
++import json
++import sqlite3
++from datetime import datetime, timedelta, timezone
++
++VALID_KINDS = ("forward", "backfill")
++DEFAULT_EVAL_VERSION = "mf-val-1.0"
++
++_SHANGHAI = timezone(timedelta(hours=8))
++
++
++class DuplicateSampleError(Exception):
++    """同 (candidate_id, source_id, entry_date) 样本已存在。"""
++
++
++class ForwardRejectedError(ValueError):
++    """样本创建被时间/完整性规则拒绝（已在 candidate_history 留痕）。
++
++    fix2 起同时用于 backfill 路径的 benchmark 完整性拒绝，
++    故继承 ValueError 以兼容既有按 ValueError 捕获的调用方。
++    """
++
++
++def _now_iso():
++    return datetime.now().astimezone().isoformat(timespec="seconds")
++
++
++def _shanghai_date(iso_str) -> str:
++    """ISO 时间戳 -> Asia/Shanghai 日历日期 'YYYY-MM-DD'。
++
++    无时区的字符串按 Asia/Shanghai 本地时间解释；解析失败退回
++    前 10 个字符（日期部分）。
++    """
++    s = str(iso_str)
++    try:
++        dt = datetime.fromisoformat(s)
++    except ValueError:
++        return s[:10]
++    if dt.tzinfo is None:
++        dt = dt.replace(tzinfo=_SHANGHAI)
++    return dt.astimezone(_SHANGHAI).date().isoformat()
++
++
++def _resolve_conn(pool):
++    """从 CandidatePool 解析 sqlite 连接 -> (conn, owns_conn)。
++
++    依次尝试：pool.conn/connection/_conn/db（Connection 实例）、
++    pool.db_path/path/db_file/_db_path/db（路径，经 market_first.db.connect
++    优先、sqlite3.connect 兜底）。解析不到抛 AttributeError。
++    """
++    for attr in ("conn", "connection", "_conn", "db"):
++        c = getattr(pool, attr, None)
++        if isinstance(c, sqlite3.Connection):
++            return c, False
++    for attr in ("db_path", "path", "db_file", "_db_path", "db"):
++        p = getattr(pool, attr, None)
++        if p:
++            try:
++                from market_first.db import connect as _mf_connect
++                return _mf_connect(str(p)), True
++            except Exception:  # noqa: BLE001
++                return sqlite3.connect(str(p)), True
++    raise AttributeError(
++        "cannot resolve sqlite connection from pool %r: no conn/db_path"
++        % (pool,))
++
++
++def _row_dict(cur, row):
++    if row is None:
++        return None
++    cols = [d[0] for d in cur.description]
++    return dict(zip(cols, row))
++
++
++def _ensure(conn):
++    from market_first.db import ensure_fix1_schema, ensure_fix2_schema
++    ensure_fix1_schema(conn)
++    ensure_fix2_schema(conn)
++
++
++def _shanghai_dt(iso_str) -> datetime:
++    """ISO 时间戳 -> 带 Asia/Shanghai 时区的 datetime。
++
++    无时区字符串按 Asia/Shanghai 本地时间解释。
++    """
++    s = str(iso_str)
++    dt = datetime.fromisoformat(s)
++    if dt.tzinfo is None:
++        dt = dt.replace(tzinfo=_SHANGHAI)
++    return dt.astimezone(_SHANGHAI)
++
++
++# 收盘确认时刻（Asia/Shanghai）：收盘时刻 + 30 分钟缓冲。
++# A股/北交所/可转债 15:00 收盘 -> 15:30 确认；港股 16:00
++# 收盘 -> 16:30 确认。未列市场按 A股规则（15:30）。
++from datetime import time as _time  # noqa: E402
++
++CLOSE_CONFIRM_TIME = {
++    "SH": _time(15, 30),
++    "SZ": _time(15, 30),
++    "BJ": _time(15, 30),
++    "CB": _time(15, 30),
++    "HK": _time(16, 30),
++}
++DEFAULT_CLOSE_CONFIRM_TIME = _time(15, 30)
++
++
++def bar_close_confirmed(bar_date, fetched_at, provenance=None,
++                        market=None) -> bool:
++    """bar 收盘完整性判定（fix2-1 唯一入口，规则见模块 docstring）。
++
++    - bar_date 严格早于 fetched_at 的上海日历日期 -> True。
++    - bar_date 晚于取数日期 -> False（数据异常）。
++    - 同日：provenance 含 'intraday' 标记 -> False；取数时刻
++      已过该市场收盘确认时刻（CLOSE_CONFIRM_TIME）-> True，
++      否则 False。
++    """
++    bd = str(bar_date)[:10]
++    fdt = _shanghai_dt(fetched_at)
++    fd = fdt.date().isoformat()
++    if bd < fd:
++        return True
++    if bd > fd:
++        return False
++    if provenance and "intraday" in str(provenance).lower():
++        return False
++    cutoff = CLOSE_CONFIRM_TIME.get(
++        str(market or "").upper(), DEFAULT_CLOSE_CONFIRM_TIME)
++    return fdt.time() >= cutoff
++
++
++def _resolve_event(conn, candidate_id, source_id, discovery_event_id):
++    """解析样本关联的发现事件 -> dict 或 None。
++
++    显式 discovery_event_id 优先（须存在且属于该候选）；否则取该
++    候选 source_id 相同的最近事件，再否则取最近事件；无事件返回
++    None。
++    """
++    if discovery_event_id is not None:
++        cur = conn.execute(
++            "SELECT * FROM discovery_events WHERE id = ?",
++            (discovery_event_id,))
++        ev = _row_dict(cur, cur.fetchone())
++        if ev is None:
++            raise ValueError(
++                "discovery_event not found: id=%r" % (discovery_event_id,))
++        if ev["candidate_id"] != candidate_id:
++            raise ValueError(
++                "discovery_event %r belongs to candidate %r, not %r"
++                % (discovery_event_id, ev["candidate_id"], candidate_id))
++        return ev
++    cur = conn.execute(
++        "SELECT * FROM discovery_events WHERE candidate_id = ?"
++        " ORDER BY discovered_at DESC, id DESC", (candidate_id,))
++    rows = [_row_dict(cur, r) for r in cur.fetchall()]
++    if not rows:
++        return None
++    for ev in rows:
++        if ev.get("source_id") == source_id:
++            return ev
++    return rows[0]
++
++
++def _derive_forward_entry(bars, discovered_date):
++    """bars 中 discovered_date 之后第一根 -> (date_str, close) 或 None。"""
++    for b in sorted(bars or [], key=lambda x: str(x[0])):
++        d = str(b[0])[:10]
++        if d > discovered_date:
++            return d, float(b[4])
++    return None
++
++
++def _fetch_bars_for(pool, candidate_id, discovered_date):
++    """经 market_first.bars 取该标的 discovered_date 起的 bars。
++
++    返回 (bars, provenance)；取数失败返回 ([], 说明)。bars 层已与
++    生产共享缓存隔离（use_cache=False + 自有 fetched_bars 表）。
++    """
++    cand = pool.get_by_id(candidate_id) or {}
++    symbol = cand.get("symbol")
++    if not symbol:
++        return [], "unavailable: candidate has no symbol"
++    try:
++        from market_first import bars as bars_mod
++        start = datetime.fromisoformat(discovered_date).date()
++        end = start + timedelta(days=31)
++        return bars_mod.get_bars(symbol, start.isoformat(),
++                                 end.isoformat())
++    except Exception as e:  # noqa: BLE001
++        return [], "unavailable: %s: %s" % (type(e).__name__, e)
++
++
++def _reject_forward(pool, candidate_id, detail):
++    """Forward 拒绝统一路径：先在 candidate_history 留痕，再抛错。"""
++    reason = "forward_rejected: %s" % detail
++    pool.record_history(
++        candidate_id,
++        field="validation_sample",
++        old=None,
++        new=None,
++        actor="validation",
++        reason=reason,
++    )
++    raise ForwardRejectedError(reason)
++
++
++def create_sample(pool, candidate_id, source_id, entry_date=None,
++                  benchmark_price=None, kind="backfill",
++                  discovery_event_id=None, bars=None,
++                  benchmark_price_source=None, data_version=None,
++                  fetched_at=None) -> int:
++    """创建验证样本 -> sample_id（时间规则见模块 docstring）。
++
++    - entry_date <= discovered_date（发现事件的上海日历日期）时，
++      无论调用方传何 kind，一律强制 kind='backfill' 落库。
++    - kind='forward' 时 entry/benchmark 不信任调用方入参：按 bars
++      （入参或经 bars 层现取）推导 discovered_date 之后第一交易日
++      及其收盘；无法推导则留痕拒绝（ForwardRejectedError）。
++    - kind='backfill' 必须显式给 entry_date 与 benchmark_price。
++    - fix2-1：forward/backfill 的 benchmark 都必须通过
++      bar_close_confirmed 完整性确认（以 fetched_at 为取数时刻，
++      缺省为当前时刻）；不确认则留痕拒绝，reason 含
++      'benchmark_close_unconfirmed'。
++    - UNIQUE(candidate_id, source_id, entry_date) 冲突转抛
++      DuplicateSampleError。创建成功后置 validation_status。
++    """
++    fetched_at = fetched_at or _now_iso()
++    if kind not in VALID_KINDS:
++        raise ValueError("invalid sample kind: %r (allowed: %s)"
++                         % (kind, "/".join(VALID_KINDS)))
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        event = _resolve_event(conn, candidate_id, source_id,
++                               discovery_event_id)
++        discovered_date = (_shanghai_date(event["discovered_at"])
++                           if event else None)
++        ev_id = event["id"] if event else None
++
++        req_entry = str(entry_date)[:10] if entry_date else None
++        final_kind = kind
++        if (discovered_date is not None and req_entry is not None
++                and req_entry <= discovered_date):
++            # 入场不晚于数据实际可得日 -> 事后回填，代码强制改类
++            final_kind = "backfill"
++
++        bench_source = benchmark_price_source
++        if final_kind == "forward":
++            if event is None:
++                _reject_forward(
++                    pool, candidate_id,
++                    "no discovery event linked; forward requires a "
++                    "discovery event as its availability anchor")
++            bars_use = bars
++            prov = None
++            if bars_use is None:
++                bars_use, prov = _fetch_bars_for(
++                    pool, candidate_id, discovered_date)
++            derived = _derive_forward_entry(bars_use, discovered_date)
++            if derived is None:
++                _reject_forward(
++                    pool, candidate_id,
++                    "next_trading_day_unconfirmed: no bar after "
++                    "discovered_date=%s (bars=%d, provenance=%s); "
++                    "refusing to guess an entry point"
++                    % (discovered_date, len(bars_use or []), prov))
++            final_entry, final_bench = derived
++            bench_date = final_entry
++            if bench_source is None:
++                bench_source = prov or "provided_bars close (qfq)"
++            # fix2-1：推导出的 entry 日 bar 必须通过收盘完整性
++            # 确认才可作 benchmark（不得仅凭 bar 存在认定收盘）。
++            cand = pool.get_by_id(candidate_id) or {}
++            if not bar_close_confirmed(
++                    final_entry, fetched_at,
++                    provenance=bench_source,
++                    market=cand.get("market")):
++                _reject_forward(
++                    pool, candidate_id,
++                    "benchmark_close_unconfirmed: entry bar %s not "
++                    "confirmed closed at fetched_at=%s "
++                    "(provenance=%s); refusing to use an incomplete "
++                    "bar as benchmark"
++                    % (final_entry, fetched_at, bench_source))
++        else:
++            if req_entry is None or benchmark_price is None:
++                raise ValueError(
++                    "backfill sample requires explicit entry_date and "
++                    "benchmark_price")
++            final_entry = req_entry
++            final_bench = float(benchmark_price)
++            bench_date = final_entry
++            # fix2-1：backfill 同受完整性约束（历史日期严格早于
++            # 取数日天然确认；entry 为取数当日且未过收盘确认
++            # 时刻、或晚于取数日，一律留痕拒绝）。
++            cand = pool.get_by_id(candidate_id) or {}
++            if not bar_close_confirmed(
++                    final_entry, fetched_at,
++                    provenance=bench_source,
++                    market=cand.get("market")):
++                reason = (
++                    "backfill_rejected: benchmark_close_unconfirmed:"
++                    " entry_date=%s not confirmed closed at "
++                    "fetched_at=%s" % (final_entry, fetched_at))
++                pool.record_history(
++                    candidate_id, field="validation_sample",
++                    old=None, new=None, actor="validation",
++                    reason=reason)
++                raise ForwardRejectedError(reason)
++
++        try:
++            cur = conn.execute(
++                "INSERT INTO validation_samples "
++                "(candidate_id, source_id, kind, entry_date, "
++                " benchmark_price, maturity_status, created_at, "
++                " discovery_event_id, benchmark_date, "
++                " benchmark_price_source, data_version) "
++                "VALUES (?, ?, ?, ?, ?, 'immature', ?, ?, ?, ?, ?)",
++                (candidate_id, source_id, final_kind, final_entry,
++                 float(final_bench), _now_iso(), ev_id, bench_date,
++                 bench_source, data_version))
++            conn.commit()
++        except sqlite3.IntegrityError as e:
++            raise DuplicateSampleError(
++                "duplicate validation sample: candidate_id=%r "
++                "source_id=%r entry_date=%r (%s)"
++                % (candidate_id, source_id, final_entry, e)) from e
++        sample_id = cur.lastrowid
++    finally:
++        if owns:
++            conn.close()
++    pool.set_fields(candidate_id, actor="validation",
++                    validation_status="in_progress")
++    return sample_id
++
++
++def get_sample(pool, sample_id) -> dict:
++    """按 id 读样本行 -> dict；不存在返回 None。"""
++    conn, owns = _resolve_conn(pool)
++    try:
++        cur = conn.execute(
++            "SELECT * FROM validation_samples WHERE id = ?", (sample_id,))
++        return _row_dict(cur, cur.fetchone())
++    finally:
++        if owns:
++            conn.close()
++
++
++def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
++                    data_version=None) -> dict:
++    """评估样本并回写 -> 更新后的样本行 dict。
++
++    after = [b for b in bars if b[0] > entry_date]（日期字符串比较，
++    bars 日期须为 'YYYY-MM-DD'）。成熟度口径见模块 docstring。
++    回写同时记录 bars_asof（本次评估所用 bars 的最大日期）与
++    data_version（评估数据版本/来源标识，入参传入）。
++    """
++    sample = get_sample(pool, sample_id)
++    if sample is None:
++        raise ValueError("validation sample not found: id=%r" % (sample_id,))
++    entry_date = str(sample["entry_date"])
++    benchmark = float(sample["benchmark_price"])
++    bars = bars or []
++    bars_asof = max((str(b[0])[:10] for b in bars), default=None)
++    after = [b for b in bars if str(b[0]) > entry_date]
++
++    # fix2-1：benchmark 不可变。当前 bars 中 entry 日收盘与已
++    # 记录 benchmark 不一致 = 行情源事后修订：只记录、绝不
++    # 覆盖 benchmark，评估继续以原 benchmark 计算。
++    revision = None
++    for b in bars:
++        if str(b[0])[:10] == entry_date:
++            observed_close = float(b[4])
++            if abs(observed_close - benchmark) > 1e-9:
++                revision = {
++                    "detected": True,
++                    "entry_date": entry_date,
++                    "recorded_benchmark": benchmark,
++                    "observed_close": observed_close,
++                    "detected_at": _now_iso(),
++                    "eval_version": eval_version,
++                }
++            break
++    if revision is not None:
++        pool.record_history(
++            sample["candidate_id"], field="benchmark_revision",
++            old=benchmark, new=revision["observed_close"],
++            actor="validation",
++            reason="benchmark_revision_detected: entry=%s "
++                   "recorded=%s observed=%s; benchmark immutable, "
++                   "evaluation keeps the recorded value"
++                   % (entry_date, benchmark,
++                      revision["observed_close"]))
++
++    ret_t5 = ret_t10 = ret_t20 = None
++    max_drawdown = None
++    missing_reason = None
++
++    if not bars:
++        maturity_status = "missing"
++        missing_reason = "no_price_data"
++    elif not after:
++        maturity_status = "immature"
++    else:
++        closes = [float(b[4]) for b in after]
++        if len(after) >= 5:
++            ret_t5 = closes[4] / benchmark - 1.0
++        if len(after) >= 10:
++            ret_t10 = closes[9] / benchmark - 1.0
++        if len(after) >= 20:
++            ret_t20 = closes[19] / benchmark - 1.0
++        peak = benchmark
++        worst = None
++        for c in closes[:20]:
++            if c > peak:
++                peak = c
++            dd = c / peak - 1.0
++            worst = dd if worst is None else min(worst, dd)
++        max_drawdown = worst
++        maturity_status = "mature" if len(after) >= 20 else "immature"
++
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        conn.execute(
++            "UPDATE validation_samples SET ret_t5 = ?, ret_t10 = ?, "
++            "ret_t20 = ?, max_drawdown = ?, maturity_status = ?, "
++            "missing_reason = ?, evaluated_at = ?, eval_version = ?, "
++            "bars_asof = ?, data_version = ?, "
++            "benchmark_revision_json = COALESCE("
++            "benchmark_revision_json, ?) "
++            "WHERE id = ?",
++            (ret_t5, ret_t10, ret_t20, max_drawdown, maturity_status,
++             missing_reason, _now_iso(), eval_version, bars_asof,
++             data_version,
++             json.dumps(revision, ensure_ascii=False)
++             if revision is not None else None,
++             sample_id))
++        conn.commit()
++    finally:
++        if owns:
++            conn.close()
++    return get_sample(pool, sample_id)
++
++
++# ---------------------------------------------------------------------------
++# 样本排除（审计裁定）与 Forward 统计
++# ---------------------------------------------------------------------------
++
++def exclude_sample(pool, sample_id, excluded_from, reason,
++                   decided_by) -> int:
++    """为样本写一条排除记录（如审计裁定不进 forward 统计）。
++
++    只新增 sample_exclusions 行，绝不改动样本行本身。重复排除
++    同一 (sample_id, excluded_from) 抛 ValueError。
++    """
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        if get_sample(pool, sample_id) is None:
++            raise ValueError("validation sample not found: id=%r"
++                             % (sample_id,))
++        try:
++            cur = conn.execute(
++                "INSERT INTO sample_exclusions "
++                "(sample_id, excluded_from, reason, decided_by, "
++                " created_at) VALUES (?, ?, ?, ?, ?)",
++                (sample_id, excluded_from, reason, decided_by,
++                 _now_iso()))
++            conn.commit()
++        except sqlite3.IntegrityError as e:
++            raise ValueError(
++                "sample %r already excluded from %r (%s)"
++                % (sample_id, excluded_from, e)) from e
++        return cur.lastrowid
++    finally:
++        if owns:
++            conn.close()
++
++
++def excluded_sample_ids(pool, excluded_from="forward_stats") -> set:
++    """被指定口径排除的样本 id 集合。"""
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        rows = conn.execute(
++            "SELECT sample_id FROM sample_exclusions"
++            " WHERE excluded_from = ?", (excluded_from,)).fetchall()
++        return {r[0] for r in rows}
++    finally:
++        if owns:
++            conn.close()
++
++
++def _samples_for(pool, candidate_id=None):
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        sql = "SELECT * FROM validation_samples"
++        params = ()
++        if candidate_id is not None:
++            sql += " WHERE candidate_id = ?"
++            params = (candidate_id,)
++        sql += " ORDER BY id ASC"
++        cur = conn.execute(sql, params)
++        return [_row_dict(cur, r) for r in cur.fetchall()]
++    finally:
++        if owns:
++            conn.close()
++
++
++def forward_stats(pool, candidate_id=None) -> dict:
++    """Forward 统计口径：仅 kind='forward' 且未被 forward_stats
++    排除的样本。被排除样本单独列出，绝不混入统计。"""
++    excluded = excluded_sample_ids(pool, "forward_stats")
++    samples = _samples_for(pool, candidate_id)
++    fwd = [s for s in samples
++           if s["kind"] == "forward" and s["id"] not in excluded]
++    return {
++        "sample_ids": [s["id"] for s in fwd],
++        "total": len(fwd),
++        "mature": sum(1 for s in fwd
++                      if s["maturity_status"] == "mature"),
++        "immature": sum(1 for s in fwd
++                        if s["maturity_status"] == "immature"),
++        "missing": sum(1 for s in fwd
++                       if s["maturity_status"] == "missing"),
++        "excluded_sample_ids": sorted(
++            s["id"] for s in samples
++            if s["kind"] == "forward" and s["id"] in excluded),
++    }
++
++
++# ---------------------------------------------------------------------------
++# 验证通过判定（P0-3 门禁）：validation_passed 的唯一产生路径
++# ---------------------------------------------------------------------------
++
++NO_RULE = "NO_RULE"
++
++RULE_STATUSES = ("draft", "approved", "disabled", "test")
++
++# 代码侧规则实现注册表：rule_id -> ValidationRule 实例。正式
++# judge 只按 rule_id 从这里取实现，且必须同时满足 rule_registry
++# 落库表中存在同 rule_id 的 status='approved' 版本行。本轮不
++# 预置任何实现（数值门槛未经用户确认）。
++RULE_IMPLEMENTATIONS: dict = {}
++
++
++class ValidationRule:
++    """版本化验证规则接口（数值阈值由用户确认后另行实现登记）。
++
++    evaluate(scope, metrics) -> (decision, basis)，
++    decision 只许 'passed' / 'not_passed'。硬门槛（无 forward
++    样本 / 未成熟 / 指标 NULL）由 judge_validation 前置拦截，
++    不进入规则的数值判定。
++    """
++
++    version = "abstract"
++
++    def evaluate(self, scope, metrics):  # pragma: no cover - 接口
++        raise NotImplementedError
++
++
++def register_rule_implementation(rule_id, rule):
++    """登记代码侧规则实现（rule 须提供 evaluate(scope, metrics)）。
++
++    只登记实现不等于批准：正式判定还要求 rule_registry 表中
++    有同 rule_id 的 approved 版本行（见 register_rule）。
++    """
++    if not hasattr(rule, "evaluate"):
++        raise TypeError(
++            "rule implementation must provide evaluate(scope, metrics)")
++    RULE_IMPLEMENTATIONS[str(rule_id)] = rule
++    return str(rule_id)
++
++
++def register_rule(pool, rule_id, version, status="draft", params=None,
++                  approved_by=None, approved_at=None) -> int:
++    """向 rule_registry 落库表登记一个规则版本 -> row id。
++
++    status 只许 draft/approved/disabled/test；status='approved'
++    必须带 approved_by（批准留痕）。重复 (rule_id, version)
++    抛 ValueError。注册只新增行，绝不改写既有判定记录；
++    未经用户确认的规则不得以 approved 登记到正式注册表。
++    """
++    if status not in RULE_STATUSES:
++        raise ValueError("invalid rule status: %r (allowed: %s)"
++                         % (status, "/".join(RULE_STATUSES)))
++    if status == "approved" and not approved_by:
++        raise ValueError(
++            "approved rule registration requires approved_by")
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        try:
++            cur = conn.execute(
++                "INSERT INTO rule_registry "
++                "(rule_id, version, status, approved_by, approved_at,"
++                " params_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (str(rule_id), str(version), status, approved_by,
++                 approved_at,
++                 json.dumps(params or {}, ensure_ascii=False),
++                 _now_iso()))
++            conn.commit()
++        except sqlite3.IntegrityError as e:
++            raise ValueError(
++                "rule already registered: %s@%s (%s)"
++                % (rule_id, version, e)) from e
++        return cur.lastrowid
++    finally:
++        if owns:
++            conn.close()
++
++
++def set_rule_status(pool, rule_id, version, status) -> None:
++    """变更已登记规则版本的状态（如 approved -> disabled）。
++
++    只影响之后的判定；既有 validation_decisions 记录（含其
++    rule_version 与 metrics）不随注册表变更而改写。
++    """
++    if status not in RULE_STATUSES:
++        raise ValueError("invalid rule status: %r (allowed: %s)"
++                         % (status, "/".join(RULE_STATUSES)))
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        cur = conn.execute(
++            "UPDATE rule_registry SET status = ?"
++            " WHERE rule_id = ? AND version = ?",
++            (status, str(rule_id), str(version)))
++        conn.commit()
++        if cur.rowcount == 0:
++            raise ValueError("rule not registered: %s@%s"
++                             % (rule_id, version))
++    finally:
++        if owns:
++            conn.close()
++
++
++def get_registered_rule(pool, rule_id, version):
++    """读 rule_registry 中 (rule_id, version) 一行 -> dict/None。"""
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        cur = conn.execute(
++            "SELECT * FROM rule_registry"
++            " WHERE rule_id = ? AND version = ?",
++            (str(rule_id), str(version)))
++        return _row_dict(cur, cur.fetchone())
++    finally:
++        if owns:
++            conn.close()
++
++
++def judge_validation(pool, candidate_id, rule_id=None,
++                     rule_version=None, actor="validation") -> dict:
++    """验证判定：汇总候选全部样本并按注册规则判定，写
++    validation_decisions 一行，返回该行 dict。
++
++    fix2-3 注册保护：正式判定只接受 rule_id+rule_version 并
++    从 rule_registry 注册表加载，规则对象直传参数已删除。
++    - rule_id=None（默认）：decision='not_evaluable'、
++      rule_version=NO_RULE、basis 含 'no_approved_rule'。
++    - 未登记 / 版本不符 / status != 'approved'（draft/test/
++      disabled）/ 代码侧无实现：一律 'not_evaluable' 并在
++      basis 注明原因，判定留痕，不流转状态。
++    - 已登记 approved 规则：硬门槛前置——无（未排除的）
++      forward 样本 -> 'not_passed'（backfill 不得替代）；
++      forward 未成熟或关键指标（ret_t20/max_drawdown）为
++      NULL -> 'not_passed'；其后才进规则的数值判定。
++    - decision='passed' 时经 promotion 内部受控路径（须携带
++      本次判定记录 id 供其核验）流转到 validation_passed。
++    """
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        samples = _samples_for(pool, candidate_id)
++        excluded = excluded_sample_ids(pool, "forward_stats")
++        fwd = [s for s in samples
++               if s["kind"] == "forward" and s["id"] not in excluded]
++        bf = [s for s in samples if s["kind"] == "backfill"]
++        scope = {
++            "forward_sample_ids": [s["id"] for s in fwd],
++            "backfill_sample_ids": [s["id"] for s in bf],
++            "excluded_sample_ids": sorted(
++                s["id"] for s in samples if s["id"] in excluded),
++        }
++        null_metric_ids = [
++            s["id"] for s in fwd
++            if s["ret_t20"] is None or s["max_drawdown"] is None]
++        metrics = {
++            "forward_count": len(fwd),
++            "forward_mature": sum(
++                1 for s in fwd if s["maturity_status"] == "mature"),
++            "forward_immature": sum(
++                1 for s in fwd if s["maturity_status"] == "immature"),
++            "forward_missing": sum(
++                1 for s in fwd if s["maturity_status"] == "missing"),
++            "backfill_count": len(bf),
++            "forward_null_metric_sample_ids": null_metric_ids,
++        }
++
++        impl = None
++        if rule_id is None:
++            decision = "not_evaluable"
++            recorded_version = NO_RULE
++            basis = ("no_approved_rule: 验证数值门槛尚未经用户确认，"
++                     "注册表无 approved 规则；系统只能记录验证"
++                     "结果，不得产生 validation_passed")
++        elif rule_version is None:
++            decision = "not_evaluable"
++            recorded_version = NO_RULE
++            basis = ("rule_version_required: 正式判定必须显式给出"
++                     " rule_id 与 version（请求 rule_id=%s 未带"
++                     " version），拒绝按未登记规则判定" % (rule_id,))
++        else:
++            reg = get_registered_rule(pool, rule_id, rule_version)
++            if reg is None:
++                decision = "not_evaluable"
++                recorded_version = NO_RULE
++                basis = ("rule_not_registered: rule_id=%s "
++                         "version=%s 未在 rule_registry 登记，"
++                         "正式判定拒绝" % (rule_id, rule_version))
++            elif reg["status"] != "approved":
++                decision = "not_evaluable"
++                recorded_version = NO_RULE
++                basis = ("rule_not_approved: rule_id=%s version=%s "
++                         "status=%s；draft/test/disabled 规则不得"
++                         "用于正式判定"
++                         % (rule_id, rule_version, reg["status"]))
++            else:
++                impl = RULE_IMPLEMENTATIONS.get(str(rule_id))
++                if impl is None:
++                    decision = "not_evaluable"
++                    recorded_version = NO_RULE
++                    basis = ("rule_implementation_missing: "
++                             "rule_id=%s 已登记 approved 但代码侧"
++                             "无实现，无法执行数值判定" % (rule_id,))
++                else:
++                    recorded_version = rule_version
++                    if not fwd:
++                        decision = "not_passed"
++                        basis = ("no_forward_samples: 无未被排除的"
++                                 " forward 样本；backfill 不得替代"
++                                 "真实 forward 样本")
++                    elif (metrics["forward_mature"] < len(fwd)
++                            or null_metric_ids):
++                        decision = "not_passed"
++                        basis = ("immature_or_missing_metrics: "
++                                 "未成熟样本不得判定通过，缺失指标"
++                                 "保持 NULL 不按零值处理 "
++                                 "(immature=%d, "
++                                 "null_metric_sample_ids=%s)"
++                                 % (metrics["forward_immature"],
++                                    null_metric_ids))
++                    else:
++                        decision, basis = impl.evaluate(scope, metrics)
++                        if decision not in ("passed", "not_passed"):
++                            raise ValueError(
++                                "rule %s@%s returned invalid "
++                                "decision: %r"
++                                % (rule_id, rule_version, decision))
++
++        cur = conn.execute(
++            "INSERT INTO validation_decisions "
++            "(candidate_id, rule_version, sample_scope, metrics_json,"
++            " decision, basis, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
++            (candidate_id, recorded_version,
++             json.dumps(scope, ensure_ascii=False),
++             json.dumps(metrics, ensure_ascii=False),
++             decision, basis, _now_iso()))
++        conn.commit()
++        decision_id = cur.lastrowid
++        cur = conn.execute(
++            "SELECT * FROM validation_decisions WHERE id = ?",
++            (decision_id,))
++        row = _row_dict(cur, cur.fetchone())
++    finally:
++        if owns:
++            conn.close()
++
++    if decision == "passed":
++        from market_first import promotion
++        promotion._apply_validation_passed(
++            pool, candidate_id, actor=actor,
++            reason="judge_validation passed: rule_version=%s "
++                   "decision_id=%s" % (recorded_version, decision_id),
++            decision_id=decision_id)
++    return row
+diff --git a/evidence/fix2/src_before/db.py b/evidence/fix2/src_before/db.py
+new file mode 100644
+index 0000000..91c6737
+--- /dev/null
++++ b/evidence/fix2/src_before/db.py
+@@ -0,0 +1,253 @@
++"""Market-First 独立 SQLite 存储：建表与连接。
++
++新库默认路径为本包目录下的 market_first.db，与生产 sim.db 隔离。
++SCHEMA_SQL 一次建全（含研究/验证/审批/交接模块的表）。
++"""
++from __future__ import annotations
++
++import sqlite3
++from pathlib import Path
++
++DEFAULT_DB_PATH = str(Path(__file__).resolve().parent / "market_first.db")
++
++SCHEMA_SQL = """
++CREATE TABLE IF NOT EXISTS candidates (
++    id INTEGER PRIMARY KEY,
++    market TEXT NOT NULL,
++    symbol TEXT NOT NULL,
++    name TEXT,
++    first_seen_at TEXT,
++    last_seen_at TEXT,
++    research_status TEXT DEFAULT 'pending',
++    validation_status TEXT DEFAULT 'none',
++    promotion_status TEXT DEFAULT 'discovered',
++    risk_status TEXT DEFAULT 'normal',
++    created_at TEXT,
++    updated_at TEXT,
++    UNIQUE(market, symbol)
++);
++
++CREATE TABLE IF NOT EXISTS discovery_events (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    source_id TEXT,
++    market TEXT,
++    symbol TEXT,
++    discovered_at TEXT,
++    trigger_condition TEXT,
++    price_at_discovery REAL,
++    price_data_time TEXT,
++    evidence_json TEXT DEFAULT '{}',
++    created_at TEXT
++);
++
++CREATE TABLE IF NOT EXISTS candidate_history (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    field TEXT,
++    old_value TEXT,
++    new_value TEXT,
++    actor TEXT,
++    reason TEXT,
++    created_at TEXT
++);
++
++CREATE TABLE IF NOT EXISTS research_reports (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    engine_version TEXT,
++    computed_at TEXT,
++    data_asof TEXT,
++    data_version TEXT,
++    factors_json TEXT,
++    total_score REAL,
++    evidence_json TEXT DEFAULT '{}'
++);
++
++CREATE TABLE IF NOT EXISTS validation_samples (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    source_id TEXT,
++    kind TEXT CHECK (kind IN ('forward', 'backfill')),
++    entry_date TEXT,
++    benchmark_price REAL,
++    ret_t5 REAL,
++    ret_t10 REAL,
++    ret_t20 REAL,
++    max_drawdown REAL,
++    maturity_status TEXT DEFAULT 'immature',
++    missing_reason TEXT,
++    evaluated_at TEXT,
++    eval_version TEXT,
++    created_at TEXT,
++    discovery_event_id INTEGER REFERENCES discovery_events(id),
++    bars_asof TEXT,
++    benchmark_date TEXT,
++    benchmark_price_source TEXT,
++    data_version TEXT,
++    UNIQUE(candidate_id, source_id, entry_date)
++);
++
++CREATE TABLE IF NOT EXISTS sample_exclusions (
++    id INTEGER PRIMARY KEY,
++    sample_id INTEGER NOT NULL REFERENCES validation_samples(id),
++    excluded_from TEXT NOT NULL,
++    reason TEXT,
++    decided_by TEXT,
++    created_at TEXT,
++    UNIQUE(sample_id, excluded_from)
++);
++
++CREATE TABLE IF NOT EXISTS validation_decisions (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    rule_version TEXT,
++    sample_scope TEXT,
++    metrics_json TEXT DEFAULT '{}',
++    decision TEXT,
++    basis TEXT,
++    created_at TEXT
++);
++
++CREATE TABLE IF NOT EXISTS fetched_bars (
++    symbol TEXT NOT NULL,
++    date TEXT NOT NULL,
++    open REAL,
++    high REAL,
++    low REAL,
++    close REAL,
++    volume REAL,
++    source TEXT,
++    fetched_at TEXT,
++    PRIMARY KEY (symbol, date, source)
++);
++
++CREATE TABLE IF NOT EXISTS fetched_coverage (
++    symbol TEXT NOT NULL,
++    start TEXT NOT NULL,
++    end TEXT,
++    source TEXT,
++    fetched_at TEXT,
++    PRIMARY KEY (symbol, start, end, source)
++);
++
++CREATE TABLE IF NOT EXISTS approvals (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    decision TEXT CHECK (decision IN ('approved', 'rejected')),
++    approver TEXT,
++    decided_at TEXT,
++    basis TEXT,
++    versions_json TEXT DEFAULT '{}'
++);
++
++CREATE TABLE IF NOT EXISTS handoffs (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    approval_id INTEGER REFERENCES approvals(id),
++    payload_json TEXT,
++    status TEXT DEFAULT 'simulated',
++    created_at TEXT
++);
++"""
++
++
++def _resolve(db_path: str | None) -> str:
++    return str(db_path) if db_path is not None else DEFAULT_DB_PATH
++
++
++def connect(db_path: str | None = None) -> sqlite3.Connection:
++    """打开连接：row_factory=sqlite3.Row、外键开启。"""
++    path = _resolve(db_path)
++    if path != ":memory:":
++        Path(path).parent.mkdir(parents=True, exist_ok=True)
++    conn = sqlite3.connect(path)
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys=ON")
++    return conn
++
++
++# 第一轮审计修复（fix1）新增列：旧库靠 ALTER 幂等补齐，新库由
++# SCHEMA_SQL 直接建全。ALTER 只加可空列，不改动既有行数据。
++_FIX1_SAMPLE_COLUMNS = {
++    "discovery_event_id": "INTEGER",
++    "bars_asof": "TEXT",
++    "benchmark_date": "TEXT",
++    "benchmark_price_source": "TEXT",
++    "data_version": "TEXT",
++}
++
++_FIX1_TABLES_SQL = """
++CREATE TABLE IF NOT EXISTS sample_exclusions (
++    id INTEGER PRIMARY KEY,
++    sample_id INTEGER NOT NULL REFERENCES validation_samples(id),
++    excluded_from TEXT NOT NULL,
++    reason TEXT,
++    decided_by TEXT,
++    created_at TEXT,
++    UNIQUE(sample_id, excluded_from)
++);
++
++CREATE TABLE IF NOT EXISTS validation_decisions (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    rule_version TEXT,
++    sample_scope TEXT,
++    metrics_json TEXT DEFAULT '{}',
++    decision TEXT,
++    basis TEXT,
++    created_at TEXT
++);
++
++CREATE TABLE IF NOT EXISTS fetched_bars (
++    symbol TEXT NOT NULL,
++    date TEXT NOT NULL,
++    open REAL,
++    high REAL,
++    low REAL,
++    close REAL,
++    volume REAL,
++    source TEXT,
++    fetched_at TEXT,
++    PRIMARY KEY (symbol, date, source)
++);
++
++CREATE TABLE IF NOT EXISTS fetched_coverage (
++    symbol TEXT NOT NULL,
++    start TEXT NOT NULL,
++    end TEXT,
++    source TEXT,
++    fetched_at TEXT,
++    PRIMARY KEY (symbol, start, end, source)
++);
++"""
++
++
++def ensure_fix1_schema(conn) -> None:
++    """幂等补齐 fix1 结构：validation_samples 新列 + 三张新表。
++
++    对既有行只新增 NULL 列，绝不 UPDATE/DELETE 既有数据。
++    """
++    cols = {r[1] for r in conn.execute(
++        "PRAGMA table_info(validation_samples)")}
++    if cols:
++        for name, typ in _FIX1_SAMPLE_COLUMNS.items():
++            if name not in cols:
++                conn.execute(
++                    "ALTER TABLE validation_samples ADD COLUMN %s %s"
++                    % (name, typ))
++    conn.executescript(_FIX1_TABLES_SQL)
++    conn.commit()
++
++
++def init_db(db_path: str | None = None) -> str:
++    """建表（幂等）并返回实际库路径。"""
++    path = _resolve(db_path)
++    conn = connect(path)
++    try:
++        conn.executescript(SCHEMA_SQL)
++        conn.commit()
++        ensure_fix1_schema(conn)
++    finally:
++        conn.close()
++    return path
+diff --git a/evidence/fix2/src_before/promotion.py b/evidence/fix2/src_before/promotion.py
+new file mode 100644
+index 0000000..0a93fdb
+--- /dev/null
++++ b/evidence/fix2/src_before/promotion.py
+@@ -0,0 +1,187 @@
++"""Promotion & Approval：晋升状态机与人工审批。
++
++状态机由显式转移表 TRANSITIONS 强制流转，任何表外转移都会
++先在 candidate_history 留痕（field='promotion_transition_attempt'）
++再抛 IllegalTransitionError，绝不静默放行。
++
++验证通过 != 自动批准：进入 approved 的唯一入口是 decide()
++（人工审批，approver/basis/versions 全量留痕于 approvals 表）。
++"""
++from __future__ import annotations
++
++import json
++from datetime import datetime
++
++# 全部状态（顺序即生命周期顺序）
++STATES = (
++    "discovered",
++    "pending_research",
++    "researching",
++    "validating",
++    "validation_passed",
++    "validation_failed",
++    "pending_approval",
++    "approved",
++    "rejected",
++)
++
++# 显式转移表：当前状态 -> 允许的下一状态集合（终态为空集）
++TRANSITIONS = {
++    "discovered": frozenset({"pending_research"}),
++    "pending_research": frozenset({"researching"}),
++    "researching": frozenset({"validating"}),
++    "validating": frozenset({"validation_passed", "validation_failed"}),
++    "validation_failed": frozenset({"pending_research"}),
++    "validation_passed": frozenset({"pending_approval"}),
++    "pending_approval": frozenset({"approved", "rejected"}),
++    "approved": frozenset(),
++    "rejected": frozenset(),
++}
++
++DEFAULT_VERSIONS = {"promotion_engine": "mf-promo-1.0"}
++
++
++class IllegalTransitionError(Exception):
++    """非法状态转移（已在 candidate_history 留痕后抛出）。"""
++
++
++def _now_iso() -> str:
++    return datetime.now().astimezone().isoformat(timespec="seconds")
++
++
++def _reject(pool, cid, current, to_state, actor, detail):
++    """非法转移统一路径：先留痕，再抛错。"""
++    reason = "ILLEGAL TRANSITION REJECTED: %s" % detail
++    pool.record_history(
++        cid,
++        field="promotion_transition_attempt",
++        old=current,
++        new=to_state,
++        actor=actor,
++        reason=reason,
++    )
++    raise IllegalTransitionError(reason)
++
++
++# 审批终态：转移表上 pending_approval 可达，但只能经 decide()
++# 人工审批进入；公开 transition() 直达一律按非法转移处理。
++DECISION_STATES = frozenset({"approved", "rejected"})
++
++# 验证通过态：转移表上 validating 可达，但只能由验证引擎的
++# judge_validation 按版本化规则判定产生；公开 transition() 直达
++# 一律按非法转移处理（第一轮审计修复 P0-3）。
++VALIDATION_GATE_STATES = frozenset({"validation_passed"})
++
++
++def _apply_transition(pool, cid, current, to_state, actor, reason=""):
++    """表内流转的实际执行（调用方已完成合法性判定）。"""
++    pool.set_fields(
++        cid,
++        actor=actor,
++        reason=reason if reason else None,
++        promotion_status=to_state,
++    )
++    return to_state
++
++
++def transition(pool, cid, to_state, actor, reason=""):
++    """按转移表流转 promotion_status。
++
++    合法：经 pool.set_fields 写字段（逐字段记 history）。
++    非法：先 record_history 留痕，再抛 IllegalTransitionError。
++    approved / rejected 虽在转移表中（pending_approval 可达），
++    但只能经 decide() 进入，transition() 直达按非法处理——
++    验证通过 != 自动批准，除 decide 外没有任何函数能进入 approved。
++    返回流转后的状态字符串。
++    """
++    cand = pool.get_by_id(cid)
++    if cand is None:
++        raise ValueError("候选不存在：id=%s" % (cid,))
++    current = cand.get("promotion_status")
++    if to_state in DECISION_STATES:
++        _reject(
++            pool, cid, current, to_state, actor,
++            "%s -> %s 属人工审批终态，只能经 decide() 审批进入，"
++            "transition() 直达被拒" % (current, to_state),
++        )
++    if to_state in VALIDATION_GATE_STATES:
++        _reject(
++            pool, cid, current, to_state, actor,
++            "%s -> %s 属验证引擎判定态，只能由 "
++            "validation.judge_validation 按版本化规则产生，"
++            "transition() 直达被拒" % (current, to_state),
++        )
++    allowed = TRANSITIONS.get(current, frozenset())
++    if to_state not in allowed:
++        _reject(
++            pool, cid, current, to_state, actor,
++            "%s -> %s 不在允许转移内（当前状态允许：%s）"
++            % (current, to_state,
++               ",".join(sorted(allowed)) if allowed else "无，终态"),
++        )
++    return _apply_transition(pool, cid, current, to_state, actor, reason)
++
++
++def _apply_validation_passed(pool, cid, actor, reason=""):
++    """内部受控入口：validating -> validation_passed。
++
++    唯一合法调用方是 validation.judge_validation 在判定
++    decision='passed' 后调用；当前状态不是 validating 时抛
++    IllegalTransitionError。不经公开 transition()（其对
++    validation_passed 直达一律拒绝）。
++    """
++    cand = pool.get_by_id(cid)
++    if cand is None:
++        raise ValueError("候选不存在：id=%s" % (cid,))
++    current = cand.get("promotion_status")
++    if current != "validating":
++        raise IllegalTransitionError(
++            "validation_passed 只能从 validating 经 judge_validation "
++            "判定流转，当前状态为 %s" % (current,))
++    return _apply_transition(pool, cid, current, "validation_passed",
++                             actor, reason)
++
++
++def decide(pool, cid, approver, decision, basis="", versions=None):
++    """人工审批：唯一能进入 approved / rejected 终态的入口。
++
++    decision 只接受 'approved' / 'rejected'；当前状态必须为
++    pending_approval，否则走非法路径（留痕 + IllegalTransitionError）。
++    同一事务内写 approvals 一行并流转到对应终态，返回 approval_id。
++    """
++    if decision not in ("approved", "rejected"):
++        raise ValueError(
++            "decision 只接受 'approved' / 'rejected'，收到：%r" % (decision,))
++    cand = pool.get_by_id(cid)
++    if cand is None:
++        raise ValueError("候选不存在：id=%s" % (cid,))
++    current = cand.get("promotion_status")
++    if current != "pending_approval":
++        _reject(
++            pool, cid, current, decision, approver,
++            "decide(decision=%s) 要求当前状态为 pending_approval，"
++            "实际为 %s" % (decision, current),
++        )
++    versions_payload = versions if versions is not None else dict(DEFAULT_VERSIONS)
++    conn = pool.conn
++    try:
++        cur = conn.execute(
++            "INSERT INTO approvals (candidate_id, decision, approver,"
++            " decided_at, basis, versions_json) VALUES (?, ?, ?, ?, ?, ?)",
++            (cid, decision, approver, _now_iso(), basis,
++             json.dumps(versions_payload, ensure_ascii=False)),
++        )
++        approval_id = cur.lastrowid
++        # 不单独 commit：与随后的状态流转同事务提交
++        # （pool.set_fields 内部 commit 一并落盘两处写入）。
++        # 审批终态只能经本函数进入，故此处走内部 _apply_transition，
++        # 不经公开 transition()（其对 approved/rejected 直达一律拒绝）。
++        _apply_transition(
++            pool, cid, current, decision, actor=approver,
++            reason="人工审批 decide=%s approver=%s approval_id=%s"
++                   % (decision, approver, approval_id),
++        )
++    except Exception:
++        conn.rollback()
++        raise
++    return approval_id
+diff --git a/evidence/fix2/src_before/research.py b/evidence/fix2/src_before/research.py
+new file mode 100644
+index 0000000..4cb214d
+--- /dev/null
++++ b/evidence/fix2/src_before/research.py
+@@ -0,0 +1,362 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""Market-First 研究层：只产证据与分项分数，不产任何交易指令。
++
++边界（架构硬约束）：
++- 研究报告（research_reports）只含 factors/total_score/evidence，
++  禁止出现 side/action/order/buy/sell/instruction/qty/position_size
++  等交易指令字段；落库前 assert_no_instruction_keys 递归拦截，
++  命中即抛 ValueError、整份报告不写。
++- 模块 compute() 为纯计算（除 ResearchEngine.run 的落库/状态更新外），
++  同输入同输出；数据不足时 subtotal=None（缺失不记 0 分充数）。
++"""
++from __future__ import annotations
++
++import json
++import os
++import sqlite3
++import sys
++from datetime import datetime
++
++ENGINE_VERSION = "mf-research-1.0"
++
++FORBIDDEN_KEYS = {"side", "action", "order", "buy", "sell",
++                  "instruction", "qty", "position_size"}
++
++
++def _now_iso():
++    return datetime.now().astimezone().isoformat(timespec="seconds")
++
++
++def assert_no_instruction_keys(obj):
++    """递归检查 dict 键（小写比对），命中禁用键抛 ValueError。
++
++    覆盖嵌套 dict 与 list/tuple 内的 dict；非 dict 键忽略。
++    """
++    if isinstance(obj, dict):
++        for k, v in obj.items():
++            if isinstance(k, str) and k.lower() in FORBIDDEN_KEYS:
++                raise ValueError(
++                    "forbidden instruction key in research output: %r" % k)
++            assert_no_instruction_keys(v)
++    elif isinstance(obj, (list, tuple)):
++        for item in obj:
++            assert_no_instruction_keys(item)
++
++
++def _resolve_conn(pool):
++    """从 CandidatePool 解析 sqlite 连接 -> (conn, owns_conn)。
++
++    依次尝试：pool.conn/connection/_conn/db（Connection 实例）、
++    pool.db_path/path/db_file/_db_path/db（路径，经 market_first.db.connect
++    优先、sqlite3.connect 兜底）。解析不到抛 AttributeError。
++    """
++    for attr in ("conn", "connection", "_conn", "db"):
++        c = getattr(pool, attr, None)
++        if isinstance(c, sqlite3.Connection):
++            return c, False
++    for attr in ("db_path", "path", "db_file", "_db_path", "db"):
++        p = getattr(pool, attr, None)
++        if p:
++            try:
++                from market_first.db import connect as _mf_connect
++                return _mf_connect(str(p)), True
++            except Exception:  # noqa: BLE001
++                return sqlite3.connect(str(p)), True
++    raise AttributeError(
++        "cannot resolve sqlite connection from pool %r: no conn/db_path"
++        % (pool,))
++
++
++class TrendPatternModule:
++    """趋势 + 形态模块：复用 engine.screen.pattern_factors 形态分，
++    自算均线趋势分。
++
++    trend_points 规则：
++    - close > ma20 得 +5，否则 -5；
++    - ma60 可用时 ma20 > ma60 得 +5，否则 -5；
++    - ma60 不可用时该项 0。
++    subtotal = pattern_points + trend_points。
++    """
++
++    module_id = "trend_pattern"
++    model_version = "mf-trend-1.0"
++
++    def compute(self, candidate: dict, bars, context: dict) -> dict:
++        bars = bars or []
++        n = len(bars)
++        if n < 30:
++            factors = {"available": False, "reason": "insufficient_bars",
++                       "bars": n}
++            return {"factors": factors, "subtotal": None,
++                    "evidence": dict(factors)}
++
++        # 延迟导入：保证 engine 包路径（worktree 根）在 sys.path 上
++        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++        if root not in sys.path:
++            sys.path.insert(0, root)
++        from engine.screen import pattern_factors
++        pattern_points, pattern_ev = pattern_factors(bars)
++        pattern_flags = []
++        if isinstance(pattern_ev, dict):
++            pattern_flags = pattern_ev.get("flags") or []
++
++        closes = [float(b[4]) for b in bars]
++        close = closes[-1]
++        ma20 = sum(closes[-20:]) / 20.0
++        ma60 = sum(closes[-60:]) / 60.0 if n >= 60 else None
++        close_vs_ma20_pct = (close / ma20 - 1.0) * 100.0 if ma20 else None
++        ret_20d = (close / closes[-21] - 1.0) if n >= 21 else None
++
++        trend_points = 5.0 if close > ma20 else -5.0
++        if ma60 is not None:
++            trend_points += 5.0 if ma20 > ma60 else -5.0
++        # ma60 不可用时该项 0（不加不减），factors 里注明
++
++        factors = {
++            "available": True,
++            "pattern_points": float(pattern_points),
++            "pattern_flags": list(pattern_flags),
++            "trend_points": float(trend_points),
++            "ma20": ma20,
++            "ma60": ma60,
++            "ma60_available": ma60 is not None,
++            "close_vs_ma20_pct": (round(close_vs_ma20_pct, 4)
++                                  if close_vs_ma20_pct is not None
++                                  else None),
++            "ret_20d": ret_20d,
++        }
++        if ma60 is None:
++            factors["ma60_note"] = "insufficient_bars_for_ma60"
++        evidence = {"pattern": pattern_ev,
++                    "bars": n,
++                    "close": close,
++                    "ma20": ma20,
++                    "ma60": ma60}
++        return {"factors": factors,
++                "subtotal": float(pattern_points) + float(trend_points),
++                "evidence": evidence}
++
++
++DEDUP_KEY_SPEC = (
++    "(market, symbol, data_date, trade_id) when trade_id is present; "
++    "fallback (market, symbol, data_date, inst_buy, inst_sell, "
++    "seat_buy_records, seat_sell_records) full-tuple equality when "
++    "trade_id is missing"
++)
++
++
++def _evidence_dict(event):
++    """从 event dict 解析 evidence dict（evidence_json str/dict）。
++
++    取不到返回 {}。event 本身若直接带 inst_* 字段（手工构造的
++    context 事件），由调用方另行合并。
++    """
++    ej = event.get("evidence_json")
++    if isinstance(ej, str):
++        try:
++            ej = json.loads(ej)
++        except (ValueError, TypeError):
++            ej = None
++    if isinstance(ej, dict):
++        return ej
++    return {}
++
++
++def dedup_inst_events(events):
++    """机构事件去重（第一轮审计修复 P0-2）：同一底层机构事件经
++    live/stored 两条取得路径重复入账时只保留一份。
++
++    去重键：优先 (market, symbol, data_date, trade_id)；
++    trade_id 缺失时退化为 (market, symbol, data_date, inst_buy,
++    inst_sell, seat_buy_records, seat_sell_records) 全等才视为
++    同一事件。键不同一律保留（不同日期、不同底层事件不得误删），
++    禁止按 symbol 单独去重。候选池中的原始事件不在此删除，
++    本函数只决定研究聚合的计入集合。
++
++    返回 (kept, dropped)：元素均为 (event_id, event, evidence)，
++    event_id 优先 event['id']，缺失时用输入序号。
++    """
++    kept = []
++    dropped = []
++    seen = {}
++    for idx, ev in enumerate(events or []):
++        if not isinstance(ev, dict):
++            continue
++        ev_id = ev.get("id")
++        if ev_id is None:
++            ev_id = idx
++        evidence = _evidence_dict(ev)
++        data_date = (evidence.get("data_date")
++                     or ev.get("price_data_time")
++                     or str(ev.get("discovered_at") or "")[:10])
++        trade_id = evidence.get("trade_id")
++        if trade_id not in (None, ""):
++            key = ("tid", ev.get("market"), ev.get("symbol"),
++                   data_date, str(trade_id))
++        else:
++            key = ("tuple", ev.get("market"), ev.get("symbol"),
++                   data_date, evidence.get("inst_buy"),
++                   evidence.get("inst_sell"),
++                   evidence.get("seat_buy_records"),
++                   evidence.get("seat_sell_records"))
++        if key in seen:
++            dropped.append((ev_id, ev, evidence))
++        else:
++            seen[key] = ev_id
++            kept.append((ev_id, ev, evidence))
++    return kept, dropped
++
++
++class InstFlowModule:
++    """机构资金流模块：读候选的 inst* discovery events 的 evidence_json
++    中的 inst_net（机构专用席位净额，口径见 engine/inst_lhb.py）。
++
++    聚合前先经 dedup_inst_events 去重：同一底层机构事件（同
++    trade_id，或缺 id 时同全元组）只贡献一次净额，live/stored
++    双路不得重复计数；不同日期/不同底层事件分别保留。
++
++    无事件 -> subtotal=None（缺失不充数）；有事件时
++    subtotal = +8.0（最新 inst_net>0）/ -8.0（<0）/ 0.0（=0）。
++    """
++
++    module_id = "inst_flow"
++    model_version = "mf-inst-1.0"
++
++    @staticmethod
++    def _extract_inst_net(event):
++        """从单个 event dict 取 inst_net（float），取不到返回 None。
++
++        优先 event['inst_net'] 数值列；其次 evidence_json（str 需
++        json.loads，或已解析 dict）顶层/一层嵌套的 'inst_net'。
++        """
++        if isinstance(event.get("inst_net"), (int, float)):
++            return float(event["inst_net"])
++        ej = event.get("evidence_json")
++        if isinstance(ej, str):
++            try:
++                ej = json.loads(ej)
++            except (ValueError, TypeError):
++                ej = None
++        if isinstance(ej, dict):
++            if isinstance(ej.get("inst_net"), (int, float)):
++                return float(ej["inst_net"])
++            for v in ej.values():
++                if isinstance(v, dict) and isinstance(
++                        v.get("inst_net"), (int, float)):
++                    return float(v["inst_net"])
++        return None
++
++    def compute(self, candidate: dict, bars, context: dict) -> dict:
++        events = (context or {}).get("inst_events") or []
++        kept, dropped = dedup_inst_events(events)
++        dedup_info = {
++            "raw_event_ids": [
++                ev.get("id") if isinstance(ev, dict)
++                and ev.get("id") is not None else i
++                for i, ev in enumerate(events) if isinstance(ev, dict)],
++            "deduped_event_ids": [eid for eid, _, _ in kept],
++            "dropped_duplicate_ids": [eid for eid, _, _ in dropped],
++            "dedup_key": DEDUP_KEY_SPEC,
++        }
++        parsed = []
++        for ev_id, ev, _evidence in kept:
++            net = self._extract_inst_net(ev)
++            if net is None:
++                continue
++            when = str(ev.get("discovered_at") or ev.get("created_at")
++                       or "")
++            parsed.append((when, net))
++        if not parsed:
++            factors = {"available": False,
++                       "reason": ("no_inst_events" if not events
++                                  else "inst_net_missing")}
++            return {"factors": factors, "subtotal": None,
++                    "evidence": {"events_count": len(events),
++                                 "dedup": dedup_info}}
++        latest_when, latest_net = max(parsed, key=lambda t: t[0])
++        total_net = sum(net for _, net in parsed)
++        if latest_net > 0:
++            subtotal = 8.0
++        elif latest_net < 0:
++            subtotal = -8.0
++        else:
++            subtotal = 0.0
++        factors = {"available": True,
++                   "events_count": len(parsed),
++                   "raw_events_count": len(dedup_info["raw_event_ids"]),
++                   "latest_inst_net": latest_net,
++                   "total_inst_net": total_net}
++        evidence = {"events_count": len(parsed),
++                    "latest_discovered_at": latest_when,
++                    "latest_inst_net": latest_net,
++                    "total_inst_net": total_net,
++                    "dedup": dedup_info}
++        return {"factors": factors, "subtotal": subtotal,
++                "evidence": evidence}
++
++
++class ResearchEngine:
++    """研究引擎：逐模块 compute -> 组装 factors -> 落 research_reports
++    一行 -> pool.set_fields(research_status='done')。返回 report_id。"""
++
++    def __init__(self, pool, modules=None):
++        self.pool = pool
++        self.modules = (list(modules) if modules is not None
++                        else [TrendPatternModule(), InstFlowModule()])
++
++    def run(self, candidate_id, bars, data_asof, data_version,
++            context=None) -> int:
++        bars = bars or []
++        context = dict(context) if context else {}
++        if "inst_events" not in context:
++            rows = self.pool.events_for(candidate_id) or []
++            context["inst_events"] = [
++                r for r in rows
++                if str(r.get("source_id") or "").startswith("inst")]
++        candidate = self.pool.get_by_id(candidate_id) or {}
++
++        factors = {}
++        evidence_modules = {}
++        subtotals = []
++        for mod in self.modules:
++            out = mod.compute(candidate, bars, context)
++            factors[mod.module_id] = {
++                "factors": out.get("factors"),
++                "subtotal": out.get("subtotal"),
++                "model_version": mod.model_version,
++            }
++            evidence_modules[mod.module_id] = out.get("evidence")
++            if out.get("subtotal") is not None:
++                subtotals.append(float(out["subtotal"]))
++        total_score = sum(subtotals) if subtotals else None
++
++        # 落库前硬拦截：研究报告禁止任何交易指令字段
++        assert_no_instruction_keys(factors)
++        assert_no_instruction_keys(evidence_modules)
++
++        evidence = {
++            "modules": evidence_modules,
++            "bars_count": len(bars),
++            "bars_first_date": bars[0][0] if bars else None,
++            "bars_last_date": bars[-1][0] if bars else None,
++        }
++        conn, owns = _resolve_conn(self.pool)
++        try:
++            cur = conn.execute(
++                "INSERT INTO research_reports "
++                "(candidate_id, engine_version, computed_at, data_asof, "
++                " data_version, factors_json, total_score, evidence_json) "
++                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
++                (candidate_id, ENGINE_VERSION, _now_iso(),
++                 str(data_asof), str(data_version),
++                 json.dumps(factors, ensure_ascii=False), total_score,
++                 json.dumps(evidence, ensure_ascii=False)))
++            report_id = cur.lastrowid
++            conn.commit()
++        finally:
++            if owns:
++                conn.close()
++        self.pool.set_fields(candidate_id, actor="research",
++                             research_status="done")
++        return report_id
+diff --git a/evidence/fix2/src_before/validation.py b/evidence/fix2/src_before/validation.py
+new file mode 100644
+index 0000000..a6359f9
+--- /dev/null
++++ b/evidence/fix2/src_before/validation.py
+@@ -0,0 +1,565 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""Market-First 验证层：前向/回填样本的创建、到期评估与晋升判定。
++
++口径（冻结）：
++- 样本以 (candidate_id, source_id, entry_date) 唯一，重复创建抛
++  DuplicateSampleError，绝不覆盖既有样本。
++- kind 只许 'forward'（发现时点真实前向）与 'backfill'（事后回填），
++  两类严格区分、不得混算。
++- 评估只用 entry_date 之后（严格大于）的 bars：ret_tN =
++  after[N-1] 收盘 / benchmark_price - 1（N=5/10/20，数据可得才填）；
++  max_drawdown 以 benchmark_price 为初始峰值，对 after[:20] 收盘
++  序列算 min(close/running_peak - 1)。
++- 成熟度：无 bars -> 'missing'（missing_reason='no_price_data'）；
++  after 为空或不足 20 根 -> 'immature'；after >= 20 根 -> 'mature'。
++- 缺失值一律 NULL，绝不写 0 充数。
++
++Forward 时间规则（第一轮审计修复 P0-1，代码强制，写死）：
++- 发现事件实际创建时间 = discovery_events.discovered_at，即数据
++  实际可得时间。取其 Asia/Shanghai 日历日期为 discovered_date。
++- Forward 的 entry_date 必须是 discovered_date 之后第一个交易日
++  （以该标的 bars 序列中实际存在的交易日为准，不用自然日推算）；
++  benchmark = entry_date 当日收盘（qfq 序列），benchmark_date =
++  entry_date，benchmark_price_source 记录价格来源。
++- entry_date <= discovered_date 的样本由代码强制 kind='backfill'，
++  不信任调用方传入的 kind。
++- Forward 无法确认下一交易日或其收盘价（该日尚未收盘、bars
++  缺失）时拒绝创建：candidate_history 留痕（actor='validation'，
++  reason 含 'forward_rejected: ...'）后抛 ForwardRejectedError，
++  不得猜测、不得用后来取得的行情回填历史入场价。
++
++验证通过门禁（P0-3）：validation_passed 只能由 judge_validation
++按版本化规则产生并留 validation_decisions 记录；阈值未经用户
++确认前规则注册表为空（NO_RULE），judge 一律 not_evaluable，
++系统不得产生 validation_passed。未成熟样本、指标 NULL、仅有
++backfill 样本三条硬门槛在判定函数前置拦截，与数值阈值分离。
++"""
++from __future__ import annotations
++
++import json
++import sqlite3
++from datetime import datetime, timedelta, timezone
++
++VALID_KINDS = ("forward", "backfill")
++DEFAULT_EVAL_VERSION = "mf-val-1.0"
++
++_SHANGHAI = timezone(timedelta(hours=8))
++
++
++class DuplicateSampleError(Exception):
++    """同 (candidate_id, source_id, entry_date) 样本已存在。"""
++
++
++class ForwardRejectedError(Exception):
++    """Forward 样本创建被时间规则拒绝（已在 candidate_history 留痕）。"""
++
++
++def _now_iso():
++    return datetime.now().astimezone().isoformat(timespec="seconds")
++
++
++def _shanghai_date(iso_str) -> str:
++    """ISO 时间戳 -> Asia/Shanghai 日历日期 'YYYY-MM-DD'。
++
++    无时区的字符串按 Asia/Shanghai 本地时间解释；解析失败退回
++    前 10 个字符（日期部分）。
++    """
++    s = str(iso_str)
++    try:
++        dt = datetime.fromisoformat(s)
++    except ValueError:
++        return s[:10]
++    if dt.tzinfo is None:
++        dt = dt.replace(tzinfo=_SHANGHAI)
++    return dt.astimezone(_SHANGHAI).date().isoformat()
++
++
++def _resolve_conn(pool):
++    """从 CandidatePool 解析 sqlite 连接 -> (conn, owns_conn)。
++
++    依次尝试：pool.conn/connection/_conn/db（Connection 实例）、
++    pool.db_path/path/db_file/_db_path/db（路径，经 market_first.db.connect
++    优先、sqlite3.connect 兜底）。解析不到抛 AttributeError。
++    """
++    for attr in ("conn", "connection", "_conn", "db"):
++        c = getattr(pool, attr, None)
++        if isinstance(c, sqlite3.Connection):
++            return c, False
++    for attr in ("db_path", "path", "db_file", "_db_path", "db"):
++        p = getattr(pool, attr, None)
++        if p:
++            try:
++                from market_first.db import connect as _mf_connect
++                return _mf_connect(str(p)), True
++            except Exception:  # noqa: BLE001
++                return sqlite3.connect(str(p)), True
++    raise AttributeError(
++        "cannot resolve sqlite connection from pool %r: no conn/db_path"
++        % (pool,))
++
++
++def _row_dict(cur, row):
++    if row is None:
++        return None
++    cols = [d[0] for d in cur.description]
++    return dict(zip(cols, row))
++
++
++def _ensure(conn):
++    from market_first.db import ensure_fix1_schema
++    ensure_fix1_schema(conn)
++
++
++def _resolve_event(conn, candidate_id, source_id, discovery_event_id):
++    """解析样本关联的发现事件 -> dict 或 None。
++
++    显式 discovery_event_id 优先（须存在且属于该候选）；否则取该
++    候选 source_id 相同的最近事件，再否则取最近事件；无事件返回
++    None。
++    """
++    if discovery_event_id is not None:
++        cur = conn.execute(
++            "SELECT * FROM discovery_events WHERE id = ?",
++            (discovery_event_id,))
++        ev = _row_dict(cur, cur.fetchone())
++        if ev is None:
++            raise ValueError(
++                "discovery_event not found: id=%r" % (discovery_event_id,))
++        if ev["candidate_id"] != candidate_id:
++            raise ValueError(
++                "discovery_event %r belongs to candidate %r, not %r"
++                % (discovery_event_id, ev["candidate_id"], candidate_id))
++        return ev
++    cur = conn.execute(
++        "SELECT * FROM discovery_events WHERE candidate_id = ?"
++        " ORDER BY discovered_at DESC, id DESC", (candidate_id,))
++    rows = [_row_dict(cur, r) for r in cur.fetchall()]
++    if not rows:
++        return None
++    for ev in rows:
++        if ev.get("source_id") == source_id:
++            return ev
++    return rows[0]
++
++
++def _derive_forward_entry(bars, discovered_date):
++    """bars 中 discovered_date 之后第一根 -> (date_str, close) 或 None。"""
++    for b in sorted(bars or [], key=lambda x: str(x[0])):
++        d = str(b[0])[:10]
++        if d > discovered_date:
++            return d, float(b[4])
++    return None
++
++
++def _fetch_bars_for(pool, candidate_id, discovered_date):
++    """经 market_first.bars 取该标的 discovered_date 起的 bars。
++
++    返回 (bars, provenance)；取数失败返回 ([], 说明)。bars 层已与
++    生产共享缓存隔离（use_cache=False + 自有 fetched_bars 表）。
++    """
++    cand = pool.get_by_id(candidate_id) or {}
++    symbol = cand.get("symbol")
++    if not symbol:
++        return [], "unavailable: candidate has no symbol"
++    try:
++        from market_first import bars as bars_mod
++        start = datetime.fromisoformat(discovered_date).date()
++        end = start + timedelta(days=31)
++        return bars_mod.get_bars(symbol, start.isoformat(),
++                                 end.isoformat())
++    except Exception as e:  # noqa: BLE001
++        return [], "unavailable: %s: %s" % (type(e).__name__, e)
++
++
++def _reject_forward(pool, candidate_id, detail):
++    """Forward 拒绝统一路径：先在 candidate_history 留痕，再抛错。"""
++    reason = "forward_rejected: %s" % detail
++    pool.record_history(
++        candidate_id,
++        field="validation_sample",
++        old=None,
++        new=None,
++        actor="validation",
++        reason=reason,
++    )
++    raise ForwardRejectedError(reason)
++
++
++def create_sample(pool, candidate_id, source_id, entry_date=None,
++                  benchmark_price=None, kind="backfill",
++                  discovery_event_id=None, bars=None,
++                  benchmark_price_source=None, data_version=None) -> int:
++    """创建验证样本 -> sample_id（时间规则见模块 docstring）。
++
++    - entry_date <= discovered_date（发现事件的上海日历日期）时，
++      无论调用方传何 kind，一律强制 kind='backfill' 落库。
++    - kind='forward' 时 entry/benchmark 不信任调用方入参：按 bars
++      （入参或经 bars 层现取）推导 discovered_date 之后第一交易日
++      及其收盘；无法推导则留痕拒绝（ForwardRejectedError）。
++    - kind='backfill' 必须显式给 entry_date 与 benchmark_price。
++    - UNIQUE(candidate_id, source_id, entry_date) 冲突转抛
++      DuplicateSampleError。创建成功后置 validation_status。
++    """
++    if kind not in VALID_KINDS:
++        raise ValueError("invalid sample kind: %r (allowed: %s)"
++                         % (kind, "/".join(VALID_KINDS)))
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        event = _resolve_event(conn, candidate_id, source_id,
++                               discovery_event_id)
++        discovered_date = (_shanghai_date(event["discovered_at"])
++                           if event else None)
++        ev_id = event["id"] if event else None
++
++        req_entry = str(entry_date)[:10] if entry_date else None
++        final_kind = kind
++        if (discovered_date is not None and req_entry is not None
++                and req_entry <= discovered_date):
++            # 入场不晚于数据实际可得日 -> 事后回填，代码强制改类
++            final_kind = "backfill"
++
++        bench_source = benchmark_price_source
++        if final_kind == "forward":
++            if event is None:
++                _reject_forward(
++                    pool, candidate_id,
++                    "no discovery event linked; forward requires a "
++                    "discovery event as its availability anchor")
++            bars_use = bars
++            prov = None
++            if bars_use is None:
++                bars_use, prov = _fetch_bars_for(
++                    pool, candidate_id, discovered_date)
++            derived = _derive_forward_entry(bars_use, discovered_date)
++            if derived is None:
++                _reject_forward(
++                    pool, candidate_id,
++                    "next_trading_day_unconfirmed: no bar after "
++                    "discovered_date=%s (bars=%d, provenance=%s); "
++                    "refusing to guess an entry point"
++                    % (discovered_date, len(bars_use or []), prov))
++            final_entry, final_bench = derived
++            bench_date = final_entry
++            if bench_source is None:
++                bench_source = prov or "provided_bars close (qfq)"
++        else:
++            if req_entry is None or benchmark_price is None:
++                raise ValueError(
++                    "backfill sample requires explicit entry_date and "
++                    "benchmark_price")
++            final_entry = req_entry
++            final_bench = float(benchmark_price)
++            bench_date = final_entry
++
++        try:
++            cur = conn.execute(
++                "INSERT INTO validation_samples "
++                "(candidate_id, source_id, kind, entry_date, "
++                " benchmark_price, maturity_status, created_at, "
++                " discovery_event_id, benchmark_date, "
++                " benchmark_price_source, data_version) "
++                "VALUES (?, ?, ?, ?, ?, 'immature', ?, ?, ?, ?, ?)",
++                (candidate_id, source_id, final_kind, final_entry,
++                 float(final_bench), _now_iso(), ev_id, bench_date,
++                 bench_source, data_version))
++            conn.commit()
++        except sqlite3.IntegrityError as e:
++            raise DuplicateSampleError(
++                "duplicate validation sample: candidate_id=%r "
++                "source_id=%r entry_date=%r (%s)"
++                % (candidate_id, source_id, final_entry, e)) from e
++        sample_id = cur.lastrowid
++    finally:
++        if owns:
++            conn.close()
++    pool.set_fields(candidate_id, actor="validation",
++                    validation_status="in_progress")
++    return sample_id
++
++
++def get_sample(pool, sample_id) -> dict:
++    """按 id 读样本行 -> dict；不存在返回 None。"""
++    conn, owns = _resolve_conn(pool)
++    try:
++        cur = conn.execute(
++            "SELECT * FROM validation_samples WHERE id = ?", (sample_id,))
++        return _row_dict(cur, cur.fetchone())
++    finally:
++        if owns:
++            conn.close()
++
++
++def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
++                    data_version=None) -> dict:
++    """评估样本并回写 -> 更新后的样本行 dict。
++
++    after = [b for b in bars if b[0] > entry_date]（日期字符串比较，
++    bars 日期须为 'YYYY-MM-DD'）。成熟度口径见模块 docstring。
++    回写同时记录 bars_asof（本次评估所用 bars 的最大日期）与
++    data_version（评估数据版本/来源标识，入参传入）。
++    """
++    sample = get_sample(pool, sample_id)
++    if sample is None:
++        raise ValueError("validation sample not found: id=%r" % (sample_id,))
++    entry_date = str(sample["entry_date"])
++    benchmark = float(sample["benchmark_price"])
++    bars = bars or []
++    bars_asof = max((str(b[0])[:10] for b in bars), default=None)
++    after = [b for b in bars if str(b[0]) > entry_date]
++
++    ret_t5 = ret_t10 = ret_t20 = None
++    max_drawdown = None
++    missing_reason = None
++
++    if not bars:
++        maturity_status = "missing"
++        missing_reason = "no_price_data"
++    elif not after:
++        maturity_status = "immature"
++    else:
++        closes = [float(b[4]) for b in after]
++        if len(after) >= 5:
++            ret_t5 = closes[4] / benchmark - 1.0
++        if len(after) >= 10:
++            ret_t10 = closes[9] / benchmark - 1.0
++        if len(after) >= 20:
++            ret_t20 = closes[19] / benchmark - 1.0
++        peak = benchmark
++        worst = None
++        for c in closes[:20]:
++            if c > peak:
++                peak = c
++            dd = c / peak - 1.0
++            worst = dd if worst is None else min(worst, dd)
++        max_drawdown = worst
++        maturity_status = "mature" if len(after) >= 20 else "immature"
++
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        conn.execute(
++            "UPDATE validation_samples SET ret_t5 = ?, ret_t10 = ?, "
++            "ret_t20 = ?, max_drawdown = ?, maturity_status = ?, "
++            "missing_reason = ?, evaluated_at = ?, eval_version = ?, "
++            "bars_asof = ?, data_version = ? "
++            "WHERE id = ?",
++            (ret_t5, ret_t10, ret_t20, max_drawdown, maturity_status,
++             missing_reason, _now_iso(), eval_version, bars_asof,
++             data_version, sample_id))
++        conn.commit()
++    finally:
++        if owns:
++            conn.close()
++    return get_sample(pool, sample_id)
++
++
++# ---------------------------------------------------------------------------
++# 样本排除（审计裁定）与 Forward 统计
++# ---------------------------------------------------------------------------
++
++def exclude_sample(pool, sample_id, excluded_from, reason,
++                   decided_by) -> int:
++    """为样本写一条排除记录（如审计裁定不进 forward 统计）。
++
++    只新增 sample_exclusions 行，绝不改动样本行本身。重复排除
++    同一 (sample_id, excluded_from) 抛 ValueError。
++    """
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        if get_sample(pool, sample_id) is None:
++            raise ValueError("validation sample not found: id=%r"
++                             % (sample_id,))
++        try:
++            cur = conn.execute(
++                "INSERT INTO sample_exclusions "
++                "(sample_id, excluded_from, reason, decided_by, "
++                " created_at) VALUES (?, ?, ?, ?, ?)",
++                (sample_id, excluded_from, reason, decided_by,
++                 _now_iso()))
++            conn.commit()
++        except sqlite3.IntegrityError as e:
++            raise ValueError(
++                "sample %r already excluded from %r (%s)"
++                % (sample_id, excluded_from, e)) from e
++        return cur.lastrowid
++    finally:
++        if owns:
++            conn.close()
++
++
++def excluded_sample_ids(pool, excluded_from="forward_stats") -> set:
++    """被指定口径排除的样本 id 集合。"""
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        rows = conn.execute(
++            "SELECT sample_id FROM sample_exclusions"
++            " WHERE excluded_from = ?", (excluded_from,)).fetchall()
++        return {r[0] for r in rows}
++    finally:
++        if owns:
++            conn.close()
++
++
++def _samples_for(pool, candidate_id=None):
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        sql = "SELECT * FROM validation_samples"
++        params = ()
++        if candidate_id is not None:
++            sql += " WHERE candidate_id = ?"
++            params = (candidate_id,)
++        sql += " ORDER BY id ASC"
++        cur = conn.execute(sql, params)
++        return [_row_dict(cur, r) for r in cur.fetchall()]
++    finally:
++        if owns:
++            conn.close()
++
++
++def forward_stats(pool, candidate_id=None) -> dict:
++    """Forward 统计口径：仅 kind='forward' 且未被 forward_stats
++    排除的样本。被排除样本单独列出，绝不混入统计。"""
++    excluded = excluded_sample_ids(pool, "forward_stats")
++    samples = _samples_for(pool, candidate_id)
++    fwd = [s for s in samples
++           if s["kind"] == "forward" and s["id"] not in excluded]
++    return {
++        "sample_ids": [s["id"] for s in fwd],
++        "total": len(fwd),
++        "mature": sum(1 for s in fwd
++                      if s["maturity_status"] == "mature"),
++        "immature": sum(1 for s in fwd
++                        if s["maturity_status"] == "immature"),
++        "missing": sum(1 for s in fwd
++                       if s["maturity_status"] == "missing"),
++        "excluded_sample_ids": sorted(
++            s["id"] for s in samples
++            if s["kind"] == "forward" and s["id"] in excluded),
++    }
++
++
++# ---------------------------------------------------------------------------
++# 验证通过判定（P0-3 门禁）：validation_passed 的唯一产生路径
++# ---------------------------------------------------------------------------
++
++NO_RULE = "NO_RULE"
++
++# 规则注册表：只登记经用户确认的版本化规则。当前为空——阈值未
++# 定版，任何规则不得在此自行登记生效。
++RULE_REGISTRY: dict = {}
++
++
++class ValidationRule:
++    """版本化验证规则接口（数值阈值由用户确认后另行实现登记）。
++
++    evaluate(scope, metrics) -> (decision, basis)，
++    decision 只许 'passed' / 'not_passed'。硬门槛（无 forward
++    样本 / 未成熟 / 指标 NULL）由 judge_validation 前置拦截，
++    不进入规则的数值判定。
++    """
++
++    version = "abstract"
++
++    def evaluate(self, scope, metrics):  # pragma: no cover - 接口
++        raise NotImplementedError
++
++
++def judge_validation(pool, candidate_id, rule=None,
++                     actor="validation") -> dict:
++    """验证判定：汇总候选全部样本并按规则判定，写
++    validation_decisions 一行，返回该行 dict。
++
++    - rule=None（默认）：查 RULE_REGISTRY，无经确认规则时一律
++      decision='not_evaluable'、rule_version=NO_RULE、
++      basis 含 'no_approved_rule'，不流转状态。
++    - 硬门槛前置：无（未排除的）forward 样本 -> 'not_passed'
++      （backfill 不得替代 forward）；forward 样本未成熟或关键
++      指标（ret_t20/max_drawdown）为 NULL -> 'not_passed'。
++    - decision='passed' 时经 promotion 内部受控路径流转到
++      validation_passed（要求当前状态为 validating）。
++    """
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        samples = _samples_for(pool, candidate_id)
++        excluded = excluded_sample_ids(pool, "forward_stats")
++        fwd = [s for s in samples
++               if s["kind"] == "forward" and s["id"] not in excluded]
++        bf = [s for s in samples if s["kind"] == "backfill"]
++        scope = {
++            "forward_sample_ids": [s["id"] for s in fwd],
++            "backfill_sample_ids": [s["id"] for s in bf],
++            "excluded_sample_ids": sorted(
++                s["id"] for s in samples if s["id"] in excluded),
++        }
++        null_metric_ids = [
++            s["id"] for s in fwd
++            if s["ret_t20"] is None or s["max_drawdown"] is None]
++        metrics = {
++            "forward_count": len(fwd),
++            "forward_mature": sum(
++                1 for s in fwd if s["maturity_status"] == "mature"),
++            "forward_immature": sum(
++                1 for s in fwd if s["maturity_status"] == "immature"),
++            "forward_missing": sum(
++                1 for s in fwd if s["maturity_status"] == "missing"),
++            "backfill_count": len(bf),
++            "forward_null_metric_sample_ids": null_metric_ids,
++        }
++
++        if rule is None:
++            decision = "not_evaluable"
++            rule_version = NO_RULE
++            basis = ("no_approved_rule: 验证数值门槛尚未经用户确认，"
++                     "规则注册表为空；系统只能记录验证结果，"
++                     "不得产生 validation_passed")
++        elif not fwd:
++            decision = "not_passed"
++            rule_version = getattr(rule, "version", None)
++            basis = ("no_forward_samples: 无未被排除的 forward 样本；"
++                     "backfill 不得替代真实 forward 样本")
++        elif metrics["forward_mature"] < len(fwd) or null_metric_ids:
++            decision = "not_passed"
++            rule_version = getattr(rule, "version", None)
++            basis = ("immature_or_missing_metrics: 未成熟样本不得"
++                     "判定通过，缺失指标保持 NULL 不按零值处理 "
++                     "(immature=%d, null_metric_sample_ids=%s)"
++                     % (metrics["forward_immature"], null_metric_ids))
++        else:
++            decision, basis = rule.evaluate(scope, metrics)
++            if decision not in ("passed", "not_passed"):
++                raise ValueError(
++                    "rule %r returned invalid decision: %r"
++                    % (rule_version, decision))
++            rule_version = getattr(rule, "version", None)
++
++        cur = conn.execute(
++            "INSERT INTO validation_decisions "
++            "(candidate_id, rule_version, sample_scope, metrics_json,"
++            " decision, basis, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
++            (candidate_id, rule_version,
++             json.dumps(scope, ensure_ascii=False),
++             json.dumps(metrics, ensure_ascii=False),
++             decision, basis, _now_iso()))
++        conn.commit()
++        decision_id = cur.lastrowid
++        cur = conn.execute(
++            "SELECT * FROM validation_decisions WHERE id = ?",
++            (decision_id,))
++        row = _row_dict(cur, cur.fetchone())
++    finally:
++        if owns:
++            conn.close()
++
++    if decision == "passed":
++        from market_first import promotion
++        promotion._apply_validation_passed(
++            pool, candidate_id, actor=actor,
++            reason="judge_validation passed: rule_version=%s "
++                   "decision_id=%s" % (rule_version, decision_id))
++    return row
 diff --git a/market_first/db.py b/market_first/db.py
 index 91c6737..53a0532 100644
 --- a/market_first/db.py

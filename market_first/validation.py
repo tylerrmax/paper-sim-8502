@@ -34,6 +34,33 @@ Forward 时间规则（第一轮审计修复 P0-1，代码强制，写死）：
 确认前规则注册表为空（NO_RULE），judge 一律 not_evaluable，
 系统不得产生 validation_passed。未成熟样本、指标 NULL、仅有
 backfill 样本三条硬门槛在判定函数前置拦截，与数值阈值分离。
+
+Benchmark 收盘完整性（独立验收前补正 fix2-1，写死）：
+- 不得仅凭 bars 中存在某日记录就认定该日收盘价已经形成。
+  bar_close_confirmed(bar_date, fetched_at, provenance, market)
+  为唯一判定入口：bar 日期严格早于取数日期（Asia/Shanghai）
+  -> 已收盘确认；bar 日期等于取数日期 -> 仅当取数时刻已过该
+  市场收盘确认时刻（A股/北交所/可转债 15:30 = 15:00 收盘 +
+  30 分钟缓冲；港股 16:30）且 provenance 无 intraday 标记时
+  才确认；bar 日期晚于取数日期 -> 数据异常，不确认。
+  依据边界：market_data 包/service 不提供 bar 完整性或
+  intraday 标记（检视 service.py/quality.py 无此字段，返回的
+  Bar 仅含 OHLCV），故以时间规则为准，provenance 的
+  intraday 标记为预留否决项（当前 provenance 串均不含该标记）。
+- create_sample 的 forward/backfill 路径都必须以通过完整性
+  确认的收盘作为 benchmark；不确认 -> 留痕拒绝
+  （ForwardRejectedError，reason 含 benchmark_close_unconfirmed）。
+- benchmark 一经记录不可变：evaluate_sample 若发现当前取到
+  的 entry 日收盘与已记录 benchmark_price 不一致（行情源
+  修订），不得静默覆盖——把首次发现的修订记入样本行
+  benchmark_revision_json（旧值/新值/发现时间），每次发现
+  另在 candidate_history 留痕，评估始终以原 benchmark 计算。
+
+规则注册保护（fix2-3）：正式 judge 只接受 rule_id+version，
+从 rule_registry 注册表（落库）加载并核对状态；规则对象
+直传参数已删除。status != 'approved'（draft/test/disabled）
+一律 not_evaluable；未经用户确认，本轮注册表不得出现
+approved 规则，judge 恒 not_evaluable。
 """
 from __future__ import annotations
 
@@ -51,8 +78,12 @@ class DuplicateSampleError(Exception):
     """同 (candidate_id, source_id, entry_date) 样本已存在。"""
 
 
-class ForwardRejectedError(Exception):
-    """Forward 样本创建被时间规则拒绝（已在 candidate_history 留痕）。"""
+class ForwardRejectedError(ValueError):
+    """样本创建被时间/完整性规则拒绝（已在 candidate_history 留痕）。
+
+    fix2 起同时用于 backfill 路径的 benchmark 完整性拒绝，
+    故继承 ValueError 以兼容既有按 ValueError 捕获的调用方。
+    """
 
 
 def _now_iso():
@@ -107,8 +138,60 @@ def _row_dict(cur, row):
 
 
 def _ensure(conn):
-    from market_first.db import ensure_fix1_schema
+    from market_first.db import ensure_fix1_schema, ensure_fix2_schema
     ensure_fix1_schema(conn)
+    ensure_fix2_schema(conn)
+
+
+def _shanghai_dt(iso_str) -> datetime:
+    """ISO 时间戳 -> 带 Asia/Shanghai 时区的 datetime。
+
+    无时区字符串按 Asia/Shanghai 本地时间解释。
+    """
+    s = str(iso_str)
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_SHANGHAI)
+    return dt.astimezone(_SHANGHAI)
+
+
+# 收盘确认时刻（Asia/Shanghai）：收盘时刻 + 30 分钟缓冲。
+# A股/北交所/可转债 15:00 收盘 -> 15:30 确认；港股 16:00
+# 收盘 -> 16:30 确认。未列市场按 A股规则（15:30）。
+from datetime import time as _time  # noqa: E402
+
+CLOSE_CONFIRM_TIME = {
+    "SH": _time(15, 30),
+    "SZ": _time(15, 30),
+    "BJ": _time(15, 30),
+    "CB": _time(15, 30),
+    "HK": _time(16, 30),
+}
+DEFAULT_CLOSE_CONFIRM_TIME = _time(15, 30)
+
+
+def bar_close_confirmed(bar_date, fetched_at, provenance=None,
+                        market=None) -> bool:
+    """bar 收盘完整性判定（fix2-1 唯一入口，规则见模块 docstring）。
+
+    - bar_date 严格早于 fetched_at 的上海日历日期 -> True。
+    - bar_date 晚于取数日期 -> False（数据异常）。
+    - 同日：provenance 含 'intraday' 标记 -> False；取数时刻
+      已过该市场收盘确认时刻（CLOSE_CONFIRM_TIME）-> True，
+      否则 False。
+    """
+    bd = str(bar_date)[:10]
+    fdt = _shanghai_dt(fetched_at)
+    fd = fdt.date().isoformat()
+    if bd < fd:
+        return True
+    if bd > fd:
+        return False
+    if provenance and "intraday" in str(provenance).lower():
+        return False
+    cutoff = CLOSE_CONFIRM_TIME.get(
+        str(market or "").upper(), DEFAULT_CLOSE_CONFIRM_TIME)
+    return fdt.time() >= cutoff
 
 
 def _resolve_event(conn, candidate_id, source_id, discovery_event_id):
@@ -189,7 +272,8 @@ def _reject_forward(pool, candidate_id, detail):
 def create_sample(pool, candidate_id, source_id, entry_date=None,
                   benchmark_price=None, kind="backfill",
                   discovery_event_id=None, bars=None,
-                  benchmark_price_source=None, data_version=None) -> int:
+                  benchmark_price_source=None, data_version=None,
+                  fetched_at=None) -> int:
     """创建验证样本 -> sample_id（时间规则见模块 docstring）。
 
     - entry_date <= discovered_date（发现事件的上海日历日期）时，
@@ -198,9 +282,14 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
       （入参或经 bars 层现取）推导 discovered_date 之后第一交易日
       及其收盘；无法推导则留痕拒绝（ForwardRejectedError）。
     - kind='backfill' 必须显式给 entry_date 与 benchmark_price。
+    - fix2-1：forward/backfill 的 benchmark 都必须通过
+      bar_close_confirmed 完整性确认（以 fetched_at 为取数时刻，
+      缺省为当前时刻）；不确认则留痕拒绝，reason 含
+      'benchmark_close_unconfirmed'。
     - UNIQUE(candidate_id, source_id, entry_date) 冲突转抛
       DuplicateSampleError。创建成功后置 validation_status。
     """
+    fetched_at = fetched_at or _now_iso()
     if kind not in VALID_KINDS:
         raise ValueError("invalid sample kind: %r (allowed: %s)"
                          % (kind, "/".join(VALID_KINDS)))
@@ -244,6 +333,20 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
             bench_date = final_entry
             if bench_source is None:
                 bench_source = prov or "provided_bars close (qfq)"
+            # fix2-1：推导出的 entry 日 bar 必须通过收盘完整性
+            # 确认才可作 benchmark（不得仅凭 bar 存在认定收盘）。
+            cand = pool.get_by_id(candidate_id) or {}
+            if not bar_close_confirmed(
+                    final_entry, fetched_at,
+                    provenance=bench_source,
+                    market=cand.get("market")):
+                _reject_forward(
+                    pool, candidate_id,
+                    "benchmark_close_unconfirmed: entry bar %s not "
+                    "confirmed closed at fetched_at=%s "
+                    "(provenance=%s); refusing to use an incomplete "
+                    "bar as benchmark"
+                    % (final_entry, fetched_at, bench_source))
         else:
             if req_entry is None or benchmark_price is None:
                 raise ValueError(
@@ -252,6 +355,23 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
             final_entry = req_entry
             final_bench = float(benchmark_price)
             bench_date = final_entry
+            # fix2-1：backfill 同受完整性约束（历史日期严格早于
+            # 取数日天然确认；entry 为取数当日且未过收盘确认
+            # 时刻、或晚于取数日，一律留痕拒绝）。
+            cand = pool.get_by_id(candidate_id) or {}
+            if not bar_close_confirmed(
+                    final_entry, fetched_at,
+                    provenance=bench_source,
+                    market=cand.get("market")):
+                reason = (
+                    "backfill_rejected: benchmark_close_unconfirmed:"
+                    " entry_date=%s not confirmed closed at "
+                    "fetched_at=%s" % (final_entry, fetched_at))
+                pool.record_history(
+                    candidate_id, field="validation_sample",
+                    old=None, new=None, actor="validation",
+                    reason=reason)
+                raise ForwardRejectedError(reason)
 
         try:
             cur = conn.execute(
@@ -309,6 +429,34 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
     bars_asof = max((str(b[0])[:10] for b in bars), default=None)
     after = [b for b in bars if str(b[0]) > entry_date]
 
+    # fix2-1：benchmark 不可变。当前 bars 中 entry 日收盘与已
+    # 记录 benchmark 不一致 = 行情源事后修订：只记录、绝不
+    # 覆盖 benchmark，评估继续以原 benchmark 计算。
+    revision = None
+    for b in bars:
+        if str(b[0])[:10] == entry_date:
+            observed_close = float(b[4])
+            if abs(observed_close - benchmark) > 1e-9:
+                revision = {
+                    "detected": True,
+                    "entry_date": entry_date,
+                    "recorded_benchmark": benchmark,
+                    "observed_close": observed_close,
+                    "detected_at": _now_iso(),
+                    "eval_version": eval_version,
+                }
+            break
+    if revision is not None:
+        pool.record_history(
+            sample["candidate_id"], field="benchmark_revision",
+            old=benchmark, new=revision["observed_close"],
+            actor="validation",
+            reason="benchmark_revision_detected: entry=%s "
+                   "recorded=%s observed=%s; benchmark immutable, "
+                   "evaluation keeps the recorded value"
+                   % (entry_date, benchmark,
+                      revision["observed_close"]))
+
     ret_t5 = ret_t10 = ret_t20 = None
     max_drawdown = None
     missing_reason = None
@@ -343,11 +491,16 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
             "UPDATE validation_samples SET ret_t5 = ?, ret_t10 = ?, "
             "ret_t20 = ?, max_drawdown = ?, maturity_status = ?, "
             "missing_reason = ?, evaluated_at = ?, eval_version = ?, "
-            "bars_asof = ?, data_version = ? "
+            "bars_asof = ?, data_version = ?, "
+            "benchmark_revision_json = COALESCE("
+            "benchmark_revision_json, ?) "
             "WHERE id = ?",
             (ret_t5, ret_t10, ret_t20, max_drawdown, maturity_status,
              missing_reason, _now_iso(), eval_version, bars_asof,
-             data_version, sample_id))
+             data_version,
+             json.dumps(revision, ensure_ascii=False)
+             if revision is not None else None,
+             sample_id))
         conn.commit()
     finally:
         if owns:
@@ -449,9 +602,13 @@ def forward_stats(pool, candidate_id=None) -> dict:
 
 NO_RULE = "NO_RULE"
 
-# 规则注册表：只登记经用户确认的版本化规则。当前为空——阈值未
-# 定版，任何规则不得在此自行登记生效。
-RULE_REGISTRY: dict = {}
+RULE_STATUSES = ("draft", "approved", "disabled", "test")
+
+# 代码侧规则实现注册表：rule_id -> ValidationRule 实例。正式
+# judge 只按 rule_id 从这里取实现，且必须同时满足 rule_registry
+# 落库表中存在同 rule_id 的 status='approved' 版本行。本轮不
+# 预置任何实现（数值门槛未经用户确认）。
+RULE_IMPLEMENTATIONS: dict = {}
 
 
 class ValidationRule:
@@ -469,19 +626,115 @@ class ValidationRule:
         raise NotImplementedError
 
 
-def judge_validation(pool, candidate_id, rule=None,
-                     actor="validation") -> dict:
-    """验证判定：汇总候选全部样本并按规则判定，写
+def register_rule_implementation(rule_id, rule):
+    """登记代码侧规则实现（rule 须提供 evaluate(scope, metrics)）。
+
+    只登记实现不等于批准：正式判定还要求 rule_registry 表中
+    有同 rule_id 的 approved 版本行（见 register_rule）。
+    """
+    if not hasattr(rule, "evaluate"):
+        raise TypeError(
+            "rule implementation must provide evaluate(scope, metrics)")
+    RULE_IMPLEMENTATIONS[str(rule_id)] = rule
+    return str(rule_id)
+
+
+def register_rule(pool, rule_id, version, status="draft", params=None,
+                  approved_by=None, approved_at=None) -> int:
+    """向 rule_registry 落库表登记一个规则版本 -> row id。
+
+    status 只许 draft/approved/disabled/test；status='approved'
+    必须带 approved_by（批准留痕）。重复 (rule_id, version)
+    抛 ValueError。注册只新增行，绝不改写既有判定记录；
+    未经用户确认的规则不得以 approved 登记到正式注册表。
+    """
+    if status not in RULE_STATUSES:
+        raise ValueError("invalid rule status: %r (allowed: %s)"
+                         % (status, "/".join(RULE_STATUSES)))
+    if status == "approved" and not approved_by:
+        raise ValueError(
+            "approved rule registration requires approved_by")
+    conn, owns = _resolve_conn(pool)
+    try:
+        _ensure(conn)
+        try:
+            cur = conn.execute(
+                "INSERT INTO rule_registry "
+                "(rule_id, version, status, approved_by, approved_at,"
+                " params_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(rule_id), str(version), status, approved_by,
+                 approved_at,
+                 json.dumps(params or {}, ensure_ascii=False),
+                 _now_iso()))
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            raise ValueError(
+                "rule already registered: %s@%s (%s)"
+                % (rule_id, version, e)) from e
+        return cur.lastrowid
+    finally:
+        if owns:
+            conn.close()
+
+
+def set_rule_status(pool, rule_id, version, status) -> None:
+    """变更已登记规则版本的状态（如 approved -> disabled）。
+
+    只影响之后的判定；既有 validation_decisions 记录（含其
+    rule_version 与 metrics）不随注册表变更而改写。
+    """
+    if status not in RULE_STATUSES:
+        raise ValueError("invalid rule status: %r (allowed: %s)"
+                         % (status, "/".join(RULE_STATUSES)))
+    conn, owns = _resolve_conn(pool)
+    try:
+        _ensure(conn)
+        cur = conn.execute(
+            "UPDATE rule_registry SET status = ?"
+            " WHERE rule_id = ? AND version = ?",
+            (status, str(rule_id), str(version)))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError("rule not registered: %s@%s"
+                             % (rule_id, version))
+    finally:
+        if owns:
+            conn.close()
+
+
+def get_registered_rule(pool, rule_id, version):
+    """读 rule_registry 中 (rule_id, version) 一行 -> dict/None。"""
+    conn, owns = _resolve_conn(pool)
+    try:
+        _ensure(conn)
+        cur = conn.execute(
+            "SELECT * FROM rule_registry"
+            " WHERE rule_id = ? AND version = ?",
+            (str(rule_id), str(version)))
+        return _row_dict(cur, cur.fetchone())
+    finally:
+        if owns:
+            conn.close()
+
+
+def judge_validation(pool, candidate_id, rule_id=None,
+                     rule_version=None, actor="validation") -> dict:
+    """验证判定：汇总候选全部样本并按注册规则判定，写
     validation_decisions 一行，返回该行 dict。
 
-    - rule=None（默认）：查 RULE_REGISTRY，无经确认规则时一律
-      decision='not_evaluable'、rule_version=NO_RULE、
-      basis 含 'no_approved_rule'，不流转状态。
-    - 硬门槛前置：无（未排除的）forward 样本 -> 'not_passed'
-      （backfill 不得替代 forward）；forward 样本未成熟或关键
-      指标（ret_t20/max_drawdown）为 NULL -> 'not_passed'。
-    - decision='passed' 时经 promotion 内部受控路径流转到
-      validation_passed（要求当前状态为 validating）。
+    fix2-3 注册保护：正式判定只接受 rule_id+rule_version 并
+    从 rule_registry 注册表加载，规则对象直传参数已删除。
+    - rule_id=None（默认）：decision='not_evaluable'、
+      rule_version=NO_RULE、basis 含 'no_approved_rule'。
+    - 未登记 / 版本不符 / status != 'approved'（draft/test/
+      disabled）/ 代码侧无实现：一律 'not_evaluable' 并在
+      basis 注明原因，判定留痕，不流转状态。
+    - 已登记 approved 规则：硬门槛前置——无（未排除的）
+      forward 样本 -> 'not_passed'（backfill 不得替代）；
+      forward 未成熟或关键指标（ret_t20/max_drawdown）为
+      NULL -> 'not_passed'；其后才进规则的数值判定。
+    - decision='passed' 时经 promotion 内部受控路径（须携带
+      本次判定记录 id 供其核验）流转到 validation_passed。
     """
     conn, owns = _resolve_conn(pool)
     try:
@@ -512,37 +765,72 @@ def judge_validation(pool, candidate_id, rule=None,
             "forward_null_metric_sample_ids": null_metric_ids,
         }
 
-        if rule is None:
+        impl = None
+        if rule_id is None:
             decision = "not_evaluable"
-            rule_version = NO_RULE
+            recorded_version = NO_RULE
             basis = ("no_approved_rule: 验证数值门槛尚未经用户确认，"
-                     "规则注册表为空；系统只能记录验证结果，"
-                     "不得产生 validation_passed")
-        elif not fwd:
-            decision = "not_passed"
-            rule_version = getattr(rule, "version", None)
-            basis = ("no_forward_samples: 无未被排除的 forward 样本；"
-                     "backfill 不得替代真实 forward 样本")
-        elif metrics["forward_mature"] < len(fwd) or null_metric_ids:
-            decision = "not_passed"
-            rule_version = getattr(rule, "version", None)
-            basis = ("immature_or_missing_metrics: 未成熟样本不得"
-                     "判定通过，缺失指标保持 NULL 不按零值处理 "
-                     "(immature=%d, null_metric_sample_ids=%s)"
-                     % (metrics["forward_immature"], null_metric_ids))
+                     "注册表无 approved 规则；系统只能记录验证"
+                     "结果，不得产生 validation_passed")
+        elif rule_version is None:
+            decision = "not_evaluable"
+            recorded_version = NO_RULE
+            basis = ("rule_version_required: 正式判定必须显式给出"
+                     " rule_id 与 version（请求 rule_id=%s 未带"
+                     " version），拒绝按未登记规则判定" % (rule_id,))
         else:
-            decision, basis = rule.evaluate(scope, metrics)
-            if decision not in ("passed", "not_passed"):
-                raise ValueError(
-                    "rule %r returned invalid decision: %r"
-                    % (rule_version, decision))
-            rule_version = getattr(rule, "version", None)
+            reg = get_registered_rule(pool, rule_id, rule_version)
+            if reg is None:
+                decision = "not_evaluable"
+                recorded_version = NO_RULE
+                basis = ("rule_not_registered: rule_id=%s "
+                         "version=%s 未在 rule_registry 登记，"
+                         "正式判定拒绝" % (rule_id, rule_version))
+            elif reg["status"] != "approved":
+                decision = "not_evaluable"
+                recorded_version = NO_RULE
+                basis = ("rule_not_approved: rule_id=%s version=%s "
+                         "status=%s；draft/test/disabled 规则不得"
+                         "用于正式判定"
+                         % (rule_id, rule_version, reg["status"]))
+            else:
+                impl = RULE_IMPLEMENTATIONS.get(str(rule_id))
+                if impl is None:
+                    decision = "not_evaluable"
+                    recorded_version = NO_RULE
+                    basis = ("rule_implementation_missing: "
+                             "rule_id=%s 已登记 approved 但代码侧"
+                             "无实现，无法执行数值判定" % (rule_id,))
+                else:
+                    recorded_version = rule_version
+                    if not fwd:
+                        decision = "not_passed"
+                        basis = ("no_forward_samples: 无未被排除的"
+                                 " forward 样本；backfill 不得替代"
+                                 "真实 forward 样本")
+                    elif (metrics["forward_mature"] < len(fwd)
+                            or null_metric_ids):
+                        decision = "not_passed"
+                        basis = ("immature_or_missing_metrics: "
+                                 "未成熟样本不得判定通过，缺失指标"
+                                 "保持 NULL 不按零值处理 "
+                                 "(immature=%d, "
+                                 "null_metric_sample_ids=%s)"
+                                 % (metrics["forward_immature"],
+                                    null_metric_ids))
+                    else:
+                        decision, basis = impl.evaluate(scope, metrics)
+                        if decision not in ("passed", "not_passed"):
+                            raise ValueError(
+                                "rule %s@%s returned invalid "
+                                "decision: %r"
+                                % (rule_id, rule_version, decision))
 
         cur = conn.execute(
             "INSERT INTO validation_decisions "
             "(candidate_id, rule_version, sample_scope, metrics_json,"
             " decision, basis, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (candidate_id, rule_version,
+            (candidate_id, recorded_version,
              json.dumps(scope, ensure_ascii=False),
              json.dumps(metrics, ensure_ascii=False),
              decision, basis, _now_iso()))
@@ -561,5 +849,6 @@ def judge_validation(pool, candidate_id, rule=None,
         promotion._apply_validation_passed(
             pool, candidate_id, actor=actor,
             reason="judge_validation passed: rule_version=%s "
-                   "decision_id=%s" % (rule_version, decision_id))
+                   "decision_id=%s" % (recorded_version, decision_id),
+            decision_id=decision_id)
     return row

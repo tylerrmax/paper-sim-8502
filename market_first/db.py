@@ -85,7 +85,20 @@ CREATE TABLE IF NOT EXISTS validation_samples (
     benchmark_date TEXT,
     benchmark_price_source TEXT,
     data_version TEXT,
+    benchmark_revision_json TEXT,
     UNIQUE(candidate_id, source_id, entry_date)
+);
+
+CREATE TABLE IF NOT EXISTS rule_registry (
+    rule_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'approved', 'disabled', 'test')),
+    approved_by TEXT,
+    approved_at TEXT,
+    params_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    PRIMARY KEY (rule_id, version)
 );
 
 CREATE TABLE IF NOT EXISTS sample_exclusions (
@@ -240,6 +253,43 @@ def ensure_fix1_schema(conn) -> None:
     conn.commit()
 
 
+# 独立验收前补正（fix2）新增结构：validation_samples 的
+# benchmark 修订记录列 + rule_registry 规则注册表。同样只加
+# 可空列/新表，绝不 UPDATE/DELETE 既有数据。
+_FIX2_SAMPLE_COLUMNS = {
+    "benchmark_revision_json": "TEXT",
+}
+
+_FIX2_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS rule_registry (
+    rule_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'approved', 'disabled', 'test')),
+    approved_by TEXT,
+    approved_at TEXT,
+    params_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    PRIMARY KEY (rule_id, version)
+);
+"""
+
+
+def ensure_fix2_schema(conn) -> None:
+    """幂等补齐 fix2 结构：benchmark_revision_json 列 +
+    rule_registry 表。对既有行只新增 NULL 列。"""
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(validation_samples)")}
+    if cols:
+        for name, typ in _FIX2_SAMPLE_COLUMNS.items():
+            if name not in cols:
+                conn.execute(
+                    "ALTER TABLE validation_samples ADD COLUMN %s %s"
+                    % (name, typ))
+    conn.executescript(_FIX2_TABLES_SQL)
+    conn.commit()
+
+
 def init_db(db_path: str | None = None) -> str:
     """建表（幂等）并返回实际库路径。"""
     path = _resolve(db_path)
@@ -248,6 +298,7 @@ def init_db(db_path: str | None = None) -> str:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
         ensure_fix1_schema(conn)
+        ensure_fix2_schema(conn)
     finally:
         conn.close()
     return path

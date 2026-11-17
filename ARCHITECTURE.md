@@ -73,12 +73,15 @@ list_candidates/events_for/history_for`、`set_fields`（五字段白名单，�
 - 已实现模块：`trend_pattern`（mf-trend-1.0，复用 `engine/screen.py:pattern_factors`
   的形态因子分 + 本模块 MA 趋势分，规则写入 docstring；bars<30 时 subtotal=None
   不充数）、`inst_flow`（mf-inst-1.0，基于候选的机构发现事件证据计分）。
-- **机构事件去重（fix1/P0-2）**：inst_flow 聚合前经 `dedup_inst_events` 去重——
-  同一底层事件（键 =(market, symbol, data_date, trade_id)；trade_id 缺失时退化
-  为含 inst_buy/inst_sell/席位记录数的全元组全等）只贡献一次净额，live/stored
-  双路不重复计数；不同日期/不同底层事件分别保留，禁止按 symbol 单独去重。
-  候选池原始事件全量保留不动；研究报告 evidence 记录 raw/deduped/dropped
-  事件 id 与 dedup_key，保证可复算。
+- **机构事件去重（fix1/P0-2，fix2-2 改三态 mf-dedup-2.0）**：inst_flow
+  聚合前经 `dedup_inst_events` 分类——有 trade_id 且键 (market, symbol,
+  data_date, trade_id) 相同 = confirmed duplicate，只贡献一次净额；
+  trade_id 缺失时**一律不自动合并**：全元组相同标
+  `dedup_status='uncertain'`，全部保留计入，并在研究报告 evidence 中
+  完整披露（uncertain_event_ids、逐条 inst_net、合计影响额、明示
+  说明）；其余为 independent 分别保留。禁止按 symbol 单独去重。
+  候选池原始事件全量保留不动；evidence 记录 raw/deduped/
+  confirmed_dropped/uncertain 明细与 dedup_version，保证可复算。
 - **硬约束**：研究报告只有证据与分数；落库前递归扫描禁止键
   （side/action/order/buy/sell/instruction/qty/position_size），命中抛错——
   研究层在代码上无法产出交易指令。
@@ -107,6 +110,20 @@ list_candidates/events_for/history_for`、`set_fields`（五字段白名单，�
   `judge_validation()` 按版本化规则产生并写 `validation_decisions` 记录；
   阈值未定版，规则注册表为空时 judge 一律 `not_evaluable`
   （no_approved_rule）。门槛方案见 `THRESHOLD_PROPOSAL.md`（待用户确认）。
+- **Benchmark 收盘完整性（fix2-1）**：benchmark 只能取通过
+  `bar_close_confirmed()` 确认的收盘——bar 日期严格早于取数日天然确认；
+  当日 bar 须取数时刻已过收盘确认时刻（A股/北交所/可转债 15:30、港股
+  16:30）且 provenance 无 intraday 标记；未来日 bar 不确认。不确认则
+  留痕拒绝（reason 含 `benchmark_close_unconfirmed`）。market_data 包
+  不提供 bar 完整性标记（仅 OHLCV），故以时间规则为准。benchmark 一经
+  记录不可变：评估时发现 entry 日收盘被行情源修订，只记
+  `benchmark_revision_json` + candidate_history，绝不覆盖原值。
+- **规则注册保护（fix2-3）**：正式 judge 只接受 `rule_id+rule_version`
+  并从落库表 `rule_registry` 加载，规则对象直传参数已删除；
+  status != 'approved'（draft/test/disabled）一律 `not_evaluable`；
+  注册须留 approved_by/approved_at，注册表变更不改写历史判定。
+  promotion 受控流转 `_apply_validation_passed` 必须携带并核验真实
+  passed 判定记录（decision_id），绕过 judge 的直接调用被拒并留痕。
 - 预留 `delisted` 状态值但本次未实现退市检测（见剩余风险），不伪造。
 
 ### 3.5 promotion（`market_first/promotion.py`）

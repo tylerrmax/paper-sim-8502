@@ -17,10 +17,26 @@ from market_first.promotion import IllegalTransitionError, transition
 
 
 class _Rule:
+    """测试专用规则实现（fix2-3 经注册表路径使用：测试库内
+    登记 approved 行 + 代码侧登记实现）。"""
+
     version = "test-rule-0"
 
     def evaluate(self, scope, metrics):
         return "passed", "test rule"
+
+
+def _register_test_rule(pool):
+    validation.register_rule_implementation("test_rule", _Rule())
+    validation.register_rule(
+        pool, "test_rule", _Rule.version, status="approved",
+        approved_by="unit-test")
+
+
+def _judge_with_test_rule(pool, cid):
+    _register_test_rule(pool)
+    return validation.judge_validation(
+        pool, cid, rule_id="test_rule", rule_version=_Rule.version)
 
 
 def _bars(start=date(2026, 11, 13), end=date(2026, 12, 20)):
@@ -88,7 +104,7 @@ def test_judge_backfill_only_not_passed(tmp_path):
     validation.create_sample(
         pool, cid, "inst_lhb_stored", entry_date="2026-10-21",
         benchmark_price=8.63, kind="backfill")
-    out = validation.judge_validation(pool, cid, rule=_Rule())
+    out = _judge_with_test_rule(pool, cid)
     assert out["decision"] == "not_passed"
     assert "backfill" in out["basis"]
     assert pool.get_by_id(cid)["promotion_status"] == "validating"
@@ -104,7 +120,7 @@ def test_judge_immature_forward_not_passed(tmp_path):
     validation.evaluate_sample(pool, sid, bars[:8])  # 只给少量 bars
     sample = validation.get_sample(pool, sid)
     assert sample["maturity_status"] == "immature"
-    out = validation.judge_validation(pool, cid, rule=_Rule())
+    out = _judge_with_test_rule(pool, cid)
     assert out["decision"] == "not_passed"
     assert pool.get_by_id(cid)["promotion_status"] == "validating"
 
@@ -112,7 +128,7 @@ def test_judge_immature_forward_not_passed(tmp_path):
 def test_judge_mature_forward_passes_and_flows(tmp_path):
     pool, cid = _candidate_validating(tmp_path)
     _mature_forward(pool, cid)
-    out = validation.judge_validation(pool, cid, rule=_Rule())
+    out = _judge_with_test_rule(pool, cid)
     assert out["decision"] == "passed"
     assert out["rule_version"] == "test-rule-0"
     assert pool.get_by_id(cid)["promotion_status"] == "validation_passed"
@@ -127,6 +143,6 @@ def test_judge_excluded_forward_sample_not_counted(tmp_path):
     validation.exclude_sample(
         pool, sid, "forward_stats", "审计裁定排除",
         decided_by="independent_audit")
-    out = validation.judge_validation(pool, cid, rule=_Rule())
+    out = _judge_with_test_rule(pool, cid)
     assert out["decision"] == "not_passed"  # 排除后无 forward 样本
     assert pool.get_by_id(cid)["promotion_status"] == "validating"

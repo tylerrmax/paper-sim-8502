@@ -122,18 +122,37 @@ def transition(pool, cid, to_state, actor, reason=""):
     return _apply_transition(pool, cid, current, to_state, actor, reason)
 
 
-def _apply_validation_passed(pool, cid, actor, reason=""):
+def _apply_validation_passed(pool, cid, actor, reason="",
+                             decision_id=None):
     """内部受控入口：validating -> validation_passed。
 
     唯一合法调用方是 validation.judge_validation 在判定
-    decision='passed' 后调用；当前状态不是 validating 时抛
-    IllegalTransitionError。不经公开 transition()（其对
+    decision='passed' 后调用（fix2-3 加固）：必须携带
+    decision_id，且库内须存在该 id、属于该候选、decision=
+    'passed' 的 validation_decisions 记录；核验不过先在
+    candidate_history 留痕再抛 IllegalTransitionError——任何
+    模块绕过 judge 直接调用本函数都无法完成流转。当前状态
+    不是 validating 时同样拒绝。不经公开 transition()（其对
     validation_passed 直达一律拒绝）。
     """
     cand = pool.get_by_id(cid)
     if cand is None:
         raise ValueError("候选不存在：id=%s" % (cid,))
     current = cand.get("promotion_status")
+    verified = False
+    if decision_id is not None:
+        row = pool.conn.execute(
+            "SELECT candidate_id, decision FROM validation_decisions"
+            " WHERE id = ?", (decision_id,)).fetchone()
+        verified = (row is not None
+                    and row["candidate_id"] == cid
+                    and row["decision"] == "passed")
+    if not verified:
+        _reject(
+            pool, cid, current, "validation_passed", actor,
+            "受控流转核验失败：decision_id=%s 无对应的 "
+            "validation_decisions passed 记录，绕过 "
+            "judge_validation 的直接调用被拒" % (decision_id,))
     if current != "validating":
         raise IllegalTransitionError(
             "validation_passed 只能从 validating 经 judge_validation "

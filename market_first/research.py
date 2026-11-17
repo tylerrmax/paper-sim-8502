@@ -138,11 +138,22 @@ class TrendPatternModule:
                 "evidence": evidence}
 
 
+DEDUP_VERSION = "mf-dedup-2.0"
+
 DEDUP_KEY_SPEC = (
-    "(market, symbol, data_date, trade_id) when trade_id is present; "
-    "fallback (market, symbol, data_date, inst_buy, inst_sell, "
-    "seat_buy_records, seat_sell_records) full-tuple equality when "
-    "trade_id is missing"
+    "mf-dedup-2.0 three-state: (1) trade_id present and key "
+    "(market, symbol, data_date, trade_id) equal -> confirmed "
+    "duplicate, counted once; (2) trade_id missing on either side "
+    "-> NEVER auto-merged: identical full tuple (market, symbol, "
+    "data_date, inst_buy, inst_sell, seat_buy_records, "
+    "seat_sell_records) is flagged dedup_status='uncertain', all "
+    "copies kept and counted; (3) otherwise independent, kept."
+)
+
+UNCERTAIN_NOTE = (
+    "身份不确定、未合并：以下事件缺少 trade_id 且全元组相同，"
+    "无法确认是否为同一底层机构事件；按未合并处理，全部保留"
+    "并计入净额（存在重复计入的可能，金额影响单列）。"
 )
 
 
@@ -164,22 +175,27 @@ def _evidence_dict(event):
 
 
 def dedup_inst_events(events):
-    """机构事件去重（第一轮审计修复 P0-2）：同一底层机构事件经
-    live/stored 两条取得路径重复入账时只保留一份。
+    """机构事件去重（fix2-2 三态，规则版本 mf-dedup-2.0）：
 
-    去重键：优先 (market, symbol, data_date, trade_id)；
-    trade_id 缺失时退化为 (market, symbol, data_date, inst_buy,
-    inst_sell, seat_buy_records, seat_sell_records) 全等才视为
-    同一事件。键不同一律保留（不同日期、不同底层事件不得误删），
-    禁止按 symbol 单独去重。候选池中的原始事件不在此删除，
-    本函数只决定研究聚合的计入集合。
+    - confirmed duplicate：trade_id 存在且键 (market, symbol,
+      data_date, trade_id) 相同 -> 同一底层事件，只保留先到
+      一份，其余计入 dropped（留痕）。
+    - uncertain：任一侧 trade_id 缺失时一律不自动合并。缺 id
+      事件之间全元组 (market, symbol, data_date, inst_buy,
+      inst_sell, seat_buy_records, seat_sell_records) 相同，
+      或与某条有 id 事件的全元组相同 -> 身份不确定，标记
+      dedup_status='uncertain'，全部保留并计入净额。
+    - independent：其余事件分别保留。
 
-    返回 (kept, dropped)：元素均为 (event_id, event, evidence)，
-    event_id 优先 event['id']，缺失时用输入序号。
+    禁止按 symbol 单独去重；候选池原始事件不在此删除，本
+    函数只决定研究聚合的计入集合与披露口径。
+
+    返回 (kept, dropped, uncertain_ids)：kept/dropped 元素为
+    (event_id, event, evidence)，event_id 优先 event['id']，
+    缺失时用输入序号；uncertain_ids 为 kept 中被标记不确定
+    的 event_id 列表（按输入顺序）。
     """
-    kept = []
-    dropped = []
-    seen = {}
+    entries = []
     for idx, ev in enumerate(events or []):
         if not isinstance(ev, dict):
             continue
@@ -191,30 +207,63 @@ def dedup_inst_events(events):
                      or ev.get("price_data_time")
                      or str(ev.get("discovered_at") or "")[:10])
         trade_id = evidence.get("trade_id")
-        if trade_id not in (None, ""):
-            key = ("tid", ev.get("market"), ev.get("symbol"),
-                   data_date, str(trade_id))
+        has_id = trade_id not in (None, "")
+        tuple_key = (ev.get("market"), ev.get("symbol"), data_date,
+                     evidence.get("inst_buy"), evidence.get("inst_sell"),
+                     evidence.get("seat_buy_records"),
+                     evidence.get("seat_sell_records"))
+        entries.append({
+            "id": ev_id, "ev": ev, "evidence": evidence,
+            "has_id": has_id,
+            "tid_key": (ev.get("market"), ev.get("symbol"), data_date,
+                        str(trade_id)) if has_id else None,
+            "tuple_key": tuple_key,
+            "status": None,
+        })
+
+    dropped = []
+    seen_tid = {}
+    for e in entries:
+        if not e["has_id"]:
+            continue
+        if e["tid_key"] in seen_tid:
+            e["status"] = "confirmed_duplicate"
+            dropped.append((e["id"], e["ev"], e["evidence"]))
         else:
-            key = ("tuple", ev.get("market"), ev.get("symbol"),
-                   data_date, evidence.get("inst_buy"),
-                   evidence.get("inst_sell"),
-                   evidence.get("seat_buy_records"),
-                   evidence.get("seat_sell_records"))
-        if key in seen:
-            dropped.append((ev_id, ev, evidence))
+            seen_tid[e["tid_key"]] = e["id"]
+            e["status"] = "unique"
+
+    id_tuple_keys = {e["tuple_key"] for e in entries
+                     if e["has_id"] and e["status"] == "unique"}
+    noid_groups = {}
+    for e in entries:
+        if not e["has_id"]:
+            noid_groups.setdefault(e["tuple_key"], []).append(e)
+    uncertain_ids = []
+    for e in entries:
+        if e["has_id"]:
+            continue
+        group = noid_groups[e["tuple_key"]]
+        if len(group) > 1 or e["tuple_key"] in id_tuple_keys:
+            e["status"] = "uncertain"
+            uncertain_ids.append(e["id"])
         else:
-            seen[key] = ev_id
-            kept.append((ev_id, ev, evidence))
-    return kept, dropped
+            e["status"] = "independent"
+
+    kept = [(e["id"], e["ev"], e["evidence"]) for e in entries
+            if e["status"] != "confirmed_duplicate"]
+    return kept, dropped, uncertain_ids
 
 
 class InstFlowModule:
     """机构资金流模块：读候选的 inst* discovery events 的 evidence_json
     中的 inst_net（机构专用席位净额，口径见 engine/inst_lhb.py）。
 
-    聚合前先经 dedup_inst_events 去重：同一底层机构事件（同
-    trade_id，或缺 id 时同全元组）只贡献一次净额，live/stored
-    双路不得重复计数；不同日期/不同底层事件分别保留。
+    聚合前先经 dedup_inst_events 三态去重（mf-dedup-2.0）：有
+    trade_id 的同一底层事件只贡献一次净额（confirmed）；缺
+    trade_id 而身份不确定的事件不合并、全部保留计入并在
+    evidence 中完整披露（uncertain_ids/逐条 inst_net/合计
+    影响额/明示说明）；不同日期/不同底层事件分别保留。
 
     无事件 -> subtotal=None（缺失不充数）；有事件时
     subtotal = +8.0（最新 inst_net>0）/ -8.0（<0）/ 0.0（=0）。
@@ -249,15 +298,34 @@ class InstFlowModule:
 
     def compute(self, candidate: dict, bars, context: dict) -> dict:
         events = (context or {}).get("inst_events") or []
-        kept, dropped = dedup_inst_events(events)
+        kept, dropped, uncertain_ids = dedup_inst_events(events)
+        uncertain_set = set(uncertain_ids)
+        uncertain_events = []
+        for ev_id, ev, _evidence in kept:
+            if ev_id in uncertain_set:
+                uncertain_events.append({
+                    "id": ev_id,
+                    "inst_net": self._extract_inst_net(ev),
+                    "dedup_status": "uncertain",
+                })
+        uncertain_net_total = sum(
+            u["inst_net"] for u in uncertain_events
+            if u["inst_net"] is not None)
         dedup_info = {
             "raw_event_ids": [
                 ev.get("id") if isinstance(ev, dict)
                 and ev.get("id") is not None else i
                 for i, ev in enumerate(events) if isinstance(ev, dict)],
             "deduped_event_ids": [eid for eid, _, _ in kept],
+            "confirmed_duplicate_dropped_ids":
+                [eid for eid, _, _ in dropped],
             "dropped_duplicate_ids": [eid for eid, _, _ in dropped],
+            "uncertain_event_ids": list(uncertain_ids),
+            "uncertain_events": uncertain_events,
+            "uncertain_inst_net_total": uncertain_net_total,
+            "uncertain_note": UNCERTAIN_NOTE if uncertain_ids else None,
             "dedup_key": DEDUP_KEY_SPEC,
+            "dedup_version": DEDUP_VERSION,
         }
         parsed = []
         for ev_id, ev, _evidence in kept:
@@ -270,7 +338,8 @@ class InstFlowModule:
         if not parsed:
             factors = {"available": False,
                        "reason": ("no_inst_events" if not events
-                                  else "inst_net_missing")}
+                                  else "inst_net_missing"),
+                       "uncertain_events_count": len(uncertain_ids)}
             return {"factors": factors, "subtotal": None,
                     "evidence": {"events_count": len(events),
                                  "dedup": dedup_info}}
@@ -285,6 +354,7 @@ class InstFlowModule:
         factors = {"available": True,
                    "events_count": len(parsed),
                    "raw_events_count": len(dedup_info["raw_event_ids"]),
+                   "uncertain_events_count": len(uncertain_ids),
                    "latest_inst_net": latest_net,
                    "total_inst_net": total_net}
         evidence = {"events_count": len(parsed),

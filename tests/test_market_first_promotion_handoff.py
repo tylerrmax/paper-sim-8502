@@ -18,13 +18,21 @@ from market_first.promotion import (IllegalTransitionError, decide,
 
 
 class _TestRule:
-    """测试专用规则（显式传入 judge 的机制验证规则，非注册表
-    规则、不代表用户已确认门槛）。"""
+    """测试专用规则实现（fix2-3 起经注册表路径使用：在测试库内
+    登记 approved 行 + 代码侧登记实现；不代表用户已确认门槛，
+    绝不登记到规范库）。"""
 
     version = "test-rule-0"
 
     def evaluate(self, scope, metrics):
         return "passed", "test rule: mature forward samples present"
+
+
+def _register_test_rule(pool):
+    validation.register_rule_implementation("test_rule", _TestRule())
+    validation.register_rule(
+        pool, "test_rule", _TestRule.version, status="approved",
+        approved_by="unit-test")
 
 
 def _gen_bars():
@@ -46,14 +54,21 @@ def _gen_bars():
 
 
 def _judge_pass(pool, cid):
-    """经验证引擎判定合法到达 validation_passed（P0-3 路径）。"""
+    """经验证引擎判定合法到达 validation_passed（P0-3/fix2-3
+    注册表路径）。样本时间线为模拟时钟：事件 2026-11-16 发现、
+    forward entry 推导为 2026-11-17，故取数时刻显式给到该日
+    收盘确认后（16:00），与 fix2-1 完整性规则一致。"""
+    _register_test_rule(pool)
     ev = pool.events_for(cid)[0]
     bars = _gen_bars()
     sid = validation.create_sample(
         pool, cid, ev["source_id"], kind="forward",
-        discovery_event_id=ev["id"], bars=bars)
+        discovery_event_id=ev["id"], bars=bars,
+        fetched_at="2026-11-17T16:00:00+08:00")
     validation.evaluate_sample(pool, sid, bars)
-    out = validation.judge_validation(pool, cid, rule=_TestRule())
+    out = validation.judge_validation(
+        pool, cid, rule_id="test_rule",
+        rule_version=_TestRule.version)
     assert out["decision"] == "passed"
 
 

@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS rule_registry (
     approved_at TEXT,
     params_json TEXT DEFAULT '{}',
     created_at TEXT,
+    impl_key TEXT,
+    impl_version TEXT,
     PRIMARY KEY (rule_id, version)
 );
 
@@ -119,7 +121,8 @@ CREATE TABLE IF NOT EXISTS validation_decisions (
     metrics_json TEXT DEFAULT '{}',
     decision TEXT,
     basis TEXT,
-    created_at TEXT
+    created_at TEXT,
+    rule_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fetched_bars (
@@ -290,6 +293,64 @@ def ensure_fix2_schema(conn) -> None:
     conn.commit()
 
 
+# 效率升级 fix3 新增结构（P0-A/P0-B）：
+# - validation_samples 数据库层不可变触发器：benchmark 三字段
+#   （benchmark_price/benchmark_date/benchmark_price_source）在
+#   行已存在后被 UPDATE 改动 -> RAISE(ABORT)；样本行 DELETE
+#   同样禁止（历史样本不可删）。触发器只拦「值发生变化」的
+#   UPDATE，evaluate_sample 的评估回写不触碰这三列、不受影响。
+# - rule_registry 增加 impl_key/impl_version（实现绑定，P0-B）。
+# - validation_decisions 增加 rule_id 列（与 rule_version 并存）。
+# 迁移幂等：列用 PRAGMA 检查后 ALTER，触发器 IF NOT EXISTS。
+_FIX3_REGISTRY_COLUMNS = {
+    "impl_key": "TEXT",
+    "impl_version": "TEXT",
+}
+
+_FIX3_DECISION_COLUMNS = {
+    "rule_id": "TEXT",
+}
+
+_FIX3_TRIGGERS_SQL = """
+CREATE TRIGGER IF NOT EXISTS trg_validation_samples_benchmark_immutable
+BEFORE UPDATE OF benchmark_price, benchmark_date,
+    benchmark_price_source ON validation_samples
+BEGIN
+    SELECT RAISE(ABORT,
+        'benchmark immutable: benchmark fields cannot be changed after creation')
+    WHERE NEW.benchmark_price IS NOT OLD.benchmark_price
+       OR NEW.benchmark_date IS NOT OLD.benchmark_date
+       OR NEW.benchmark_price_source IS NOT OLD.benchmark_price_source;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_validation_samples_no_delete
+BEFORE DELETE ON validation_samples
+BEGIN
+    SELECT RAISE(ABORT,
+        'validation_samples are historical records: DELETE forbidden');
+END;
+"""
+
+
+def ensure_fix3_schema(conn) -> None:
+    """幂等补齐 fix3 结构：不可变触发器 + 注册表实现绑定列 +
+    判定记录 rule_id 列。对既有行只新增 NULL 列/触发器，
+    绝不 UPDATE/DELETE 既有数据。"""
+    for table, columns in (("rule_registry", _FIX3_REGISTRY_COLUMNS),
+                           ("validation_decisions",
+                            _FIX3_DECISION_COLUMNS)):
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(%s)" % table)}
+        if cols:
+            for name, typ in columns.items():
+                if name not in cols:
+                    conn.execute(
+                        "ALTER TABLE %s ADD COLUMN %s %s"
+                        % (table, name, typ))
+    conn.executescript(_FIX3_TRIGGERS_SQL)
+    conn.commit()
+
+
 def init_db(db_path: str | None = None) -> str:
     """建表（幂等）并返回实际库路径。"""
     path = _resolve(db_path)
@@ -299,6 +360,7 @@ def init_db(db_path: str | None = None) -> str:
         conn.commit()
         ensure_fix1_schema(conn)
         ensure_fix2_schema(conn)
+        ensure_fix3_schema(conn)
     finally:
         conn.close()
     return path

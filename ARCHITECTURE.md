@@ -124,6 +124,33 @@ list_candidates/events_for/history_for`、`set_fields`（五字段白名单，�
   注册须留 approved_by/approved_at，注册表变更不改写历史判定。
   promotion 受控流转 `_apply_validation_passed` 必须携带并核验真实
   passed 判定记录（decision_id），绕过 judge 的直接调用被拒并留痕。
+- **Forward 时间锚信任路径（fix3/MF-FWD-002）**：`create_sample` 的
+  发现时间锚 = max(调用方声称的 `discovered_at` 日期, 库内服务器侧
+  `discovery_events.created_at` 的日期)。`discovered_at` 由调用方经
+  DiscoveryEvent 传入、可回填伪造；`created_at` 由 `pool.ingest`
+  入库时以服务器时间落字，事件内容无法回填。两者不一致时在
+  candidate_history 留痕（field='discovery_time_anchor'）。回填声称
+  不能把 backfill 变成 forward（对抗测试 A3）。
+- **Benchmark 数据库层不可变（fix3/MF-BENCH-002）**：触发器
+  `trg_validation_samples_benchmark_immutable` /
+  `trg_validation_samples_no_delete`（`ensure_fix3_schema` 幂等
+  安装）：benchmark 三字段值变更的 UPDATE 与样本行 DELETE 在
+  数据库层 RAISE(ABORT)，直接 SQL 亦不可改（对抗测试 A1）。
+  evaluate 回写不触碰 benchmark 三列，不受影响。
+- **收盘确认日历化（fix3/MF-BENCH-003）**：`bar_close_confirmed`
+  优先查 `market_first/calendar.py`（2025–2026 休市/半日市表，
+  来源为国务院与交易所公开安排；分市场时区 Asia/Shanghai /
+  Asia/Hong_Kong；港股半日市确认时刻 12:30）：非交易日 bar 一律
+  无效。日历未知（市场未知/年份未覆盖）回退 fix2 固定时刻规则
+  并注明为兜底、非日历确认。
+- **Registry 精确绑定（fix3/MF-REG-002）**：代码侧实现按
+  (rule_id, version) 登记并自报 impl_key/impl_version；
+  `rule_registry` 落库条目同样保存 impl_key/impl_version。
+  judge 双边核对：实现缺失 -> `NO_IMPL`、绑定错配 ->
+  `IMPL_MISMATCH`，均 `not_evaluable` 留痕。
+  `validation_decisions` 同时保存 `rule_id` 与 `rule_version`；
+  `reproduce_decision()` 按记录版本取实现复现历史判定（只读，
+  注册表变更后仍可复现，原记录不改写）。
 - 预留 `delisted` 状态值但本次未实现退市检测（见剩余风险），不伪造。
 
 ### 3.5 promotion（`market_first/promotion.py`）

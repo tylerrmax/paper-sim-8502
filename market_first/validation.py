@@ -61,6 +61,26 @@ Benchmark 收盘完整性（独立验收前补正 fix2-1，写死）：
 直传参数已删除。status != 'approved'（draft/test/disabled）
 一律 not_evaluable；未经用户确认，本轮注册表不得出现
 approved 规则，judge 恒 not_evaluable。
+
+效率升级 fix3（P0-A/P0-B）：
+- 时间锚信任路径（MF-FWD-002）：create_sample 的发现时间锚
+  = max(调用方声称的 discovered_at 日期, 库内服务器侧
+  ingested_at 日期 discovery_events.created_at)，声称与库内
+  不一致时在 candidate_history 留痕（field=
+  'discovery_time_anchor'）。回填声称不能把 backfill 变
+  forward。
+- 收盘确认日历化（MF-BENCH-003）：bar_close_confirmed 优先
+  查 market_first.calendar（交易日/半日市/分市场时区）；
+  日历未知时回退 fix2 固定时刻规则（兜底，非日历确认）。
+- Benchmark 数据库层不可变（MF-BENCH-002）：触发器在
+  market_first.db.ensure_fix3_schema；本模块只经 INSERT 写
+  benchmark，evaluate 回写不触碰 benchmark 三列。
+- Registry 精确绑定（MF-REG-002）：实现按 (rule_id,
+  version) 登记并带 impl_key/impl_version；judge 双边核对，
+  缺失 -> NO_IMPL、错配 -> IMPL_MISMATCH，均 not_evaluable
+  留痕。validation_decisions 同时保存 rule_id 与
+  rule_version；reproduce_decision 按记录版本复现历史判定
+  （只读，不改原记录）。
 """
 from __future__ import annotations
 
@@ -138,9 +158,11 @@ def _row_dict(cur, row):
 
 
 def _ensure(conn):
-    from market_first.db import ensure_fix1_schema, ensure_fix2_schema
+    from market_first.db import (ensure_fix1_schema, ensure_fix2_schema,
+                                 ensure_fix3_schema)
     ensure_fix1_schema(conn)
     ensure_fix2_schema(conn)
+    ensure_fix3_schema(conn)
 
 
 def _shanghai_dt(iso_str) -> datetime:
@@ -172,15 +194,39 @@ DEFAULT_CLOSE_CONFIRM_TIME = _time(15, 30)
 
 def bar_close_confirmed(bar_date, fetched_at, provenance=None,
                         market=None) -> bool:
-    """bar 收盘完整性判定（fix2-1 唯一入口，规则见模块 docstring）。
+    """bar 收盘完整性判定（唯一入口；fix2 时间规则 + fix3 日历）。
 
+    fix3（MF-BENCH-003）：市场日历已知（market_first.calendar
+    覆盖市场与年份）时先查日历——bar_date 非该市场交易日
+    （周末/节假日）-> False（该日 bar 本不应存在）；同日判定
+    按市场本地时区与该日收盘确认时刻（全日/半日市区分）。
+    日历未知（未知市场或年份未覆盖）时回退 fix2 规则：
     - bar_date 严格早于 fetched_at 的上海日历日期 -> True。
     - bar_date 晚于取数日期 -> False（数据异常）。
     - 同日：provenance 含 'intraday' 标记 -> False；取数时刻
       已过该市场收盘确认时刻（CLOSE_CONFIRM_TIME）-> True，
       否则 False。
     """
+    from market_first import calendar as cal
+
     bd = str(bar_date)[:10]
+    group = cal.market_group(market)
+    if group is not None and cal.is_trading_day(market, bd) is not None:
+        # 日历已知路径：非交易日的 bar 一律无效。
+        if not cal.is_trading_day(market, bd):
+            return False
+        tz = cal.market_tz(market)
+        fdt = _shanghai_dt(fetched_at).astimezone(tz)
+        fd = fdt.date().isoformat()
+        if bd < fd:
+            return True
+        if bd > fd:
+            return False
+        if provenance and "intraday" in str(provenance).lower():
+            return False
+        cutoff = cal.close_confirm_time(market, bd)
+        return cutoff is not None and fdt.time() >= cutoff
+    # 日历未知：fix2 固定时刻规则兜底。
     fdt = _shanghai_dt(fetched_at)
     fd = fdt.date().isoformat()
     if bd < fd:
@@ -298,8 +344,35 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
         _ensure(conn)
         event = _resolve_event(conn, candidate_id, source_id,
                                discovery_event_id)
-        discovered_date = (_shanghai_date(event["discovered_at"])
-                           if event else None)
+        claimed_date = (_shanghai_date(event["discovered_at"])
+                        if event else None)
+        # fix3（MF-FWD-002）：时间锚以库内服务器侧记录为准。
+        # discovered_at 由调用方经 DiscoveryEvent 传入、内容可
+        # 回填伪造；discovery_events.created_at 由 pool.ingest
+        # 在入库时以服务器时间落字（ingested_at），事件内容
+        # 无法回填。锚 = max(claimed, ingested)：入场必须晚于
+        # 两者——回填声称的旧 discovered_at 不能把 backfill
+        # 变成 forward。声称值与库内记录不一致时留痕。
+        ingested_date = None
+        if event is not None and event.get("created_at"):
+            ingested_date = _shanghai_date(event["created_at"])
+        discovered_date = claimed_date
+        if ingested_date is not None and (
+                discovered_date is None
+                or ingested_date > discovered_date):
+            discovered_date = ingested_date
+        if (event is not None and claimed_date is not None
+                and ingested_date is not None
+                and claimed_date != ingested_date):
+            pool.record_history(
+                candidate_id, field="discovery_time_anchor",
+                old=claimed_date, new=discovered_date,
+                actor="validation",
+                reason="discovered_at claim (%s) differs from "
+                       "server-side ingested_at date (%s); "
+                       "forward/backfill anchor uses %s"
+                       % (claimed_date, ingested_date,
+                          discovered_date))
         ev_id = event["id"] if event else None
 
         req_entry = str(entry_date)[:10] if entry_date else None
@@ -604,10 +677,14 @@ NO_RULE = "NO_RULE"
 
 RULE_STATUSES = ("draft", "approved", "disabled", "test")
 
-# 代码侧规则实现注册表：rule_id -> ValidationRule 实例。正式
-# judge 只按 rule_id 从这里取实现，且必须同时满足 rule_registry
-# 落库表中存在同 rule_id 的 status='approved' 版本行。本轮不
-# 预置任何实现（数值门槛未经用户确认）。
+# 代码侧规则实现注册表（fix3 P0-B 精确绑定）：键为
+# (rule_id, version)，值为 {"impl_key", "impl_version", "rule"}。
+# impl_version 取实现自报的 rule.version（实现无法冒充其他
+# 版本：以 v1 之名登记 v2 实现时 impl_version 仍为 v2）。
+# 正式 judge 按 (rule_id, version) 同时核对落库注册表条目与
+# 本注册表：任一缺失 -> NO_IMPL；impl_key/impl_version 不符
+# -> IMPL_MISMATCH；两者都使判定 not_evaluable 并留痕。
+# 本轮不预置任何实现（数值门槛未经用户确认）。
 RULE_IMPLEMENTATIONS: dict = {}
 
 
@@ -626,27 +703,46 @@ class ValidationRule:
         raise NotImplementedError
 
 
-def register_rule_implementation(rule_id, rule):
+def register_rule_implementation(rule_id, rule, version=None,
+                                 impl_key=None):
     """登记代码侧规则实现（rule 须提供 evaluate(scope, metrics)）。
 
+    fix3 P0-B：实现按 (rule_id, version) 精确登记，version 缺省
+    取实现自报的 rule.version。条目同时记录 impl_key（缺省 =
+    rule_id）与 impl_version（实现自报版本，不受登记名影响）。
     只登记实现不等于批准：正式判定还要求 rule_registry 表中
-    有同 rule_id 的 approved 版本行（见 register_rule）。
+    有同 (rule_id, version) 的 approved 行且 impl 绑定一致
+    （见 register_rule / judge_validation）。
     """
     if not hasattr(rule, "evaluate"):
         raise TypeError(
             "rule implementation must provide evaluate(scope, metrics)")
-    RULE_IMPLEMENTATIONS[str(rule_id)] = rule
-    return str(rule_id)
+    ver = str(version or getattr(rule, "version", "") or "")
+    if not ver:
+        raise ValueError(
+            "rule implementation requires a version "
+            "(pass version= or set rule.version)")
+    key = (str(rule_id), ver)
+    RULE_IMPLEMENTATIONS[key] = {
+        "impl_key": str(impl_key or rule_id),
+        "impl_version": str(getattr(rule, "version", ver)),
+        "rule": rule,
+    }
+    return key
 
 
 def register_rule(pool, rule_id, version, status="draft", params=None,
-                  approved_by=None, approved_at=None) -> int:
+                  approved_by=None, approved_at=None,
+                  impl_key=None, impl_version=None) -> int:
     """向 rule_registry 落库表登记一个规则版本 -> row id。
 
     status 只许 draft/approved/disabled/test；status='approved'
     必须带 approved_by（批准留痕）。重复 (rule_id, version)
     抛 ValueError。注册只新增行，绝不改写既有判定记录；
     未经用户确认的规则不得以 approved 登记到正式注册表。
+    fix3 P0-B：同时登记实现绑定 impl_key/impl_version（缺省
+    分别取 rule_id 与 version）；judge 时与代码侧实现注册表
+    逐项核对，不一致 -> IMPL_MISMATCH。
     """
     if status not in RULE_STATUSES:
         raise ValueError("invalid rule status: %r (allowed: %s)"
@@ -661,11 +757,13 @@ def register_rule(pool, rule_id, version, status="draft", params=None,
             cur = conn.execute(
                 "INSERT INTO rule_registry "
                 "(rule_id, version, status, approved_by, approved_at,"
-                " params_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " params_json, created_at, impl_key, impl_version)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (str(rule_id), str(version), status, approved_by,
                  approved_at,
                  json.dumps(params or {}, ensure_ascii=False),
-                 _now_iso()))
+                 _now_iso(), str(impl_key or rule_id),
+                 str(impl_version or version)))
             conn.commit()
         except sqlite3.IntegrityError as e:
             raise ValueError(
@@ -794,14 +892,37 @@ def judge_validation(pool, candidate_id, rule_id=None,
                          "用于正式判定"
                          % (rule_id, rule_version, reg["status"]))
             else:
-                impl = RULE_IMPLEMENTATIONS.get(str(rule_id))
-                if impl is None:
+                # fix3 P0-B：按 (rule_id, version) 精确取实现，
+                # 并核对注册表条目的 impl 绑定。实现缺失 ->
+                # NO_IMPL；impl_key/impl_version 错配 ->
+                # IMPL_MISMATCH；均为 not_evaluable 并留痕。
+                entry = RULE_IMPLEMENTATIONS.get(
+                    (str(rule_id), str(rule_version)))
+                reg_impl_key = reg.get("impl_key") or str(rule_id)
+                reg_impl_version = (reg.get("impl_version")
+                                    or str(rule_version))
+                if entry is None:
                     decision = "not_evaluable"
                     recorded_version = NO_RULE
-                    basis = ("rule_implementation_missing: "
-                             "rule_id=%s 已登记 approved 但代码侧"
-                             "无实现，无法执行数值判定" % (rule_id,))
+                    basis = ("rule_implementation_missing[NO_IMPL]: "
+                             "rule_id=%s version=%s 已登记 approved"
+                             " 但代码侧无同 (rule_id, version) 实现"
+                             "，无法执行数值判定"
+                             % (rule_id, rule_version))
+                elif (reg_impl_key != entry["impl_key"]
+                        or reg_impl_version != entry["impl_version"]):
+                    decision = "not_evaluable"
+                    recorded_version = NO_RULE
+                    basis = ("rule_implementation_mismatch"
+                             "[IMPL_MISMATCH]: 注册表绑定 "
+                             "impl_key=%s impl_version=%s 与代码侧"
+                             "实现 impl_key=%s impl_version=%s 不符"
+                             "，拒绝按错配实现判定"
+                             % (reg_impl_key, reg_impl_version,
+                                entry["impl_key"],
+                                entry["impl_version"]))
                 else:
+                    impl = entry["rule"]
                     recorded_version = rule_version
                     if not fwd:
                         decision = "not_passed"
@@ -828,9 +949,12 @@ def judge_validation(pool, candidate_id, rule_id=None,
 
         cur = conn.execute(
             "INSERT INTO validation_decisions "
-            "(candidate_id, rule_version, sample_scope, metrics_json,"
-            " decision, basis, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (candidate_id, recorded_version,
+            "(candidate_id, rule_id, rule_version, sample_scope,"
+            " metrics_json, decision, basis, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (candidate_id,
+             str(rule_id) if rule_id is not None else None,
+             recorded_version,
              json.dumps(scope, ensure_ascii=False),
              json.dumps(metrics, ensure_ascii=False),
              decision, basis, _now_iso()))
@@ -852,3 +976,64 @@ def judge_validation(pool, candidate_id, rule_id=None,
                    "decision_id=%s" % (recorded_version, decision_id),
             decision_id=decision_id)
     return row
+
+
+def reproduce_decision(pool, decision_id) -> dict:
+    """历史判定复现（fix3 P0-B）：按判定记录中的 (rule_id,
+    rule_version) 从实现注册表取对应版本实现，对记录在案的
+    scope/metrics 重演硬门槛与数值判定，与原记录比对。
+
+    只读操作：不写新判定、不改原记录、不流转状态。注册表
+    其后变更（登记新版本、停用旧版本）不影响按版本取实现
+    复现；原判定记录一字不改。原记录为 not_evaluable 或
+    NO_RULE 时无数值判定可复现，match=None 并注明。
+    """
+    conn, owns = _resolve_conn(pool)
+    try:
+        _ensure(conn)
+        cur = conn.execute(
+            "SELECT * FROM validation_decisions WHERE id = ?",
+            (decision_id,))
+        row = _row_dict(cur, cur.fetchone())
+    finally:
+        if owns:
+            conn.close()
+    if row is None:
+        raise ValueError("validation decision not found: id=%r"
+                         % (decision_id,))
+    result = {
+        "decision_id": row["id"],
+        "rule_id": row.get("rule_id"),
+        "rule_version": row.get("rule_version"),
+        "recorded_decision": row["decision"],
+        "reproduced_decision": None,
+        "match": None,
+        "note": "",
+    }
+    if row["decision"] == "not_evaluable" \
+            or row.get("rule_version") in (None, NO_RULE) \
+            or row.get("rule_id") is None:
+        result["note"] = ("recorded decision carries no numeric "
+                          "rule judgement to reproduce")
+        return result
+    entry = RULE_IMPLEMENTATIONS.get(
+        (str(row["rule_id"]), str(row["rule_version"])))
+    if entry is None:
+        result["match"] = False
+        result["note"] = ("NO_IMPL: implementation for "
+                           "(rule_id=%s, version=%s) no longer "
+                           "registered; cannot reproduce"
+                           % (row["rule_id"], row["rule_version"]))
+        return result
+    metrics = json.loads(row["metrics_json"] or "{}")
+    scope = json.loads(row["sample_scope"] or "{}")
+    if not metrics.get("forward_count"):
+        reproduced = "not_passed"
+    elif (metrics.get("forward_mature", 0) < metrics["forward_count"]
+            or metrics.get("forward_null_metric_sample_ids")):
+        reproduced = "not_passed"
+    else:
+        reproduced, _basis = entry["rule"].evaluate(scope, metrics)
+    result["reproduced_decision"] = reproduced
+    result["match"] = (reproduced == row["decision"])
+    return result

@@ -46,6 +46,14 @@ def _candidate_validating(tmp_path):
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
     cid, _ = pool.ingest(ev)
+    # fix3 信任路径（MF-FWD-002）：时间锚以库内服务器侧
+    # ingested_at 为准；本 helper 模拟生产不变量「发现即
+    # 入库」，把事件 created_at 对齐到模拟发现时刻；
+    # 本文件全部断言未改动。
+    pool.conn.execute(
+        "UPDATE discovery_events SET created_at=?"
+        " WHERE candidate_id=?", (ev.discovered_at, cid))
+    pool.conn.commit()
     for state in ("pending_research", "researching", "validating"):
         transition(pool, cid, state, actor="tester")
     return pool, cid
@@ -62,7 +70,13 @@ def _mature_forward(pool, cid):
 
 
 def _register(pool, version="v1", status="approved", rule_id="reg_rule"):
-    validation.register_rule_implementation(rule_id, _Rule())
+    # fix3 P0-B 精确绑定：登记某版本时必须同时登记自报该版本
+    # 的实现（实例属性覆盖类属性 version），否则 judge 应以
+    # NO_IMPL/IMPL_MISMATCH 拒绝——本 helper 按新口径提供与
+    # 登记版本一致的实现；断言未改动。
+    rule = _Rule()
+    rule.version = version
+    validation.register_rule_implementation(rule_id, rule)
     return validation.register_rule(
         pool, rule_id, version, status=status,
         approved_by="unit-test" if status == "approved" else None)
@@ -194,6 +208,11 @@ def test_rule_version_change_new_decisions_use_new_version(tmp_path):
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 50.0})
     cid2, _ = pool.ingest(ev)
+    # 同 _candidate_validating 的 fix3 对齐：模拟发现即入库。
+    pool.conn.execute(
+        "UPDATE discovery_events SET created_at=?"
+        " WHERE candidate_id=?", (ev.discovered_at, cid2))
+    pool.conn.commit()
     for state in ("pending_research", "researching", "validating"):
         transition(pool, cid2, state, actor="tester")
     _mature_forward(pool, cid2)

@@ -35,6 +35,14 @@ def _pool_with_event(tmp_path, discovered_at,
         source_id=source_id, discovered_at=discovered_at,
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
     cid, _ = pool.ingest(ev)
+    # fix3 信任路径（MF-FWD-002）：时间锚以库内服务器侧
+    # ingested_at 为准；本 helper 模拟生产不变量「发现即
+    # 入库」，把事件 created_at 对齐到模拟发现时刻；
+    # 本文件全部断言未改动。
+    pool.conn.execute(
+        "UPDATE discovery_events SET created_at=?"
+        " WHERE candidate_id=?", (ev.discovered_at, cid))
+    pool.conn.commit()
     return pool, cid, pool.events_for(cid)[0]["id"]
 
 

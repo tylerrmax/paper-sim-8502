@@ -1,0 +1,7 @@
+=== fix2 baseline END 2026-11-17T02:52:07+00:00 ===
+branch HEAD: 7e4e7e3bba1c9df528529fc3589ee3a921c7870e
+production master HEAD: 1ce237026c0ff7a0871f22bd2d7d4872dbc0d6a9
+sim.db sha256: e1646ee9f8f8405618be1873ed2edb52028b12e96d6ff5f1b713fc8676e64617
+fills count/max_id: (51, 467)
+cache.db rows check skipped (sha compared separately)
+prod cache.db sha256: 5b10f251ab9c4635fc73277a6466973f65be071da3d6b110257c94d60ea0dc28

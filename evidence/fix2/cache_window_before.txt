@@ -1,0 +1,1 @@
+5b10f251ab9c4635fc73277a6466973f65be071da3d6b110257c94d60ea0dc28  /home/hatch/workspace/market_data/cache.db

@@ -1,0 +1,1547 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index 304c170..769a302 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -73,12 +73,15 @@ list_candidates/events_for/history_for`、`set_fields`（五字段白名单，
+ - 已实现模块：`trend_pattern`（mf-trend-1.0，复用 `engine/screen.py:pattern_factors`
+   的形态因子分 + 本模块 MA 趋势分，规则写入 docstring；bars<30 时 subtotal=None
+   不充数）、`inst_flow`（mf-inst-1.0，基于候选的机构发现事件证据计分）。
+-- **机构事件去重（fix1/P0-2）**：inst_flow 聚合前经 `dedup_inst_events` 去重——
+-  同一底层事件（键 =(market, symbol, data_date, trade_id)；trade_id 缺失时退化
+-  为含 inst_buy/inst_sell/席位记录数的全元组全等）只贡献一次净额，live/stored
+-  双路不重复计数；不同日期/不同底层事件分别保留，禁止按 symbol 单独去重。
+-  候选池原始事件全量保留不动；研究报告 evidence 记录 raw/deduped/dropped
+-  事件 id 与 dedup_key，保证可复算。
++- **机构事件去重（fix1/P0-2，fix2-2 改三态 mf-dedup-2.0）**：inst_flow
++  聚合前经 `dedup_inst_events` 分类——有 trade_id 且键 (market, symbol,
++  data_date, trade_id) 相同 = confirmed duplicate，只贡献一次净额；
++  trade_id 缺失时**一律不自动合并**：全元组相同标
++  `dedup_status='uncertain'`，全部保留计入，并在研究报告 evidence 中
++  完整披露（uncertain_event_ids、逐条 inst_net、合计影响额、明示
++  说明）；其余为 independent 分别保留。禁止按 symbol 单独去重。
++  候选池原始事件全量保留不动；evidence 记录 raw/deduped/
++  confirmed_dropped/uncertain 明细与 dedup_version，保证可复算。
+ - **硬约束**：研究报告只有证据与分数；落库前递归扫描禁止键
+   （side/action/order/buy/sell/instruction/qty/position_size），命中抛错——
+   研究层在代码上无法产出交易指令。
+@@ -107,6 +110,20 @@ list_candidates/events_for/history_for`、`set_fields`（五字段白名单，
+   `judge_validation()` 按版本化规则产生并写 `validation_decisions` 记录；
+   阈值未定版，规则注册表为空时 judge 一律 `not_evaluable`
+   （no_approved_rule）。门槛方案见 `THRESHOLD_PROPOSAL.md`（待用户确认）。
++- **Benchmark 收盘完整性（fix2-1）**：benchmark 只能取通过
++  `bar_close_confirmed()` 确认的收盘——bar 日期严格早于取数日天然确认；
++  当日 bar 须取数时刻已过收盘确认时刻（A股/北交所/可转债 15:30、港股
++  16:30）且 provenance 无 intraday 标记；未来日 bar 不确认。不确认则
++  留痕拒绝（reason 含 `benchmark_close_unconfirmed`）。market_data 包
++  不提供 bar 完整性标记（仅 OHLCV），故以时间规则为准。benchmark 一经
++  记录不可变：评估时发现 entry 日收盘被行情源修订，只记
++  `benchmark_revision_json` + candidate_history，绝不覆盖原值。
++- **规则注册保护（fix2-3）**：正式 judge 只接受 `rule_id+rule_version`
++  并从落库表 `rule_registry` 加载，规则对象直传参数已删除；
++  status != 'approved'（draft/test/disabled）一律 `not_evaluable`；
++  注册须留 approved_by/approved_at，注册表变更不改写历史判定。
++  promotion 受控流转 `_apply_validation_passed` 必须携带并核验真实
++  passed 判定记录（decision_id），绕过 judge 的直接调用被拒并留痕。
+ - 预留 `delisted` 状态值但本次未实现退市检测（见剩余风险），不伪造。
+ 
+ ### 3.5 promotion（`market_first/promotion.py`）
+diff --git a/market_first/db.py b/market_first/db.py
+index 91c6737..53a0532 100644
+--- a/market_first/db.py
++++ b/market_first/db.py
+@@ -85,9 +85,22 @@ CREATE TABLE IF NOT EXISTS validation_samples (
+     benchmark_date TEXT,
+     benchmark_price_source TEXT,
+     data_version TEXT,
++    benchmark_revision_json TEXT,
+     UNIQUE(candidate_id, source_id, entry_date)
+ );
+ 
++CREATE TABLE IF NOT EXISTS rule_registry (
++    rule_id TEXT NOT NULL,
++    version TEXT NOT NULL,
++    status TEXT NOT NULL DEFAULT 'draft'
++        CHECK (status IN ('draft', 'approved', 'disabled', 'test')),
++    approved_by TEXT,
++    approved_at TEXT,
++    params_json TEXT DEFAULT '{}',
++    created_at TEXT,
++    PRIMARY KEY (rule_id, version)
++);
++
+ CREATE TABLE IF NOT EXISTS sample_exclusions (
+     id INTEGER PRIMARY KEY,
+     sample_id INTEGER NOT NULL REFERENCES validation_samples(id),
+@@ -240,6 +253,43 @@ def ensure_fix1_schema(conn) -> None:
+     conn.commit()
+ 
+ 
++# 独立验收前补正（fix2）新增结构：validation_samples 的
++# benchmark 修订记录列 + rule_registry 规则注册表。同样只加
++# 可空列/新表，绝不 UPDATE/DELETE 既有数据。
++_FIX2_SAMPLE_COLUMNS = {
++    "benchmark_revision_json": "TEXT",
++}
++
++_FIX2_TABLES_SQL = """
++CREATE TABLE IF NOT EXISTS rule_registry (
++    rule_id TEXT NOT NULL,
++    version TEXT NOT NULL,
++    status TEXT NOT NULL DEFAULT 'draft'
++        CHECK (status IN ('draft', 'approved', 'disabled', 'test')),
++    approved_by TEXT,
++    approved_at TEXT,
++    params_json TEXT DEFAULT '{}',
++    created_at TEXT,
++    PRIMARY KEY (rule_id, version)
++);
++"""
++
++
++def ensure_fix2_schema(conn) -> None:
++    """幂等补齐 fix2 结构：benchmark_revision_json 列 +
++    rule_registry 表。对既有行只新增 NULL 列。"""
++    cols = {r[1] for r in conn.execute(
++        "PRAGMA table_info(validation_samples)")}
++    if cols:
++        for name, typ in _FIX2_SAMPLE_COLUMNS.items():
++            if name not in cols:
++                conn.execute(
++                    "ALTER TABLE validation_samples ADD COLUMN %s %s"
++                    % (name, typ))
++    conn.executescript(_FIX2_TABLES_SQL)
++    conn.commit()
++
++
+ def init_db(db_path: str | None = None) -> str:
+     """建表（幂等）并返回实际库路径。"""
+     path = _resolve(db_path)
+@@ -248,6 +298,7 @@ def init_db(db_path: str | None = None) -> str:
+         conn.executescript(SCHEMA_SQL)
+         conn.commit()
+         ensure_fix1_schema(conn)
++        ensure_fix2_schema(conn)
+     finally:
+         conn.close()
+     return path
+diff --git a/market_first/promotion.py b/market_first/promotion.py
+index 0a93fdb..399747f 100644
+--- a/market_first/promotion.py
++++ b/market_first/promotion.py
+@@ -122,18 +122,37 @@ def transition(pool, cid, to_state, actor, reason=""):
+     return _apply_transition(pool, cid, current, to_state, actor, reason)
+ 
+ 
+-def _apply_validation_passed(pool, cid, actor, reason=""):
++def _apply_validation_passed(pool, cid, actor, reason="",
++                             decision_id=None):
+     """内部受控入口：validating -> validation_passed。
+ 
+     唯一合法调用方是 validation.judge_validation 在判定
+-    decision='passed' 后调用；当前状态不是 validating 时抛
+-    IllegalTransitionError。不经公开 transition()（其对
++    decision='passed' 后调用（fix2-3 加固）：必须携带
++    decision_id，且库内须存在该 id、属于该候选、decision=
++    'passed' 的 validation_decisions 记录；核验不过先在
++    candidate_history 留痕再抛 IllegalTransitionError——任何
++    模块绕过 judge 直接调用本函数都无法完成流转。当前状态
++    不是 validating 时同样拒绝。不经公开 transition()（其对
+     validation_passed 直达一律拒绝）。
+     """
+     cand = pool.get_by_id(cid)
+     if cand is None:
+         raise ValueError("候选不存在：id=%s" % (cid,))
+     current = cand.get("promotion_status")
++    verified = False
++    if decision_id is not None:
++        row = pool.conn.execute(
++            "SELECT candidate_id, decision FROM validation_decisions"
++            " WHERE id = ?", (decision_id,)).fetchone()
++        verified = (row is not None
++                    and row["candidate_id"] == cid
++                    and row["decision"] == "passed")
++    if not verified:
++        _reject(
++            pool, cid, current, "validation_passed", actor,
++            "受控流转核验失败：decision_id=%s 无对应的 "
++            "validation_decisions passed 记录，绕过 "
++            "judge_validation 的直接调用被拒" % (decision_id,))
+     if current != "validating":
+         raise IllegalTransitionError(
+             "validation_passed 只能从 validating 经 judge_validation "
+diff --git a/market_first/research.py b/market_first/research.py
+index 4cb214d..970c30f 100644
+--- a/market_first/research.py
++++ b/market_first/research.py
+@@ -138,11 +138,22 @@ class TrendPatternModule:
+                 "evidence": evidence}
+ 
+ 
++DEDUP_VERSION = "mf-dedup-2.0"
++
+ DEDUP_KEY_SPEC = (
+-    "(market, symbol, data_date, trade_id) when trade_id is present; "
+-    "fallback (market, symbol, data_date, inst_buy, inst_sell, "
+-    "seat_buy_records, seat_sell_records) full-tuple equality when "
+-    "trade_id is missing"
++    "mf-dedup-2.0 three-state: (1) trade_id present and key "
++    "(market, symbol, data_date, trade_id) equal -> confirmed "
++    "duplicate, counted once; (2) trade_id missing on either side "
++    "-> NEVER auto-merged: identical full tuple (market, symbol, "
++    "data_date, inst_buy, inst_sell, seat_buy_records, "
++    "seat_sell_records) is flagged dedup_status='uncertain', all "
++    "copies kept and counted; (3) otherwise independent, kept."
++)
++
++UNCERTAIN_NOTE = (
++    "身份不确定、未合并：以下事件缺少 trade_id 且全元组相同，"
++    "无法确认是否为同一底层机构事件；按未合并处理，全部保留"
++    "并计入净额（存在重复计入的可能，金额影响单列）。"
+ )
+ 
+ 
+@@ -164,22 +175,27 @@ def _evidence_dict(event):
+ 
+ 
+ def dedup_inst_events(events):
+-    """机构事件去重（第一轮审计修复 P0-2）：同一底层机构事件经
+-    live/stored 两条取得路径重复入账时只保留一份。
+-
+-    去重键：优先 (market, symbol, data_date, trade_id)；
+-    trade_id 缺失时退化为 (market, symbol, data_date, inst_buy,
+-    inst_sell, seat_buy_records, seat_sell_records) 全等才视为
+-    同一事件。键不同一律保留（不同日期、不同底层事件不得误删），
+-    禁止按 symbol 单独去重。候选池中的原始事件不在此删除，
+-    本函数只决定研究聚合的计入集合。
+-
+-    返回 (kept, dropped)：元素均为 (event_id, event, evidence)，
+-    event_id 优先 event['id']，缺失时用输入序号。
++    """机构事件去重（fix2-2 三态，规则版本 mf-dedup-2.0）：
++
++    - confirmed duplicate：trade_id 存在且键 (market, symbol,
++      data_date, trade_id) 相同 -> 同一底层事件，只保留先到
++      一份，其余计入 dropped（留痕）。
++    - uncertain：任一侧 trade_id 缺失时一律不自动合并。缺 id
++      事件之间全元组 (market, symbol, data_date, inst_buy,
++      inst_sell, seat_buy_records, seat_sell_records) 相同，
++      或与某条有 id 事件的全元组相同 -> 身份不确定，标记
++      dedup_status='uncertain'，全部保留并计入净额。
++    - independent：其余事件分别保留。
++
++    禁止按 symbol 单独去重；候选池原始事件不在此删除，本
++    函数只决定研究聚合的计入集合与披露口径。
++
++    返回 (kept, dropped, uncertain_ids)：kept/dropped 元素为
++    (event_id, event, evidence)，event_id 优先 event['id']，
++    缺失时用输入序号；uncertain_ids 为 kept 中被标记不确定
++    的 event_id 列表（按输入顺序）。
+     """
+-    kept = []
+-    dropped = []
+-    seen = {}
++    entries = []
+     for idx, ev in enumerate(events or []):
+         if not isinstance(ev, dict):
+             continue
+@@ -191,30 +207,63 @@ def dedup_inst_events(events):
+                      or ev.get("price_data_time")
+                      or str(ev.get("discovered_at") or "")[:10])
+         trade_id = evidence.get("trade_id")
+-        if trade_id not in (None, ""):
+-            key = ("tid", ev.get("market"), ev.get("symbol"),
+-                   data_date, str(trade_id))
++        has_id = trade_id not in (None, "")
++        tuple_key = (ev.get("market"), ev.get("symbol"), data_date,
++                     evidence.get("inst_buy"), evidence.get("inst_sell"),
++                     evidence.get("seat_buy_records"),
++                     evidence.get("seat_sell_records"))
++        entries.append({
++            "id": ev_id, "ev": ev, "evidence": evidence,
++            "has_id": has_id,
++            "tid_key": (ev.get("market"), ev.get("symbol"), data_date,
++                        str(trade_id)) if has_id else None,
++            "tuple_key": tuple_key,
++            "status": None,
++        })
++
++    dropped = []
++    seen_tid = {}
++    for e in entries:
++        if not e["has_id"]:
++            continue
++        if e["tid_key"] in seen_tid:
++            e["status"] = "confirmed_duplicate"
++            dropped.append((e["id"], e["ev"], e["evidence"]))
+         else:
+-            key = ("tuple", ev.get("market"), ev.get("symbol"),
+-                   data_date, evidence.get("inst_buy"),
+-                   evidence.get("inst_sell"),
+-                   evidence.get("seat_buy_records"),
+-                   evidence.get("seat_sell_records"))
+-        if key in seen:
+-            dropped.append((ev_id, ev, evidence))
++            seen_tid[e["tid_key"]] = e["id"]
++            e["status"] = "unique"
++
++    id_tuple_keys = {e["tuple_key"] for e in entries
++                     if e["has_id"] and e["status"] == "unique"}
++    noid_groups = {}
++    for e in entries:
++        if not e["has_id"]:
++            noid_groups.setdefault(e["tuple_key"], []).append(e)
++    uncertain_ids = []
++    for e in entries:
++        if e["has_id"]:
++            continue
++        group = noid_groups[e["tuple_key"]]
++        if len(group) > 1 or e["tuple_key"] in id_tuple_keys:
++            e["status"] = "uncertain"
++            uncertain_ids.append(e["id"])
+         else:
+-            seen[key] = ev_id
+-            kept.append((ev_id, ev, evidence))
+-    return kept, dropped
++            e["status"] = "independent"
++
++    kept = [(e["id"], e["ev"], e["evidence"]) for e in entries
++            if e["status"] != "confirmed_duplicate"]
++    return kept, dropped, uncertain_ids
+ 
+ 
+ class InstFlowModule:
+     """机构资金流模块：读候选的 inst* discovery events 的 evidence_json
+     中的 inst_net（机构专用席位净额，口径见 engine/inst_lhb.py）。
+ 
+-    聚合前先经 dedup_inst_events 去重：同一底层机构事件（同
+-    trade_id，或缺 id 时同全元组）只贡献一次净额，live/stored
+-    双路不得重复计数；不同日期/不同底层事件分别保留。
++    聚合前先经 dedup_inst_events 三态去重（mf-dedup-2.0）：有
++    trade_id 的同一底层事件只贡献一次净额（confirmed）；缺
++    trade_id 而身份不确定的事件不合并、全部保留计入并在
++    evidence 中完整披露（uncertain_ids/逐条 inst_net/合计
++    影响额/明示说明）；不同日期/不同底层事件分别保留。
+ 
+     无事件 -> subtotal=None（缺失不充数）；有事件时
+     subtotal = +8.0（最新 inst_net>0）/ -8.0（<0）/ 0.0（=0）。
+@@ -249,15 +298,34 @@ class InstFlowModule:
+ 
+     def compute(self, candidate: dict, bars, context: dict) -> dict:
+         events = (context or {}).get("inst_events") or []
+-        kept, dropped = dedup_inst_events(events)
++        kept, dropped, uncertain_ids = dedup_inst_events(events)
++        uncertain_set = set(uncertain_ids)
++        uncertain_events = []
++        for ev_id, ev, _evidence in kept:
++            if ev_id in uncertain_set:
++                uncertain_events.append({
++                    "id": ev_id,
++                    "inst_net": self._extract_inst_net(ev),
++                    "dedup_status": "uncertain",
++                })
++        uncertain_net_total = sum(
++            u["inst_net"] for u in uncertain_events
++            if u["inst_net"] is not None)
+         dedup_info = {
+             "raw_event_ids": [
+                 ev.get("id") if isinstance(ev, dict)
+                 and ev.get("id") is not None else i
+                 for i, ev in enumerate(events) if isinstance(ev, dict)],
+             "deduped_event_ids": [eid for eid, _, _ in kept],
++            "confirmed_duplicate_dropped_ids":
++                [eid for eid, _, _ in dropped],
+             "dropped_duplicate_ids": [eid for eid, _, _ in dropped],
++            "uncertain_event_ids": list(uncertain_ids),
++            "uncertain_events": uncertain_events,
++            "uncertain_inst_net_total": uncertain_net_total,
++            "uncertain_note": UNCERTAIN_NOTE if uncertain_ids else None,
+             "dedup_key": DEDUP_KEY_SPEC,
++            "dedup_version": DEDUP_VERSION,
+         }
+         parsed = []
+         for ev_id, ev, _evidence in kept:
+@@ -270,7 +338,8 @@ class InstFlowModule:
+         if not parsed:
+             factors = {"available": False,
+                        "reason": ("no_inst_events" if not events
+-                                  else "inst_net_missing")}
++                                  else "inst_net_missing"),
++                       "uncertain_events_count": len(uncertain_ids)}
+             return {"factors": factors, "subtotal": None,
+                     "evidence": {"events_count": len(events),
+                                  "dedup": dedup_info}}
+@@ -285,6 +354,7 @@ class InstFlowModule:
+         factors = {"available": True,
+                    "events_count": len(parsed),
+                    "raw_events_count": len(dedup_info["raw_event_ids"]),
++                   "uncertain_events_count": len(uncertain_ids),
+                    "latest_inst_net": latest_net,
+                    "total_inst_net": total_net}
+         evidence = {"events_count": len(parsed),
+diff --git a/market_first/validation.py b/market_first/validation.py
+index a6359f9..6217c66 100644
+--- a/market_first/validation.py
++++ b/market_first/validation.py
+@@ -34,6 +34,33 @@ Forward 时间规则（第一轮审计修复 P0-1，代码强制，写死）：
+ 确认前规则注册表为空（NO_RULE），judge 一律 not_evaluable，
+ 系统不得产生 validation_passed。未成熟样本、指标 NULL、仅有
+ backfill 样本三条硬门槛在判定函数前置拦截，与数值阈值分离。
++
++Benchmark 收盘完整性（独立验收前补正 fix2-1，写死）：
++- 不得仅凭 bars 中存在某日记录就认定该日收盘价已经形成。
++  bar_close_confirmed(bar_date, fetched_at, provenance, market)
++  为唯一判定入口：bar 日期严格早于取数日期（Asia/Shanghai）
++  -> 已收盘确认；bar 日期等于取数日期 -> 仅当取数时刻已过该
++  市场收盘确认时刻（A股/北交所/可转债 15:30 = 15:00 收盘 +
++  30 分钟缓冲；港股 16:30）且 provenance 无 intraday 标记时
++  才确认；bar 日期晚于取数日期 -> 数据异常，不确认。
++  依据边界：market_data 包/service 不提供 bar 完整性或
++  intraday 标记（检视 service.py/quality.py 无此字段，返回的
++  Bar 仅含 OHLCV），故以时间规则为准，provenance 的
++  intraday 标记为预留否决项（当前 provenance 串均不含该标记）。
++- create_sample 的 forward/backfill 路径都必须以通过完整性
++  确认的收盘作为 benchmark；不确认 -> 留痕拒绝
++  （ForwardRejectedError，reason 含 benchmark_close_unconfirmed）。
++- benchmark 一经记录不可变：evaluate_sample 若发现当前取到
++  的 entry 日收盘与已记录 benchmark_price 不一致（行情源
++  修订），不得静默覆盖——把首次发现的修订记入样本行
++  benchmark_revision_json（旧值/新值/发现时间），每次发现
++  另在 candidate_history 留痕，评估始终以原 benchmark 计算。
++
++规则注册保护（fix2-3）：正式 judge 只接受 rule_id+version，
++从 rule_registry 注册表（落库）加载并核对状态；规则对象
++直传参数已删除。status != 'approved'（draft/test/disabled）
++一律 not_evaluable；未经用户确认，本轮注册表不得出现
++approved 规则，judge 恒 not_evaluable。
+ """
+ from __future__ import annotations
+ 
+@@ -51,8 +78,12 @@ class DuplicateSampleError(Exception):
+     """同 (candidate_id, source_id, entry_date) 样本已存在。"""
+ 
+ 
+-class ForwardRejectedError(Exception):
+-    """Forward 样本创建被时间规则拒绝（已在 candidate_history 留痕）。"""
++class ForwardRejectedError(ValueError):
++    """样本创建被时间/完整性规则拒绝（已在 candidate_history 留痕）。
++
++    fix2 起同时用于 backfill 路径的 benchmark 完整性拒绝，
++    故继承 ValueError 以兼容既有按 ValueError 捕获的调用方。
++    """
+ 
+ 
+ def _now_iso():
+@@ -107,8 +138,60 @@ def _row_dict(cur, row):
+ 
+ 
+ def _ensure(conn):
+-    from market_first.db import ensure_fix1_schema
++    from market_first.db import ensure_fix1_schema, ensure_fix2_schema
+     ensure_fix1_schema(conn)
++    ensure_fix2_schema(conn)
++
++
++def _shanghai_dt(iso_str) -> datetime:
++    """ISO 时间戳 -> 带 Asia/Shanghai 时区的 datetime。
++
++    无时区字符串按 Asia/Shanghai 本地时间解释。
++    """
++    s = str(iso_str)
++    dt = datetime.fromisoformat(s)
++    if dt.tzinfo is None:
++        dt = dt.replace(tzinfo=_SHANGHAI)
++    return dt.astimezone(_SHANGHAI)
++
++
++# 收盘确认时刻（Asia/Shanghai）：收盘时刻 + 30 分钟缓冲。
++# A股/北交所/可转债 15:00 收盘 -> 15:30 确认；港股 16:00
++# 收盘 -> 16:30 确认。未列市场按 A股规则（15:30）。
++from datetime import time as _time  # noqa: E402
++
++CLOSE_CONFIRM_TIME = {
++    "SH": _time(15, 30),
++    "SZ": _time(15, 30),
++    "BJ": _time(15, 30),
++    "CB": _time(15, 30),
++    "HK": _time(16, 30),
++}
++DEFAULT_CLOSE_CONFIRM_TIME = _time(15, 30)
++
++
++def bar_close_confirmed(bar_date, fetched_at, provenance=None,
++                        market=None) -> bool:
++    """bar 收盘完整性判定（fix2-1 唯一入口，规则见模块 docstring）。
++
++    - bar_date 严格早于 fetched_at 的上海日历日期 -> True。
++    - bar_date 晚于取数日期 -> False（数据异常）。
++    - 同日：provenance 含 'intraday' 标记 -> False；取数时刻
++      已过该市场收盘确认时刻（CLOSE_CONFIRM_TIME）-> True，
++      否则 False。
++    """
++    bd = str(bar_date)[:10]
++    fdt = _shanghai_dt(fetched_at)
++    fd = fdt.date().isoformat()
++    if bd < fd:
++        return True
++    if bd > fd:
++        return False
++    if provenance and "intraday" in str(provenance).lower():
++        return False
++    cutoff = CLOSE_CONFIRM_TIME.get(
++        str(market or "").upper(), DEFAULT_CLOSE_CONFIRM_TIME)
++    return fdt.time() >= cutoff
+ 
+ 
+ def _resolve_event(conn, candidate_id, source_id, discovery_event_id):
+@@ -189,7 +272,8 @@ def _reject_forward(pool, candidate_id, detail):
+ def create_sample(pool, candidate_id, source_id, entry_date=None,
+                   benchmark_price=None, kind="backfill",
+                   discovery_event_id=None, bars=None,
+-                  benchmark_price_source=None, data_version=None) -> int:
++                  benchmark_price_source=None, data_version=None,
++                  fetched_at=None) -> int:
+     """创建验证样本 -> sample_id（时间规则见模块 docstring）。
+ 
+     - entry_date <= discovered_date（发现事件的上海日历日期）时，
+@@ -198,9 +282,14 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
+       （入参或经 bars 层现取）推导 discovered_date 之后第一交易日
+       及其收盘；无法推导则留痕拒绝（ForwardRejectedError）。
+     - kind='backfill' 必须显式给 entry_date 与 benchmark_price。
++    - fix2-1：forward/backfill 的 benchmark 都必须通过
++      bar_close_confirmed 完整性确认（以 fetched_at 为取数时刻，
++      缺省为当前时刻）；不确认则留痕拒绝，reason 含
++      'benchmark_close_unconfirmed'。
+     - UNIQUE(candidate_id, source_id, entry_date) 冲突转抛
+       DuplicateSampleError。创建成功后置 validation_status。
+     """
++    fetched_at = fetched_at or _now_iso()
+     if kind not in VALID_KINDS:
+         raise ValueError("invalid sample kind: %r (allowed: %s)"
+                          % (kind, "/".join(VALID_KINDS)))
+@@ -244,6 +333,20 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
+             bench_date = final_entry
+             if bench_source is None:
+                 bench_source = prov or "provided_bars close (qfq)"
++            # fix2-1：推导出的 entry 日 bar 必须通过收盘完整性
++            # 确认才可作 benchmark（不得仅凭 bar 存在认定收盘）。
++            cand = pool.get_by_id(candidate_id) or {}
++            if not bar_close_confirmed(
++                    final_entry, fetched_at,
++                    provenance=bench_source,
++                    market=cand.get("market")):
++                _reject_forward(
++                    pool, candidate_id,
++                    "benchmark_close_unconfirmed: entry bar %s not "
++                    "confirmed closed at fetched_at=%s "
++                    "(provenance=%s); refusing to use an incomplete "
++                    "bar as benchmark"
++                    % (final_entry, fetched_at, bench_source))
+         else:
+             if req_entry is None or benchmark_price is None:
+                 raise ValueError(
+@@ -252,6 +355,23 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
+             final_entry = req_entry
+             final_bench = float(benchmark_price)
+             bench_date = final_entry
++            # fix2-1：backfill 同受完整性约束（历史日期严格早于
++            # 取数日天然确认；entry 为取数当日且未过收盘确认
++            # 时刻、或晚于取数日，一律留痕拒绝）。
++            cand = pool.get_by_id(candidate_id) or {}
++            if not bar_close_confirmed(
++                    final_entry, fetched_at,
++                    provenance=bench_source,
++                    market=cand.get("market")):
++                reason = (
++                    "backfill_rejected: benchmark_close_unconfirmed:"
++                    " entry_date=%s not confirmed closed at "
++                    "fetched_at=%s" % (final_entry, fetched_at))
++                pool.record_history(
++                    candidate_id, field="validation_sample",
++                    old=None, new=None, actor="validation",
++                    reason=reason)
++                raise ForwardRejectedError(reason)
+ 
+         try:
+             cur = conn.execute(
+@@ -309,6 +429,34 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
+     bars_asof = max((str(b[0])[:10] for b in bars), default=None)
+     after = [b for b in bars if str(b[0]) > entry_date]
+ 
++    # fix2-1：benchmark 不可变。当前 bars 中 entry 日收盘与已
++    # 记录 benchmark 不一致 = 行情源事后修订：只记录、绝不
++    # 覆盖 benchmark，评估继续以原 benchmark 计算。
++    revision = None
++    for b in bars:
++        if str(b[0])[:10] == entry_date:
++            observed_close = float(b[4])
++            if abs(observed_close - benchmark) > 1e-9:
++                revision = {
++                    "detected": True,
++                    "entry_date": entry_date,
++                    "recorded_benchmark": benchmark,
++                    "observed_close": observed_close,
++                    "detected_at": _now_iso(),
++                    "eval_version": eval_version,
++                }
++            break
++    if revision is not None:
++        pool.record_history(
++            sample["candidate_id"], field="benchmark_revision",
++            old=benchmark, new=revision["observed_close"],
++            actor="validation",
++            reason="benchmark_revision_detected: entry=%s "
++                   "recorded=%s observed=%s; benchmark immutable, "
++                   "evaluation keeps the recorded value"
++                   % (entry_date, benchmark,
++                      revision["observed_close"]))
++
+     ret_t5 = ret_t10 = ret_t20 = None
+     max_drawdown = None
+     missing_reason = None
+@@ -343,11 +491,16 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
+             "UPDATE validation_samples SET ret_t5 = ?, ret_t10 = ?, "
+             "ret_t20 = ?, max_drawdown = ?, maturity_status = ?, "
+             "missing_reason = ?, evaluated_at = ?, eval_version = ?, "
+-            "bars_asof = ?, data_version = ? "
++            "bars_asof = ?, data_version = ?, "
++            "benchmark_revision_json = COALESCE("
++            "benchmark_revision_json, ?) "
+             "WHERE id = ?",
+             (ret_t5, ret_t10, ret_t20, max_drawdown, maturity_status,
+              missing_reason, _now_iso(), eval_version, bars_asof,
+-             data_version, sample_id))
++             data_version,
++             json.dumps(revision, ensure_ascii=False)
++             if revision is not None else None,
++             sample_id))
+         conn.commit()
+     finally:
+         if owns:
+@@ -449,9 +602,13 @@ def forward_stats(pool, candidate_id=None) -> dict:
+ 
+ NO_RULE = "NO_RULE"
+ 
+-# 规则注册表：只登记经用户确认的版本化规则。当前为空——阈值未
+-# 定版，任何规则不得在此自行登记生效。
+-RULE_REGISTRY: dict = {}
++RULE_STATUSES = ("draft", "approved", "disabled", "test")
++
++# 代码侧规则实现注册表：rule_id -> ValidationRule 实例。正式
++# judge 只按 rule_id 从这里取实现，且必须同时满足 rule_registry
++# 落库表中存在同 rule_id 的 status='approved' 版本行。本轮不
++# 预置任何实现（数值门槛未经用户确认）。
++RULE_IMPLEMENTATIONS: dict = {}
+ 
+ 
+ class ValidationRule:
+@@ -469,19 +626,115 @@ class ValidationRule:
+         raise NotImplementedError
+ 
+ 
+-def judge_validation(pool, candidate_id, rule=None,
+-                     actor="validation") -> dict:
+-    """验证判定：汇总候选全部样本并按规则判定，写
++def register_rule_implementation(rule_id, rule):
++    """登记代码侧规则实现（rule 须提供 evaluate(scope, metrics)）。
++
++    只登记实现不等于批准：正式判定还要求 rule_registry 表中
++    有同 rule_id 的 approved 版本行（见 register_rule）。
++    """
++    if not hasattr(rule, "evaluate"):
++        raise TypeError(
++            "rule implementation must provide evaluate(scope, metrics)")
++    RULE_IMPLEMENTATIONS[str(rule_id)] = rule
++    return str(rule_id)
++
++
++def register_rule(pool, rule_id, version, status="draft", params=None,
++                  approved_by=None, approved_at=None) -> int:
++    """向 rule_registry 落库表登记一个规则版本 -> row id。
++
++    status 只许 draft/approved/disabled/test；status='approved'
++    必须带 approved_by（批准留痕）。重复 (rule_id, version)
++    抛 ValueError。注册只新增行，绝不改写既有判定记录；
++    未经用户确认的规则不得以 approved 登记到正式注册表。
++    """
++    if status not in RULE_STATUSES:
++        raise ValueError("invalid rule status: %r (allowed: %s)"
++                         % (status, "/".join(RULE_STATUSES)))
++    if status == "approved" and not approved_by:
++        raise ValueError(
++            "approved rule registration requires approved_by")
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        try:
++            cur = conn.execute(
++                "INSERT INTO rule_registry "
++                "(rule_id, version, status, approved_by, approved_at,"
++                " params_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (str(rule_id), str(version), status, approved_by,
++                 approved_at,
++                 json.dumps(params or {}, ensure_ascii=False),
++                 _now_iso()))
++            conn.commit()
++        except sqlite3.IntegrityError as e:
++            raise ValueError(
++                "rule already registered: %s@%s (%s)"
++                % (rule_id, version, e)) from e
++        return cur.lastrowid
++    finally:
++        if owns:
++            conn.close()
++
++
++def set_rule_status(pool, rule_id, version, status) -> None:
++    """变更已登记规则版本的状态（如 approved -> disabled）。
++
++    只影响之后的判定；既有 validation_decisions 记录（含其
++    rule_version 与 metrics）不随注册表变更而改写。
++    """
++    if status not in RULE_STATUSES:
++        raise ValueError("invalid rule status: %r (allowed: %s)"
++                         % (status, "/".join(RULE_STATUSES)))
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        cur = conn.execute(
++            "UPDATE rule_registry SET status = ?"
++            " WHERE rule_id = ? AND version = ?",
++            (status, str(rule_id), str(version)))
++        conn.commit()
++        if cur.rowcount == 0:
++            raise ValueError("rule not registered: %s@%s"
++                             % (rule_id, version))
++    finally:
++        if owns:
++            conn.close()
++
++
++def get_registered_rule(pool, rule_id, version):
++    """读 rule_registry 中 (rule_id, version) 一行 -> dict/None。"""
++    conn, owns = _resolve_conn(pool)
++    try:
++        _ensure(conn)
++        cur = conn.execute(
++            "SELECT * FROM rule_registry"
++            " WHERE rule_id = ? AND version = ?",
++            (str(rule_id), str(version)))
++        return _row_dict(cur, cur.fetchone())
++    finally:
++        if owns:
++            conn.close()
++
++
++def judge_validation(pool, candidate_id, rule_id=None,
++                     rule_version=None, actor="validation") -> dict:
++    """验证判定：汇总候选全部样本并按注册规则判定，写
+     validation_decisions 一行，返回该行 dict。
+ 
+-    - rule=None（默认）：查 RULE_REGISTRY，无经确认规则时一律
+-      decision='not_evaluable'、rule_version=NO_RULE、
+-      basis 含 'no_approved_rule'，不流转状态。
+-    - 硬门槛前置：无（未排除的）forward 样本 -> 'not_passed'
+-      （backfill 不得替代 forward）；forward 样本未成熟或关键
+-      指标（ret_t20/max_drawdown）为 NULL -> 'not_passed'。
+-    - decision='passed' 时经 promotion 内部受控路径流转到
+-      validation_passed（要求当前状态为 validating）。
++    fix2-3 注册保护：正式判定只接受 rule_id+rule_version 并
++    从 rule_registry 注册表加载，规则对象直传参数已删除。
++    - rule_id=None（默认）：decision='not_evaluable'、
++      rule_version=NO_RULE、basis 含 'no_approved_rule'。
++    - 未登记 / 版本不符 / status != 'approved'（draft/test/
++      disabled）/ 代码侧无实现：一律 'not_evaluable' 并在
++      basis 注明原因，判定留痕，不流转状态。
++    - 已登记 approved 规则：硬门槛前置——无（未排除的）
++      forward 样本 -> 'not_passed'（backfill 不得替代）；
++      forward 未成熟或关键指标（ret_t20/max_drawdown）为
++      NULL -> 'not_passed'；其后才进规则的数值判定。
++    - decision='passed' 时经 promotion 内部受控路径（须携带
++      本次判定记录 id 供其核验）流转到 validation_passed。
+     """
+     conn, owns = _resolve_conn(pool)
+     try:
+@@ -512,37 +765,72 @@ def judge_validation(pool, candidate_id, rule=None,
+             "forward_null_metric_sample_ids": null_metric_ids,
+         }
+ 
+-        if rule is None:
++        impl = None
++        if rule_id is None:
+             decision = "not_evaluable"
+-            rule_version = NO_RULE
++            recorded_version = NO_RULE
+             basis = ("no_approved_rule: 验证数值门槛尚未经用户确认，"
+-                     "规则注册表为空；系统只能记录验证结果，"
+-                     "不得产生 validation_passed")
+-        elif not fwd:
+-            decision = "not_passed"
+-            rule_version = getattr(rule, "version", None)
+-            basis = ("no_forward_samples: 无未被排除的 forward 样本；"
+-                     "backfill 不得替代真实 forward 样本")
+-        elif metrics["forward_mature"] < len(fwd) or null_metric_ids:
+-            decision = "not_passed"
+-            rule_version = getattr(rule, "version", None)
+-            basis = ("immature_or_missing_metrics: 未成熟样本不得"
+-                     "判定通过，缺失指标保持 NULL 不按零值处理 "
+-                     "(immature=%d, null_metric_sample_ids=%s)"
+-                     % (metrics["forward_immature"], null_metric_ids))
++                     "注册表无 approved 规则；系统只能记录验证"
++                     "结果，不得产生 validation_passed")
++        elif rule_version is None:
++            decision = "not_evaluable"
++            recorded_version = NO_RULE
++            basis = ("rule_version_required: 正式判定必须显式给出"
++                     " rule_id 与 version（请求 rule_id=%s 未带"
++                     " version），拒绝按未登记规则判定" % (rule_id,))
+         else:
+-            decision, basis = rule.evaluate(scope, metrics)
+-            if decision not in ("passed", "not_passed"):
+-                raise ValueError(
+-                    "rule %r returned invalid decision: %r"
+-                    % (rule_version, decision))
+-            rule_version = getattr(rule, "version", None)
++            reg = get_registered_rule(pool, rule_id, rule_version)
++            if reg is None:
++                decision = "not_evaluable"
++                recorded_version = NO_RULE
++                basis = ("rule_not_registered: rule_id=%s "
++                         "version=%s 未在 rule_registry 登记，"
++                         "正式判定拒绝" % (rule_id, rule_version))
++            elif reg["status"] != "approved":
++                decision = "not_evaluable"
++                recorded_version = NO_RULE
++                basis = ("rule_not_approved: rule_id=%s version=%s "
++                         "status=%s；draft/test/disabled 规则不得"
++                         "用于正式判定"
++                         % (rule_id, rule_version, reg["status"]))
++            else:
++                impl = RULE_IMPLEMENTATIONS.get(str(rule_id))
++                if impl is None:
++                    decision = "not_evaluable"
++                    recorded_version = NO_RULE
++                    basis = ("rule_implementation_missing: "
++                             "rule_id=%s 已登记 approved 但代码侧"
++                             "无实现，无法执行数值判定" % (rule_id,))
++                else:
++                    recorded_version = rule_version
++                    if not fwd:
++                        decision = "not_passed"
++                        basis = ("no_forward_samples: 无未被排除的"
++                                 " forward 样本；backfill 不得替代"
++                                 "真实 forward 样本")
++                    elif (metrics["forward_mature"] < len(fwd)
++                            or null_metric_ids):
++                        decision = "not_passed"
++                        basis = ("immature_or_missing_metrics: "
++                                 "未成熟样本不得判定通过，缺失指标"
++                                 "保持 NULL 不按零值处理 "
++                                 "(immature=%d, "
++                                 "null_metric_sample_ids=%s)"
++                                 % (metrics["forward_immature"],
++                                    null_metric_ids))
++                    else:
++                        decision, basis = impl.evaluate(scope, metrics)
++                        if decision not in ("passed", "not_passed"):
++                            raise ValueError(
++                                "rule %s@%s returned invalid "
++                                "decision: %r"
++                                % (rule_id, rule_version, decision))
+ 
+         cur = conn.execute(
+             "INSERT INTO validation_decisions "
+             "(candidate_id, rule_version, sample_scope, metrics_json,"
+             " decision, basis, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+-            (candidate_id, rule_version,
++            (candidate_id, recorded_version,
+              json.dumps(scope, ensure_ascii=False),
+              json.dumps(metrics, ensure_ascii=False),
+              decision, basis, _now_iso()))
+@@ -561,5 +849,6 @@ def judge_validation(pool, candidate_id, rule=None,
+         promotion._apply_validation_passed(
+             pool, candidate_id, actor=actor,
+             reason="judge_validation passed: rule_version=%s "
+-                   "decision_id=%s" % (rule_version, decision_id))
++                   "decision_id=%s" % (recorded_version, decision_id),
++            decision_id=decision_id)
+     return row
+diff --git a/tests/test_market_first_benchmark_integrity.py b/tests/test_market_first_benchmark_integrity.py
+new file mode 100644
+index 0000000..b6e754c
+--- /dev/null
++++ b/tests/test_market_first_benchmark_integrity.py
+@@ -0,0 +1,215 @@
++# -*- coding: utf-8 -*-
++"""Market-First fix2-1：Forward benchmark 收盘完整性确认。
++
++不得仅凭 bar 存在认定收盘形成：bar 日期严格早于取数日才
++天然确认；当日 bar 须过收盘确认时刻（A股 15:30）；benchmark
++一经记录不可变，行情源修订只记录 benchmark_revision_detected，
++不静默覆盖；对抗测试：修订评估 + 重复创建 + judge 后
++benchmark_price 与建样时全等。
++"""
++import json
++
++import pytest
++
++from market_first import validation
++from market_first.models import DiscoveryEvent
++from market_first.pool import CandidatePool
++from market_first.validation import (ForwardRejectedError,
++                                     bar_close_confirmed, create_sample,
++                                     evaluate_sample, get_sample)
++
++# 2026-11-13 周五、11-16 周一、11-17 周二
++BARS = [
++    ("2026-11-12", 25.0, 25.5, 24.5, 25.2, 1000.0),
++    ("2026-11-13", 26.0, 26.5, 25.8, 26.25, 1000.0),
++    ("2026-11-16", 26.8, 27.2, 26.6, 27.00, 1000.0),
++    ("2026-11-17", 27.1, 27.4, 26.9, 27.30, 1000.0),
++]
++
++
++def _pool_with_event(tmp_path, discovered_at,
++                     source_id="inst_lhb_live"):
++    pool = CandidatePool(db_path=str(tmp_path / "mf.db"))
++    ev = DiscoveryEvent(
++        market="SZ", symbol="002623", name="亚玛顿",
++        source_id=source_id, discovered_at=discovered_at,
++        trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
++    cid, _ = pool.ingest(ev)
++    return pool, cid, pool.events_for(cid)[0]["id"]
++
++
++# ---------------------------------------------------------------------------
++# bar_close_confirmed 判定单元
++# ---------------------------------------------------------------------------
++
++def test_bar_close_confirmed_time_rules():
++    # 历史日 bar：严格早于取数日 -> 确认（与取数时刻无关）
++    assert bar_close_confirmed("2026-11-13", "2026-11-17T09:00:00+08:00")
++    # 未来日 bar -> 数据异常，不确认
++    assert not bar_close_confirmed("2026-11-18",
++                                   "2026-11-17T16:00:00+08:00")
++    # 当日 bar、盘中取数（10:30 < 15:30）-> 不确认
++    assert not bar_close_confirmed("2026-11-17",
++                                   "2026-11-17T10:30:00+08:00")
++    # 当日 bar、收盘确认时刻 15:30 整 -> 确认
++    assert bar_close_confirmed("2026-11-17", "2026-11-17T15:30:00+08:00")
++    # 当日 bar、收盘后 16:00 取数 -> 确认
++    assert bar_close_confirmed("2026-11-17", "2026-11-17T16:00:00+08:00")
++    # provenance 带 intraday 标记 -> 当日 bar 一律不确认
++    assert not bar_close_confirmed(
++        "2026-11-17", "2026-11-17T16:00:00+08:00",
++        provenance="unit-test intraday feed")
++    # 港股收盘确认时刻 16:30：16:00 不确认、16:30 确认
++    assert not bar_close_confirmed("2026-11-17",
++                                   "2026-11-17T16:00:00+08:00",
++                                   market="HK")
++    assert bar_close_confirmed("2026-11-17", "2026-11-17T16:30:00+08:00",
++                               market="HK")
++
++
++# ---------------------------------------------------------------------------
++# create_sample 完整性门禁
++# ---------------------------------------------------------------------------
++
++def test_forward_intraday_incomplete_bar_rejected(tmp_path):
++    # 11-16（周一）盘后发现，下一交易日为 11-17；11-17 盘中
++    # 10:30 取数时当日 bar 尚未收盘确认 -> 拒绝 + 留痕
++    pool, cid, ev_id = _pool_with_event(
++        tmp_path, "2026-11-16T15:58:00+08:00")
++    with pytest.raises(ForwardRejectedError):
++        create_sample(pool, cid, "inst_lhb_live", kind="forward",
++                      discovery_event_id=ev_id, bars=BARS,
++                      fetched_at="2026-11-17T10:30:00+08:00")
++    hist = [h for h in pool.history_for(cid)
++            if "benchmark_close_unconfirmed" in (h["reason"] or "")]
++    assert len(hist) == 1
++    assert hist[0]["actor"] == "validation"
++    n = pool.conn.execute(
++        "SELECT COUNT(*) c FROM validation_samples").fetchone()["c"]
++    assert n == 0
++
++
++def test_forward_same_day_bar_after_close_confirmed(tmp_path):
++    # 同一场景在 11-17 收盘后（16:00）取数 -> 当日 bar 已确认，
++    # forward 建成，entry=2026-11-17、benchmark=当日收盘 27.30
++    pool, cid, ev_id = _pool_with_event(
++        tmp_path, "2026-11-16T15:58:00+08:00")
++    sid = create_sample(pool, cid, "inst_lhb_live", kind="forward",
++                        discovery_event_id=ev_id, bars=BARS,
++                        fetched_at="2026-11-17T16:00:00+08:00")
++    s = get_sample(pool, sid)
++    assert s["kind"] == "forward"
++    assert s["entry_date"] == "2026-11-17"
++    assert s["benchmark_price"] == pytest.approx(27.30)
++    assert s["benchmark_date"] == "2026-11-17"
++
++
++def test_forward_historical_bar_confirmed(tmp_path):
++    # 历史补取方向：entry 日（11-16）严格早于取数日（11-17），
++    # 即使取数时刻为盘中 09:00 也天然确认
++    pool, cid, ev_id = _pool_with_event(
++        tmp_path, "2026-11-13T16:30:00+08:00")
++    sid = create_sample(pool, cid, "inst_lhb_live", kind="forward",
++                        discovery_event_id=ev_id, bars=BARS,
++                        fetched_at="2026-11-17T09:00:00+08:00")
++    s = get_sample(pool, sid)
++    assert s["entry_date"] == "2026-11-16"
++    assert s["benchmark_price"] == pytest.approx(27.00)
++
++
++def test_backfill_today_entry_intraday_rejected(tmp_path):
++    # backfill 同受完整性约束：entry=取数当日且盘中 -> 拒绝
++    pool, cid, ev_id = _pool_with_event(
++        tmp_path, "2026-11-16T15:58:00+08:00")
++    with pytest.raises(ForwardRejectedError):
++        create_sample(pool, cid, "inst_lhb_stored",
++                      entry_date="2026-11-17", benchmark_price=27.30,
++                      kind="backfill", discovery_event_id=ev_id,
++                      fetched_at="2026-11-17T10:30:00+08:00")
++    hist = [h for h in pool.history_for(cid)
++            if "benchmark_close_unconfirmed" in (h["reason"] or "")]
++    assert len(hist) == 1
++    # 收盘后同日 entry 则可建成
++    sid = create_sample(pool, cid, "inst_lhb_stored",
++                        entry_date="2026-11-17", benchmark_price=27.30,
++                        kind="backfill", discovery_event_id=ev_id,
++                        fetched_at="2026-11-17T16:00:00+08:00")
++    assert get_sample(pool, sid)["benchmark_price"] == \
++        pytest.approx(27.30)
++
++
++# ---------------------------------------------------------------------------
++# 行情源修订：记录不覆盖 + 对抗测试
++# ---------------------------------------------------------------------------
++
++def _revised_bars(entry_close):
++    out = []
++    for b in BARS:
++        if b[0] == "2026-11-13":
++            out.append(("2026-11-13", entry_close, entry_close,
++                        entry_close, entry_close, 1000.0))
++        else:
++            out.append(b)
++    # 补足 entry 后 20 根（工作日、收盘 30.0）使样本可成熟
++    from datetime import date, timedelta
++    d = date(2026, 11, 16)
++    n = 0
++    while n < 20:
++        if d.weekday() < 5 and d.isoformat() not in {b[0] for b in out}:
++            out.append((d.isoformat(), 30.0, 30.0, 30.0, 30.0, 1000.0))
++            n += 1
++        d += timedelta(days=1)
++    return sorted(out)
++
++
++def test_source_revision_recorded_benchmark_unchanged(tmp_path):
++    pool, cid, ev_id = _pool_with_event(
++        tmp_path, "2026-11-16T15:58:00+08:00")
++    sid = create_sample(pool, cid, "inst_lhb_stored",
++                        entry_date="2026-11-13", benchmark_price=26.25,
++                        kind="backfill", discovery_event_id=ev_id)
++    # 行情源修订：同一 entry 日收盘由 26.25 改为 26.80 后评估
++    out = evaluate_sample(pool, sid, _revised_bars(26.80))
++    assert out["benchmark_price"] == pytest.approx(26.25)  # 不覆盖
++    rev = json.loads(out["benchmark_revision_json"])
++    assert rev["detected"] is True
++    assert rev["recorded_benchmark"] == pytest.approx(26.25)
++    assert rev["observed_close"] == pytest.approx(26.80)
++    assert rev["entry_date"] == "2026-11-13"
++    # 收益仍以原 benchmark 计算：after 收盘序列为
++    # [27.00, 27.30, 30.0, 30.0, 30.0, ...]，ret_t5 取第 5 根
++    # 30.0 以原 benchmark 26.25 为分母（若被修订值 26.80 覆盖
++    # 则结果不同，此断言即不可变的数值证据）
++    assert out["ret_t5"] == pytest.approx(30.0 / 26.25 - 1.0)
++    hist = [h for h in pool.history_for(cid)
++            if h["field"] == "benchmark_revision"]
++    assert len(hist) == 1
++    assert "benchmark_revision_detected" in hist[0]["reason"]
++
++
++def test_benchmark_adversarial_immutable(tmp_path):
++    """对抗测试：样本建成后，修订 bar 评估 + 重复创建 + judge
++    三路并发施压，benchmark_price 必须与建样时全等。"""
++    pool, cid, ev_id = _pool_with_event(
++        tmp_path, "2026-11-16T15:58:00+08:00")
++    sid = create_sample(pool, cid, "inst_lhb_stored",
++                        entry_date="2026-11-13", benchmark_price=26.25,
++                        kind="backfill", discovery_event_id=ev_id)
++    before = get_sample(pool, sid)["benchmark_price"]
++    assert before == pytest.approx(26.25)
++
++    # 施压 1：以修订后的 entry 日收盘评估
++    evaluate_sample(pool, sid, _revised_bars(26.80))
++    assert get_sample(pool, sid)["benchmark_price"] == before
++
++    # 施压 2：同 (candidate, source, entry) 重复创建 -> 拒绝
++    with pytest.raises(validation.DuplicateSampleError):
++        create_sample(pool, cid, "inst_lhb_stored",
++                      entry_date="2026-11-13", benchmark_price=99.99,
++                      kind="backfill", discovery_event_id=ev_id)
++    assert get_sample(pool, sid)["benchmark_price"] == before
++
++    # 施压 3：judge（无规则）不得触碰 benchmark
++    out = validation.judge_validation(pool, cid)
++    assert out["decision"] == "not_evaluable"
++    assert get_sample(pool, sid)["benchmark_price"] == before
+diff --git a/tests/test_market_first_inst_dedup.py b/tests/test_market_first_inst_dedup.py
+index f9d2784..fed4708 100644
+--- a/tests/test_market_first_inst_dedup.py
++++ b/tests/test_market_first_inst_dedup.py
+@@ -1,9 +1,11 @@
+ # -*- coding: utf-8 -*-
+-"""Market-First P0-2：机构事件研究层去重。
++"""Market-First P0-2 / fix2-2：机构事件研究层去重（三态）。
+ 
+-同一底层机构事件经 live/stored 双路入账只计一次净额；
+-不同日期、不同底层事件分别保留；禁止按 symbol 单独去重；
+-候选池原始事件全量保留不动。
++有 trade_id 的同一底层事件经 live/stored 双路入账只计一次
++净额（confirmed）；trade_id 缺失时一律不自动合并，全元组
++相同标 uncertain、双条保留计入并在报告完整披露；不同日期、
++不同底层事件分别保留；禁止按 symbol 单独去重；候选池原始
++事件全量保留不动。
+ """
+ import json
+ 
+@@ -82,11 +84,15 @@ def test_different_trade_id_same_day_both_kept(tmp_path):
+     assert factors["total_inst_net"] == 130.0
+ 
+ 
+-def test_missing_trade_id_falls_back_to_full_tuple(tmp_path):
++def test_missing_trade_id_uncertain_kept_and_counted(tmp_path):
++    """fix2-2 取代 fix1 的全元组自动合并：trade_id 缺失时一律
++    不自动合并。全元组相同（仅来源路径不同）可能是同一事件
++    的双路记录、也可能是两笔真实独立事件——身份不确定，
++    两条都保留计入并标记 uncertain，不得静默 drop。"""
+     pool = CandidatePool(db_path=str(tmp_path / "mf.db"))
+     no_id = {k: v for k, v in BASE_EVIDENCE.items() if k != "trade_id"}
+     cid = _ingest(pool, "inst_lhb_live", dict(no_id))
+-    # 全元组相同（仅来源不同）-> 同一事件，去重
++    # 全元组相同、仅来源不同 -> uncertain 对，两条都保留
+     _ingest(pool, "inst_lhb_stored", dict(no_id),
+             discovered_at="2026-11-16T09:05:00+08:00")
+     # 元组不同（inst_buy 不同）-> 独立事件，保留
+@@ -94,9 +100,53 @@ def test_missing_trade_id_falls_back_to_full_tuple(tmp_path):
+     _ingest(pool, "inst_lhb_stored", diff,
+             discovered_at="2026-11-16T09:06:00+08:00")
+     factors, evidence = _inst_factors(pool, cid)
+-    assert factors["events_count"] == 2
+-    assert factors["total_inst_net"] == 100.0 + 899.0
+-    assert len(evidence["dedup"]["dropped_duplicate_ids"]) == 1
++    assert factors["events_count"] == 3  # 无一被 drop
++    # uncertain 两条按双计入净额，报告中必须可见其影响
++    assert factors["total_inst_net"] == 100.0 + 100.0 + 899.0
++    assert factors["uncertain_events_count"] == 2
++    dedup = evidence["dedup"]
++    assert dedup["confirmed_duplicate_dropped_ids"] == []
++    assert dedup["dropped_duplicate_ids"] == []
++    assert len(dedup["uncertain_event_ids"]) == 2
++    assert len(dedup["deduped_event_ids"]) == 3
++    assert set(dedup["raw_event_ids"]) == set(dedup["deduped_event_ids"])
++    # 报告 evidence 完整披露：逐条 inst_net + 合计影响额 + 明示说明
++    assert {u["id"] for u in dedup["uncertain_events"]} == set(
++        dedup["uncertain_event_ids"])
++    assert all(u["inst_net"] == 100.0
++               for u in dedup["uncertain_events"])
++    assert all(u["dedup_status"] == "uncertain"
++               for u in dedup["uncertain_events"])
++    assert dedup["uncertain_inst_net_total"] == 200.0
++    assert "身份不确定、未合并" in dedup["uncertain_note"]
++    assert dedup["dedup_version"] == "mf-dedup-2.0"
++
++
++def test_dedup_function_three_states():
++    """dedup_inst_events 三态直测：confirmed / uncertain /
++    independent 分类与返回值形状。"""
++    from market_first.research import dedup_inst_events
++
++    def _ev(eid, source, evidence):
++        return {"id": eid, "market": "SZ", "symbol": "002623",
++                "source_id": source,
++                "discovered_at": "2026-11-16T09:00:00+08:00",
++                "evidence_json": json.dumps(evidence)}
++
++    with_id = dict(BASE_EVIDENCE)  # trade_id=T001
++    no_id = {k: v for k, v in BASE_EVIDENCE.items() if k != "trade_id"}
++    other = dict(no_id, inst_buy=555.0, inst_net=455.0)
++    events = [
++        _ev(1, "inst_lhb_live", with_id),
++        _ev(2, "inst_lhb_stored", with_id),   # confirmed duplicate
++        _ev(3, "inst_lhb_live", no_id),       # uncertain pair (a)
++        _ev(4, "inst_lhb_stored", no_id),     # uncertain pair (b)
++        _ev(5, "inst_lhb_live", other),       # independent
++    ]
++    kept, dropped, uncertain_ids = dedup_inst_events(events)
++    assert [k[0] for k in kept] == [1, 3, 4, 5]
++    assert [d[0] for d in dropped] == [2]
++    assert uncertain_ids == [3, 4]
+ 
+ 
+ def test_dedup_report_reproducible(tmp_path):
+diff --git a/tests/test_market_first_promotion_handoff.py b/tests/test_market_first_promotion_handoff.py
+index 5942021..096d178 100644
+--- a/tests/test_market_first_promotion_handoff.py
++++ b/tests/test_market_first_promotion_handoff.py
+@@ -18,8 +18,9 @@ from market_first.promotion import (IllegalTransitionError, decide,
+ 
+ 
+ class _TestRule:
+-    """测试专用规则（显式传入 judge 的机制验证规则，非注册表
+-    规则、不代表用户已确认门槛）。"""
++    """测试专用规则实现（fix2-3 起经注册表路径使用：在测试库内
++    登记 approved 行 + 代码侧登记实现；不代表用户已确认门槛，
++    绝不登记到规范库）。"""
+ 
+     version = "test-rule-0"
+ 
+@@ -27,6 +28,13 @@ class _TestRule:
+         return "passed", "test rule: mature forward samples present"
+ 
+ 
++def _register_test_rule(pool):
++    validation.register_rule_implementation("test_rule", _TestRule())
++    validation.register_rule(
++        pool, "test_rule", _TestRule.version, status="approved",
++        approved_by="unit-test")
++
++
+ def _gen_bars():
+     """2026-11-13 起工作日 bars，收盘单调上行。
+ 
+@@ -46,14 +54,21 @@ def _gen_bars():
+ 
+ 
+ def _judge_pass(pool, cid):
+-    """经验证引擎判定合法到达 validation_passed（P0-3 路径）。"""
++    """经验证引擎判定合法到达 validation_passed（P0-3/fix2-3
++    注册表路径）。样本时间线为模拟时钟：事件 2026-11-16 发现、
++    forward entry 推导为 2026-11-17，故取数时刻显式给到该日
++    收盘确认后（16:00），与 fix2-1 完整性规则一致。"""
++    _register_test_rule(pool)
+     ev = pool.events_for(cid)[0]
+     bars = _gen_bars()
+     sid = validation.create_sample(
+         pool, cid, ev["source_id"], kind="forward",
+-        discovery_event_id=ev["id"], bars=bars)
++        discovery_event_id=ev["id"], bars=bars,
++        fetched_at="2026-11-17T16:00:00+08:00")
+     validation.evaluate_sample(pool, sid, bars)
+-    out = validation.judge_validation(pool, cid, rule=_TestRule())
++    out = validation.judge_validation(
++        pool, cid, rule_id="test_rule",
++        rule_version=_TestRule.version)
+     assert out["decision"] == "passed"
+ 
+ 
+diff --git a/tests/test_market_first_rule_registry.py b/tests/test_market_first_rule_registry.py
+new file mode 100644
+index 0000000..7c188c4
+--- /dev/null
++++ b/tests/test_market_first_rule_registry.py
+@@ -0,0 +1,236 @@
++# -*- coding: utf-8 -*-
++"""Market-First fix2-3：RULE_REGISTRY 注册保护与判定入口枚举。
++
++正式 judge 只接受 rule_id+version 并从 rule_registry 注册表
++加载：未登记/伪造版本/停用/test/draft 规则一律 not_evaluable
++且留痕；规则对象直传参数已删除（TypeError）；promotion 受控
++流转无真实 passed 判定记录时直接调用被拒并留痕；历史判定
++不随注册表变更改写；测试注册域与正式注册域隔离（注册只
++发生在测试库，规范库不得出现 approved 行）。
++"""
++from datetime import date, timedelta
++
++import pytest
++
++from market_first import promotion, validation
++from market_first.models import DiscoveryEvent
++from market_first.pool import CandidatePool
++from market_first.promotion import IllegalTransitionError, transition
++
++
++class _Rule:
++    version = "v1"
++
++    def evaluate(self, scope, metrics):
++        return "passed", "registry test rule"
++
++
++def _bars(start=date(2026, 11, 13), end=date(2026, 12, 20)):
++    out = []
++    d = start
++    i = 0
++    while d <= end:
++        if d.weekday() < 5:
++            c = 10.0 + 0.1 * i
++            out.append((d.isoformat(), c, c, c, c, 1000.0))
++            i += 1
++        d += timedelta(days=1)
++    return out
++
++
++def _candidate_validating(tmp_path):
++    pool = CandidatePool(db_path=str(tmp_path / "mf.db"))
++    ev = DiscoveryEvent(
++        market="SZ", symbol="002623", name="亚玛顿",
++        source_id="inst_lhb_live",
++        discovered_at="2026-11-13T16:30:00+08:00",
++        trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
++    cid, _ = pool.ingest(ev)
++    for state in ("pending_research", "researching", "validating"):
++        transition(pool, cid, state, actor="tester")
++    return pool, cid
++
++
++def _mature_forward(pool, cid):
++    ev = pool.events_for(cid)[0]
++    bars = _bars()
++    sid = validation.create_sample(
++        pool, cid, ev["source_id"], kind="forward",
++        discovery_event_id=ev["id"], bars=bars)
++    validation.evaluate_sample(pool, sid, bars)
++    return sid
++
++
++def _register(pool, version="v1", status="approved", rule_id="reg_rule"):
++    validation.register_rule_implementation(rule_id, _Rule())
++    return validation.register_rule(
++        pool, rule_id, version, status=status,
++        approved_by="unit-test" if status == "approved" else None)
++
++
++def _decisions(pool):
++    rows = pool.conn.execute(
++        "SELECT * FROM validation_decisions ORDER BY id").fetchall()
++    return [dict(r) for r in rows]
++
++
++# ---------------------------------------------------------------------------
++# 绕过面：未登记 / 伪造版本 / 直传对象
++# ---------------------------------------------------------------------------
++
++def test_unregistered_rule_rejected_and_traced(tmp_path):
++    pool, cid = _candidate_validating(tmp_path)
++    _mature_forward(pool, cid)
++    out = validation.judge_validation(
++        pool, cid, rule_id="ghost_rule", rule_version="v1")
++    assert out["decision"] == "not_evaluable"
++    assert "rule_not_registered" in out["basis"]
++    assert pool.get_by_id(cid)["promotion_status"] == "validating"
++    assert len(_decisions(pool)) == 1  # 拒绝也留痕
++
++
++def test_forged_version_rejected(tmp_path):
++    pool, cid = _candidate_validating(tmp_path)
++    _mature_forward(pool, cid)
++    _register(pool, version="v1")
++    out = validation.judge_validation(
++        pool, cid, rule_id="reg_rule", rule_version="v999")
++    assert out["decision"] == "not_evaluable"
++    assert "rule_not_registered" in out["basis"]
++    assert pool.get_by_id(cid)["promotion_status"] == "validating"
++
++
++def test_rule_object_injection_closed(tmp_path):
++    # fix1 的 rule= 直传参数已删除：传入即 TypeError，正式入口
++    # 不存在对象注入路径
++    pool, cid = _candidate_validating(tmp_path)
++    with pytest.raises(TypeError):
++        validation.judge_validation(pool, cid, rule=_Rule())
++    assert _decisions(pool) == []
++
++
++def test_missing_version_rejected(tmp_path):
++    pool, cid = _candidate_validating(tmp_path)
++    _register(pool, version="v1")
++    out = validation.judge_validation(pool, cid, rule_id="reg_rule")
++    assert out["decision"] == "not_evaluable"
++    assert "rule_version_required" in out["basis"]
++
++
++# ---------------------------------------------------------------------------
++# 状态纪律：draft / test / disabled
++# ---------------------------------------------------------------------------
++
++def test_draft_and_test_status_rules_rejected(tmp_path):
++    pool, cid = _candidate_validating(tmp_path)
++    _mature_forward(pool, cid)
++    _register(pool, version="v1", status="draft")
++    out = validation.judge_validation(
++        pool, cid, rule_id="reg_rule", rule_version="v1")
++    assert out["decision"] == "not_evaluable"
++    assert "rule_not_approved" in out["basis"]
++    assert "draft" in out["basis"]
++
++    _register(pool, version="v2", status="test")
++    out = validation.judge_validation(
++        pool, cid, rule_id="reg_rule", rule_version="v2")
++    assert out["decision"] == "not_evaluable"
++    assert "rule_not_approved" in out["basis"]
++    assert "test" in out["basis"]
++    assert pool.get_by_id(cid)["promotion_status"] == "validating"
++
++
++def test_approved_rule_in_test_db_can_pass(tmp_path):
++    # 路径验证：在测试库内登记 approved 规则可正常判定通过
++    # （规范库不得出现 approved 行，见交付查询证据）
++    pool, cid = _candidate_validating(tmp_path)
++    _mature_forward(pool, cid)
++    _register(pool, version="v1", status="approved")
++    out = validation.judge_validation(
++        pool, cid, rule_id="reg_rule", rule_version="v1")
++    assert out["decision"] == "passed"
++    assert out["rule_version"] == "v1"
++    assert pool.get_by_id(cid)["promotion_status"] == \
++        "validation_passed"
++
++
++def test_disabled_rule_stops_passing_history_kept(tmp_path):
++    pool, cid = _candidate_validating(tmp_path)
++    _mature_forward(pool, cid)
++    _register(pool, version="v1", status="approved")
++    out1 = validation.judge_validation(
++        pool, cid, rule_id="reg_rule", rule_version="v1")
++    assert out1["decision"] == "passed"
++
++    validation.set_rule_status(pool, "reg_rule", "v1", "disabled")
++    # 停用后判定回到 not_evaluable，且历史 passed 记录的
++    # rule_version/metrics 不被改写
++    before = _decisions(pool)
++    out2 = validation.judge_validation(
++        pool, cid, rule_id="reg_rule", rule_version="v1")
++    assert out2["decision"] == "not_evaluable"
++    assert "disabled" in out2["basis"]
++    after = _decisions(pool)
++    assert after[0] == before[0]
++    assert after[0]["decision"] == "passed"
++    assert after[0]["rule_version"] == "v1"
++
++
++def test_rule_version_change_new_decisions_use_new_version(tmp_path):
++    pool, cid = _candidate_validating(tmp_path)
++    _mature_forward(pool, cid)
++    _register(pool, version="v1", status="approved")
++    out1 = validation.judge_validation(
++        pool, cid, rule_id="reg_rule", rule_version="v1")
++    assert out1["rule_version"] == "v1"
++
++    # v2 取代 v1（v1 停用）：新判定用 v2，旧记录仍标 v1
++    validation.set_rule_status(pool, "reg_rule", "v1", "disabled")
++    _register(pool, version="v2", status="approved")
++    # 同库再建一个候选验证 v2 判定记录
++    ev = DiscoveryEvent(
++        market="SZ", symbol="000530", name="冰山冷热",
++        source_id="inst_lhb_live",
++        discovered_at="2026-11-13T16:30:00+08:00",
++        trigger_condition="inst_net>0", evidence={"inst_net": 50.0})
++    cid2, _ = pool.ingest(ev)
++    for state in ("pending_research", "researching", "validating"):
++        transition(pool, cid2, state, actor="tester")
++    _mature_forward(pool, cid2)
++    out2 = validation.judge_validation(
++        pool, cid2, rule_id="reg_rule", rule_version="v2")
++    assert out2["decision"] == "passed"
++    assert out2["rule_version"] == "v2"
++    rows = _decisions(pool)
++    assert rows[0]["rule_version"] == "v1"  # 旧记录未被改写
++    assert rows[-1]["rule_version"] == "v2"
++
++
++# ---------------------------------------------------------------------------
++# promotion 受控流转：绕过 judge 直接调用被拒
++# ---------------------------------------------------------------------------
++
++def test_apply_validation_passed_direct_call_rejected(tmp_path):
++    pool, cid = _candidate_validating(tmp_path)
++    _mature_forward(pool, cid)
++    # 无任何判定记录时直接调用受控流转 -> 拒绝 + 留痕
++    with pytest.raises(IllegalTransitionError):
++        promotion._apply_validation_passed(
++            pool, cid, actor="attacker", decision_id=None)
++    # 伪造 decision_id -> 同样拒绝
++    with pytest.raises(IllegalTransitionError):
++        promotion._apply_validation_passed(
++            pool, cid, actor="attacker", decision_id=99999)
++    assert pool.get_by_id(cid)["promotion_status"] == "validating"
++    hist = [h for h in pool.history_for(cid)
++            if h["field"] == "promotion_transition_attempt"]
++    assert len(hist) == 2
++    assert all(h["new_value"] == "validation_passed" for h in hist)
++
++
++def test_fresh_db_registry_empty(tmp_path):
++    # 新库注册表为空：任何 rule_id 判定都不得通过
++    pool = CandidatePool(db_path=str(tmp_path / "fresh.db"))
++    rows = pool.conn.execute(
++        "SELECT * FROM rule_registry").fetchall()
++    assert rows == []
+diff --git a/tests/test_market_first_validation_gate.py b/tests/test_market_first_validation_gate.py
+index 1c9e5e1..d2d82e7 100644
+--- a/tests/test_market_first_validation_gate.py
++++ b/tests/test_market_first_validation_gate.py
+@@ -17,12 +17,28 @@ from market_first.promotion import IllegalTransitionError, transition
+ 
+ 
+ class _Rule:
++    """测试专用规则实现（fix2-3 经注册表路径使用：测试库内
++    登记 approved 行 + 代码侧登记实现）。"""
++
+     version = "test-rule-0"
+ 
+     def evaluate(self, scope, metrics):
+         return "passed", "test rule"
+ 
+ 
++def _register_test_rule(pool):
++    validation.register_rule_implementation("test_rule", _Rule())
++    validation.register_rule(
++        pool, "test_rule", _Rule.version, status="approved",
++        approved_by="unit-test")
++
++
++def _judge_with_test_rule(pool, cid):
++    _register_test_rule(pool)
++    return validation.judge_validation(
++        pool, cid, rule_id="test_rule", rule_version=_Rule.version)
++
++
+ def _bars(start=date(2026, 11, 13), end=date(2026, 12, 20)):
+     out = []
+     d = start
+@@ -88,7 +104,7 @@ def test_judge_backfill_only_not_passed(tmp_path):
+     validation.create_sample(
+         pool, cid, "inst_lhb_stored", entry_date="2026-10-21",
+         benchmark_price=8.63, kind="backfill")
+-    out = validation.judge_validation(pool, cid, rule=_Rule())
++    out = _judge_with_test_rule(pool, cid)
+     assert out["decision"] == "not_passed"
+     assert "backfill" in out["basis"]
+     assert pool.get_by_id(cid)["promotion_status"] == "validating"
+@@ -104,7 +120,7 @@ def test_judge_immature_forward_not_passed(tmp_path):
+     validation.evaluate_sample(pool, sid, bars[:8])  # 只给少量 bars
+     sample = validation.get_sample(pool, sid)
+     assert sample["maturity_status"] == "immature"
+-    out = validation.judge_validation(pool, cid, rule=_Rule())
++    out = _judge_with_test_rule(pool, cid)
+     assert out["decision"] == "not_passed"
+     assert pool.get_by_id(cid)["promotion_status"] == "validating"
+ 
+@@ -112,7 +128,7 @@ def test_judge_immature_forward_not_passed(tmp_path):
+ def test_judge_mature_forward_passes_and_flows(tmp_path):
+     pool, cid = _candidate_validating(tmp_path)
+     _mature_forward(pool, cid)
+-    out = validation.judge_validation(pool, cid, rule=_Rule())
++    out = _judge_with_test_rule(pool, cid)
+     assert out["decision"] == "passed"
+     assert out["rule_version"] == "test-rule-0"
+     assert pool.get_by_id(cid)["promotion_status"] == "validation_passed"
+@@ -127,6 +143,6 @@ def test_judge_excluded_forward_sample_not_counted(tmp_path):
+     validation.exclude_sample(
+         pool, sid, "forward_stats", "审计裁定排除",
+         decided_by="independent_audit")
+-    out = validation.judge_validation(pool, cid, rule=_Rule())
++    out = _judge_with_test_rule(pool, cid)
+     assert out["decision"] == "not_passed"  # 排除后无 forward 样本
+     assert pool.get_by_id(cid)["promotion_status"] == "validating"

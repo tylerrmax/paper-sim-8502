@@ -1,0 +1,77 @@
+{
+  "scenario": "confirmed pair (trade_id=T001, live+stored) + uncertain pair (no trade_id, identical tuple, live+stored) on one candidate",
+  "expected_total_inst_net": 180.0,
+  "report_row": {
+    "id": 1,
+    "candidate_id": 1,
+    "engine_version": "mf-research-1.0",
+    "computed_at": "2026-11-17T02:45:14+00:00",
+    "total_score": 8.0,
+    "factors": {
+      "inst_flow": {
+        "factors": {
+          "available": true,
+          "events_count": 3,
+          "raw_events_count": 4,
+          "uncertain_events_count": 2,
+          "latest_inst_net": 40.0,
+          "total_inst_net": 180.0
+        },
+        "subtotal": 8.0,
+        "model_version": "mf-inst-1.0"
+      }
+    },
+    "evidence": {
+      "modules": {
+        "inst_flow": {
+          "events_count": 3,
+          "latest_discovered_at": "2026-11-16T09:05:00+08:00",
+          "latest_inst_net": 40.0,
+          "total_inst_net": 180.0,
+          "dedup": {
+            "raw_event_ids": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "deduped_event_ids": [
+              1,
+              3,
+              4
+            ],
+            "confirmed_duplicate_dropped_ids": [
+              2
+            ],
+            "dropped_duplicate_ids": [
+              2
+            ],
+            "uncertain_event_ids": [
+              3,
+              4
+            ],
+            "uncertain_events": [
+              {
+                "id": 3,
+                "inst_net": 40.0,
+                "dedup_status": "uncertain"
+              },
+              {
+                "id": 4,
+                "inst_net": 40.0,
+                "dedup_status": "uncertain"
+              }
+            ],
+            "uncertain_inst_net_total": 80.0,
+            "uncertain_note": "身份不确定、未合并：以下事件缺少 trade_id 且全元组相同，无法确认是否为同一底层机构事件；按未合并处理，全部保留并计入净额（存在重复计入的可能，金额影响单列）。",
+            "dedup_key": "mf-dedup-2.0 three-state: (1) trade_id present and key (market, symbol, data_date, trade_id) equal -> confirmed duplicate, counted once; (2) trade_id missing on either side -> NEVER auto-merged: identical full tuple (market, symbol, data_date, inst_buy, inst_sell, seat_buy_records, seat_sell_records) is flagged dedup_status='uncertain', all copies kept and counted; (3) otherwise independent, kept.",
+            "dedup_version": "mf-dedup-2.0"
+          }
+        }
+      },
+      "bars_count": 0,
+      "bars_first_date": null,
+      "bars_last_date": null
+    }
+  }
+}

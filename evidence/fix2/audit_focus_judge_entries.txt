@@ -1,0 +1,89 @@
+=== audit_focus_judge_entries (fix2 验收重点 3) ===
+生成: 2026-11-17T02:46:45+00:00  分支 HEAD: 7e4e7e3
+
+--- [1] grep -n 'validation_decisions' market_first/*.py（全部出现）---
+market_first/db.py:114:CREATE TABLE IF NOT EXISTS validation_decisions (
+market_first/db.py:204:CREATE TABLE IF NOT EXISTS validation_decisions (
+market_first/promotion.py:132:    'passed' 的 validation_decisions 记录；核验不过先在
+market_first/promotion.py:145:            "SELECT candidate_id, decision FROM validation_decisions"
+market_first/promotion.py:154:            "validation_decisions passed 记录，绕过 "
+market_first/validation.py:33:按版本化规则产生并留 validation_decisions 记录；阈值未经用户
+market_first/validation.py:683:    只影响之后的判定；既有 validation_decisions 记录（含其
+market_first/validation.py:723:    validation_decisions 一行，返回该行 dict。
+market_first/validation.py:830:            "INSERT INTO validation_decisions "
+market_first/validation.py:840:            "SELECT * FROM validation_decisions WHERE id = ?",
+
+--- [2] grep -n '_apply_validation_passed' market_first/*.py tests/*.py ---
+market_first/promotion.py:125:def _apply_validation_passed(pool, cid, actor, reason="",
+market_first/validation.py:849:        promotion._apply_validation_passed(
+tests/test_market_first_rule_registry.py:213:def test_apply_validation_passed_direct_call_rejected(tmp_path):
+tests/test_market_first_rule_registry.py:218:        promotion._apply_validation_passed(
+tests/test_market_first_rule_registry.py:222:        promotion._apply_validation_passed(
+
+--- [3] grep -n 'validation_passed' market_first/promotion.py market_first/validation.py ---
+market_first/promotion.py:21:    "validation_passed",
+market_first/promotion.py:33:    "validating": frozenset({"validation_passed", "validation_failed"}),
+market_first/promotion.py:35:    "validation_passed": frozenset({"pending_approval"}),
+market_first/promotion.py:73:VALIDATION_GATE_STATES = frozenset({"validation_passed"})
+market_first/promotion.py:125:def _apply_validation_passed(pool, cid, actor, reason="",
+market_first/promotion.py:127:    """内部受控入口：validating -> validation_passed。
+market_first/promotion.py:136:    validation_passed 直达一律拒绝）。
+market_first/promotion.py:152:            pool, cid, current, "validation_passed", actor,
+market_first/promotion.py:158:            "validation_passed 只能从 validating 经 judge_validation "
+market_first/promotion.py:160:    return _apply_transition(pool, cid, current, "validation_passed",
+market_first/validation.py:32:验证通过门禁（P0-3）：validation_passed 只能由 judge_validation
+market_first/validation.py:35:系统不得产生 validation_passed。未成熟样本、指标 NULL、仅有
+market_first/validation.py:600:# 验证通过判定（P0-3 门禁）：validation_passed 的唯一产生路径
+market_first/validation.py:737:      本次判定记录 id 供其核验）流转到 validation_passed。
+market_first/validation.py:774:                     "结果，不得产生 validation_passed")
+market_first/validation.py:849:        promotion._apply_validation_passed(
+
+--- [4] grep -n 'rule=' tests 与 market_first（旧直传参数残留检查）---
+tests/test_market_first_rule_registry.py:108:        validation.judge_validation(pool, cid, rule=_Rule())
+720:def judge_validation(pool, candidate_id, rule_id=None,
+
+--- [5] 正式判定入口枚举结论（人工核对上表）---
+能写 validation_decisions 的代码路径：仅 1 处
+  - validation.py:830 judge_validation 内的 INSERT（判定留痕，
+    含 not_evaluable/not_passed/passed 三种结果）。
+  promotion.py:145 仅 SELECT 核验，不写；db.py:114/204 为表定义。
+能使候选进入 validation_passed 的代码路径：仅 1 条链
+  - judge_validation（decision='passed'）-> promotion.
+    _apply_validation_passed（promotion.py:125 定义，
+    validation.py:849 唯一生产调用点）。
+逐项核对：
+  - promotion.transition() 公开入口对 validation_passed 直达
+    拒绝并留痕（fix1 既有行为，promotion.py 状态表与
+    _reject_transition 实现）；decide() 只处理审批态，不写
+    validation_decisions、不进 validation_passed。
+  - _apply_validation_passed 虽为模块级函数可被 import，但
+    fix2-3 起必须携带 decision_id 且函数内 SELECT 核验该
+    判定记录真实存在、属于该候选、decision='passed'；核验
+    不过先写 candidate_history 留痕再抛 IllegalTransitionError
+    ——validation 之外模块直接调用无法完成流转（对抗测试
+    test_apply_validation_passed_direct_call_rejected 覆盖
+    decision_id=None 与伪造 id=99999 两路，均被拒且留痕 2 条）。
+  - judge 旧 rule 直传参数已彻底删除：签名（validation.py:720）
+    为 judge_validation(pool, candidate_id, rule_id=None,
+    rule_version=None, actor='validation')；全文仅剩
+    test_market_first_rule_registry.py:108 一处 rule=_Rule()
+    调用，是断言 TypeError 的负测试（test_rule_object_
+    injection_closed），无任何生产/测试正路径使用直传。
+  - 测试注册域与正式注册域隔离：注册表为落库表 rule_registry
+    （按库隔离），测试只在 pytest tmp 库内登记（含一条
+    status='approved', approved_by='unit-test' 的路径验证行）；
+    代码实现注册表 RULE_IMPLEMENTATIONS 为进程内字典，测试
+    进程退出即消失。规范库 market_first.db 的 rule_registry
+    实测 0 行、approved 0 行（见
+    canonical_migration_and_registry_proof.txt）。
+绕过测试与枚举逐条对应（tests/test_market_first_rule_registry.py）：
+  - 未登记规则 -> test_unregistered_rule_rejected_and_traced
+  - 伪造版本 -> test_forged_version_rejected
+  - 规则对象直传 -> test_rule_object_injection_closed
+  - 缺 version -> test_missing_version_rejected
+  - draft/test 状态 -> test_draft_and_test_status_rules_rejected
+  - 停用规则+历史不变 -> test_disabled_rule_stops_passing_history_kept
+  - 版本变更 -> test_rule_version_change_new_decisions_use_new_version
+  - 受控流转直调 -> test_apply_validation_passed_direct_call_rejected
+  - approved 正常路径（仅测试库）-> test_approved_rule_in_test_db_can_pass
+  - 新库注册表为空 -> test_fresh_db_registry_empty

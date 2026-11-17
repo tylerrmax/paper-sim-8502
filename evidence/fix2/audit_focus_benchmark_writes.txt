@@ -1,0 +1,68 @@
+=== audit_focus_benchmark_writes (fix2 验收重点 1) ===
+生成: 2026-11-17T02:46:32+00:00  分支 HEAD: 7e4e7e3
+
+--- [1] grep -n 'benchmark_price' market_first/*.py（全部出现位置）---
+market_first/db.py:73:    benchmark_price REAL,
+market_first/db.py:86:    benchmark_price_source TEXT,
+market_first/db.py:189:    "benchmark_price_source": "TEXT",
+market_first/run_e2e.py:111:        entry_date=entry_date, benchmark_price=bench, kind="backfill")
+market_first/run_e2e.py:281:        benchmark_price=main_event.price_at_discovery,
+market_first/run_e2e.py:288:             forced["benchmark_price"], forced["benchmark_date"]))
+market_first/validation.py:11:  after[N-1] 收盘 / benchmark_price - 1（N=5/10/20，数据可得才填）；
+market_first/validation.py:12:  max_drawdown 以 benchmark_price 为初始峰值，对 after[:20] 收盘
+market_first/validation.py:24:  entry_date，benchmark_price_source 记录价格来源。
+market_first/validation.py:54:  的 entry 日收盘与已记录 benchmark_price 不一致（行情源
+market_first/validation.py:273:                  benchmark_price=None, kind="backfill",
+market_first/validation.py:275:                  benchmark_price_source=None, data_version=None,
+market_first/validation.py:284:    - kind='backfill' 必须显式给 entry_date 与 benchmark_price。
+market_first/validation.py:312:        bench_source = benchmark_price_source
+market_first/validation.py:351:            if req_entry is None or benchmark_price is None:
+market_first/validation.py:354:                    "benchmark_price")
+market_first/validation.py:356:            final_bench = float(benchmark_price)
+market_first/validation.py:380:                " benchmark_price, maturity_status, created_at, "
+market_first/validation.py:382:                " benchmark_price_source, data_version) "
+market_first/validation.py:427:    benchmark = float(sample["benchmark_price"])
+
+--- [2] grep -n 'UPDATE validation_samples' market_first/*.py（全部 UPDATE 语句）---
+market_first/validation.py:491:            "UPDATE validation_samples SET ret_t5 = ?, ret_t10 = ?, "
+
+--- [3] grep -n 'INSERT INTO validation_samples' market_first/*.py ---
+market_first/validation.py:378:                "INSERT INTO validation_samples "
+
+--- [4] grep -n 'benchmark_revision' market_first/*.py ---
+market_first/db.py:88:    benchmark_revision_json TEXT,
+market_first/db.py:260:    "benchmark_revision_json": "TEXT",
+market_first/db.py:279:    """幂等补齐 fix2 结构：benchmark_revision_json 列 +
+market_first/validation.py:56:  benchmark_revision_json（旧值/新值/发现时间），每次发现
+market_first/validation.py:451:            sample["candidate_id"], field="benchmark_revision",
+market_first/validation.py:454:            reason="benchmark_revision_detected: entry=%s "
+market_first/validation.py:495:            "benchmark_revision_json = COALESCE("
+market_first/validation.py:496:            "benchmark_revision_json, ?) "
+
+--- [5] 写入路径枚举结论（人工核对上表）---
+全部能写 validation_samples.benchmark_price 的位置：仅 1 处
+  - validation.py:378-382 create_sample 的 INSERT（建样时一次写入）。
+其余出现位置均非写入：
+  - db.py:73/86/189 列定义与 fix1 迁移列清单（schema，无值写入）；
+  - validation.py:427 evaluate_sample 只读 sample["benchmark_price"]；
+  - validation.py:491 起的唯一 UPDATE 语句 SET 列表为
+    ret_t5/ret_t10/ret_t20/max_drawdown/maturity_status/
+    missing_reason/evaluated_at/eval_version/bars_asof/
+    data_version/benchmark_revision_json —— 不含 benchmark_price；
+  - run_e2e.py:111/281 为演示脚本调用 create_sample 的入参；
+  - judge_validation 全文无 validation_samples 的 UPDATE/INSERT
+    （只写 validation_decisions，见 audit_focus_judge_entries.txt）。
+路径逐项核对：
+  - evaluate_sample：只读 benchmark；发现 entry 日收盘被修订时
+    写 benchmark_revision_json（COALESCE 只保留首次）+
+    candidate_history，不改 benchmark_price。
+  - 重复 create_sample：UNIQUE(candidate_id, source_id,
+    entry_date) 冲突抛 DuplicateSampleError，不覆盖既有行。
+  - schema 迁移（ensure_fix1/fix2_schema）：仅 ALTER ADD COLUMN，
+    无 UPDATE；样本 1 迁移前后 dump 对比见
+    canonical_migration_and_registry_proof.txt（原列全等）。
+  - judge_validation：不写 validation_samples 任何列。
+对抗测试：tests/test_market_first_benchmark_integrity.py::
+  test_benchmark_adversarial_immutable —— 建样后依次施压
+  (1) 修订 bar 评估 (2) 同键重复创建 (3) judge 判定，三步后
+  benchmark_price 与建样值全等，断言通过（见 new_tests_output.txt）。

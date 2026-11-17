@@ -1,0 +1,7 @@
+fix2 开工基线（2026-11-17 采集）
+分支 HEAD: 13ff9e5（fix1 证据提交）
+生产 master HEAD: 1ce237026c0ff7a0871f22bd2d7d4872dbc0d6a9
+生产 sim.db sha256: e1646ee9f8f8405618be1873ed2edb52028b12e96d6ff5f1b713fc8676e64617
+生产 sim.db fills: count=51, max_id=467
+生产 cache.db sha256（窗口起点）: 5b10f251ab9c4635fc73277a6466973f65be071da3d6b110257c94d60ea0dc28
+注：cache.db 由生产自身任务持续写入，隔离口径沿用 fix1 受控窗口前后对照。

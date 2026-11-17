@@ -1,0 +1,4 @@
+DB=market_first/market_first.db samples=2
+sample id=1 SZ 002623 kind=forward entry=2026-11-13 benchmark=26.25 close_on_entry=26.25 price_match=True confirmed_at_created=True revision=None -> OK
+sample id=2 SZ 000530 kind=backfill entry=2026-10-21 benchmark=8.63 close_on_entry=8.63 price_match=True confirmed_at_created=True revision=None -> OK
+OVERALL: OK

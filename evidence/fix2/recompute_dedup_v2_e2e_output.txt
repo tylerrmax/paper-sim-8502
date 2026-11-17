@@ -1,0 +1,11 @@
+candidate_id=1 independent: kept=[1] dropped=[2] uncertain=[] total_inst_net=31318542.800000004
+  kept_ids                 expected=[1] report=[1] -> MATCH
+  confirmed_dropped_ids    expected=[2] report=[2] -> MATCH
+  uncertain_ids            expected=[] report=[] -> MATCH
+  total_inst_net           expected=31318542.800000004 report=31318542.800000004 -> MATCH
+  dedup_version            expected='mf-dedup-2.0' report='mf-dedup-2.0' -> MATCH
+candidate_id=2 independent: kept=[3] dropped=[] uncertain=[] total_inst_net=17355207.150000006
+  SKIP: no research report for this candidate in this DB (nothing to compare)
+candidate_id=3 independent: kept=[4] dropped=[] uncertain=[] total_inst_net=13351633.52
+  SKIP: no research report for this candidate in this DB (nothing to compare)
+OVERALL: MATCH

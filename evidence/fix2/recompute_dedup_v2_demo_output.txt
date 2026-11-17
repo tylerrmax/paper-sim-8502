@@ -1,0 +1,7 @@
+candidate_id=1 independent: kept=[1, 3, 4] dropped=[2] uncertain=[3, 4] total_inst_net=180.0
+  kept_ids                 expected=[1, 3, 4] report=[1, 3, 4] -> MATCH
+  confirmed_dropped_ids    expected=[2] report=[2] -> MATCH
+  uncertain_ids            expected=[3, 4] report=[3, 4] -> MATCH
+  total_inst_net           expected=180.0 report=180.0 -> MATCH
+  dedup_version            expected='mf-dedup-2.0' report='mf-dedup-2.0' -> MATCH
+OVERALL: MATCH

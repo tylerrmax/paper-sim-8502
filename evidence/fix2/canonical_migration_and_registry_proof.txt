@@ -1,0 +1,10 @@
+sample1 original columns equal to pre-migration snapshot: True
+sample1 new column benchmark_revision_json: None
+sample1 exclusion row equal to pre-migration snapshot: True
+exclusion row: {"id": 1, "sample_id": 1, "excluded_from": "forward_stats", "reason": "独立审计 2026-11-16 裁定：entry 2026-11-13 早于发现创建 2026-11-16，改类为历史回填/时间口径演示样本", "decided_by": "independent_audit_2026-11-16", "created_at": "2026-11-16T16:37:47+00:00"}
+rule_registry total rows: 0
+rule_registry approved rows: 0
+rule_registry all rows: []
+tables after migration: ['approvals', 'candidate_history', 'candidates', 'discovery_events', 'fetched_bars', 'fetched_coverage', 'handoffs', 'research_reports', 'rule_registry', 'sample_exclusions', 'validation_decisions', 'validation_samples']
+samples total: 2
+validation_decisions total: 0

@@ -1,0 +1,5 @@
+# 已知既有基线失败（纯净基线 1ce2370 复跑同失败，非本分支引入）。
+# build_audit_package 以此清单比对全量 pytest 失败项：清单外失败
+# 一律判未登记失败、包状态 NOT_READY。此清单不得为制造通过而增删，
+# 变更须在交付报告中明示。
+test_ledger_fingerprint_idempotent

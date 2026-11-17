@@ -33,6 +33,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 以脚本方式运行时 tools/ 在 sys.path[0]，仓库根不在其中；
+# 补入仓库根以便 import market_first.snapshot_tool。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 SUMMARY_RE = re.compile(
     r"(=+ .*\b(passed|failed|error)\b.* in \d+(\.\d+)?s.*=+"
     r"|\d+ passed.* in \d+(\.\d+)?s)")

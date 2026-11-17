@@ -1,0 +1,111 @@
+{
+ "label": "fix3_window_close_prod_sim",
+ "source_path": "/home/hatch/workspace/paper-trading-sim/db/sim.db",
+ "snapshot_file": "sim.db",
+ "taken_at": "2026-11-17T04:13:27+00:00",
+ "file_sha256": "22cd09013199bd063a424c2af3db6908fbb4c6ad787adf05fb1aa13b7a591f8a",
+ "file_size": 7163904,
+ "tables": {
+  "approvals": {
+   "row_count": 23,
+   "content_sha256": "43cab62f7c788ecbfdf26659940bc0b2c93e38df52e2f33883152c049d6d5f6c"
+  },
+  "blocked_perf": {
+   "row_count": 9,
+   "content_sha256": "99b177f6c6dbf78866c856eafd5c68d976d35660ac9ae877c9de9c75c8f75639"
+  },
+  "blocked_signals": {
+   "row_count": 9,
+   "content_sha256": "a22fca9cd75ec492ceac64f519051f721ff55e42722d6668ded894bd89d32b2b"
+  },
+  "broker_receipts": {
+   "row_count": 0,
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "control": {
+   "row_count": 1,
+   "content_sha256": "5fecef552d973545a0f8a0d04cb6f4279d918b288bb63c862fed66c63431d585"
+  },
+  "daily_report": {
+   "row_count": 1100,
+   "content_sha256": "06e105e2190da2074fad9d9a539c5cab6ade454fd588afc794f5bf9b66fccac4"
+  },
+  "fills": {
+   "row_count": 51,
+   "content_sha256": "6341c1488865e56285de5de62ce22cdcab53299d61464170f1b054a441cf49df"
+  },
+  "fx_rate": {
+   "row_count": 46,
+   "content_sha256": "1fe42997bdc15099763b95471d523867667b9c0322225d72c16bcdd8a7b4f8e0"
+  },
+  "graduation_exclusions": {
+   "row_count": 4,
+   "content_sha256": "92fc2a23be760a26397d9f2037afd908ed35618593ceeabe5d8098d3b1a17290"
+  },
+  "inst_lhb_daily": {
+   "row_count": 928,
+   "content_sha256": "4373245d27e5ae5eeba8040caeaf2e238f1fa246d572add077cdf30983bafbc9"
+  },
+  "inst_lhb_fetch_days": {
+   "row_count": 22,
+   "content_sha256": "a6a306ad5146f6cd875df829fd9df786ec1ebf41e8b7b843348828198288c4c9"
+  },
+  "inst_lhb_raw": {
+   "row_count": 17206,
+   "content_sha256": "7861a2ec099b9c1240c5bb10b0f1690dbc04dfe5f4737aa60a21821cf1cb9ff3"
+  },
+  "intent_transitions": {
+   "row_count": 0,
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "market_data": {
+   "row_count": 3526,
+   "content_sha256": "d85fdef393c50c82d86c7566c0a87a165208cd2f79fc892ff1c84d75e3137f2e"
+  },
+  "pause_skipped_signals": {
+   "row_count": 0,
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "positions": {
+   "row_count": 1,
+   "content_sha256": "906e3ebe3956f529045bf48ad551d04b055982c90ddd209fb6c85390e693a5d0"
+  },
+  "processed_commands": {
+   "row_count": 17,
+   "content_sha256": "83dc9541cfab188354e45e999aaca6a8e48da5855019d192927348d15ef64be8"
+  },
+  "real_fills": {
+   "row_count": 0,
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "risk_block_events": {
+   "row_count": 9,
+   "content_sha256": "8265764efb3981c998ae4ced27c4cd4142103855f9149afd45cfea72364964b4"
+  },
+  "rotation_vouchers": {
+   "row_count": 1,
+   "content_sha256": "5505657fd708656548668cbe1c458a26bf49fdc601acb5023f8c9f3370795064"
+  },
+  "screen_perf": {
+   "row_count": 400,
+   "content_sha256": "2f9a28ca2af68ccf2f3cae67cc48fc56185984d8e0ec200a96529d3fc649b274"
+  },
+  "screen_perf_factors": {
+   "row_count": 506,
+   "content_sha256": "644f346098ca6af79c34d53fe84f8a66e3315634648386ba10f02c2b960dfafc"
+  },
+  "screen_runs": {
+   "row_count": 68,
+   "content_sha256": "dad5229c86cac67954d123fe71f420650c4f315bf85a8a15b29fc319c294e572"
+  },
+  "signals": {
+   "row_count": 26,
+   "content_sha256": "54206a69d40fd80f0ae7cfddc3b3400a6cb9ab27d78fb03aaba42a3bb647db06"
+  },
+  "trade_intents": {
+   "row_count": 0,
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+ },
+ "triggers": []
+}

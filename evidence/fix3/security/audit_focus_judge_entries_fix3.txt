@@ -1,0 +1,21 @@
+== fix3 安全枚举 2：正式判定入口 ==
+-- INSERT INTO validation_decisions（应仅 judge_validation 一处） --
+market_first/validation.py:951:            "INSERT INTO validation_decisions "
+-- _apply_validation_passed 定义与调用方 --
+market_first/promotion.py:125:def _apply_validation_passed(pool, cid, actor, reason="",
+market_first/validation.py:973:        promotion._apply_validation_passed(
+-- RULE_IMPLEMENTATIONS 全部访问点 --
+market_first/validation.py:688:RULE_IMPLEMENTATIONS: dict = {}
+market_first/validation.py:726:    RULE_IMPLEMENTATIONS[key] = {
+market_first/validation.py:899:                entry = RULE_IMPLEMENTATIONS.get(
+market_first/validation.py:1019:    entry = RULE_IMPLEMENTATIONS.get(
+-- judge 中 NO_IMPL / IMPL_MISMATCH 分支 --
+80:  缺失 -> NO_IMPL、错配 -> IMPL_MISMATCH，均 not_evaluable
+685:# 本注册表：任一缺失 -> NO_IMPL；impl_key/impl_version 不符
+686:# -> IMPL_MISMATCH；两者都使判定 not_evaluable 并留痕。
+745:    逐项核对，不一致 -> IMPL_MISMATCH。
+897:                # NO_IMPL；impl_key/impl_version 错配 ->
+898:                # IMPL_MISMATCH；均为 not_evaluable 并留痕。
+907:                    basis = ("rule_implementation_missing[NO_IMPL]: "
+917:                             "[IMPL_MISMATCH]: 注册表绑定 "
+1023:        result["note"] = ("NO_IMPL: implementation for "

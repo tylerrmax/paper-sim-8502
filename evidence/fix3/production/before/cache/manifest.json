@@ -1,0 +1,15 @@
+{
+ "label": "fix3_window_open_prod_cache",
+ "source_path": "/home/hatch/workspace/market_data/cache.db",
+ "snapshot_file": "cache.db",
+ "taken_at": "2026-11-17T04:02:06+00:00",
+ "file_sha256": "5ceccab202b397f549dc6c206b27d82052702d4d89c72f4f8008d1affaf6997a",
+ "file_size": 622592,
+ "tables": {
+  "bars": {
+   "row_count": 5549,
+   "content_sha256": "d505e68a3795febd30b200d31d1236dbfd7d48f47acec19c5af85f79295fe216"
+  }
+ },
+ "triggers": []
+}

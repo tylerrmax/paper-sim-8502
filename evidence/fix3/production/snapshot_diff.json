@@ -1,0 +1,100 @@
+{
+ "cache": {
+  "file_sha256_before": "5ceccab202b397f549dc6c206b27d82052702d4d89c72f4f8008d1affaf6997a",
+  "file_sha256_after": "5ceccab202b397f549dc6c206b27d82052702d4d89c72f4f8008d1affaf6997a",
+  "file_changed": false,
+  "triggers_before": [],
+  "triggers_after": [],
+  "tables": {
+   "bars": {
+    "changed": false
+   }
+  },
+  "changed_tables": []
+ },
+ "sim": {
+  "file_sha256_before": "22cd09013199bd063a424c2af3db6908fbb4c6ad787adf05fb1aa13b7a591f8a",
+  "file_sha256_after": "22cd09013199bd063a424c2af3db6908fbb4c6ad787adf05fb1aa13b7a591f8a",
+  "file_changed": false,
+  "triggers_before": [],
+  "triggers_after": [],
+  "tables": {
+   "approvals": {
+    "changed": false
+   },
+   "blocked_perf": {
+    "changed": false
+   },
+   "blocked_signals": {
+    "changed": false
+   },
+   "broker_receipts": {
+    "changed": false
+   },
+   "control": {
+    "changed": false
+   },
+   "daily_report": {
+    "changed": false
+   },
+   "fills": {
+    "changed": false
+   },
+   "fx_rate": {
+    "changed": false
+   },
+   "graduation_exclusions": {
+    "changed": false
+   },
+   "inst_lhb_daily": {
+    "changed": false
+   },
+   "inst_lhb_fetch_days": {
+    "changed": false
+   },
+   "inst_lhb_raw": {
+    "changed": false
+   },
+   "intent_transitions": {
+    "changed": false
+   },
+   "market_data": {
+    "changed": false
+   },
+   "pause_skipped_signals": {
+    "changed": false
+   },
+   "positions": {
+    "changed": false
+   },
+   "processed_commands": {
+    "changed": false
+   },
+   "real_fills": {
+    "changed": false
+   },
+   "risk_block_events": {
+    "changed": false
+   },
+   "rotation_vouchers": {
+    "changed": false
+   },
+   "screen_perf": {
+    "changed": false
+   },
+   "screen_perf_factors": {
+    "changed": false
+   },
+   "screen_runs": {
+    "changed": false
+   },
+   "signals": {
+    "changed": false
+   },
+   "trade_intents": {
+    "changed": false
+   }
+  },
+  "changed_tables": []
+ }
+}

@@ -1,0 +1,8 @@
+release_id: fix3
+branch: market-first/unified-arch
+base: 1a178c52b107d7b2e2023cadf1fedf7042df0616
+head: 936e4c64d58723709b5187a3bacb999741e38092
+
+936e4c64d58723709b5187a3bacb999741e38092 2026-11-17 04:13:54 +0000 build_audit_package：脚本方式运行时补仓库根 sys.path（修复 market_first 导入）
+c582659da93bb5ce961c0e1429654308052ac901 2026-11-17 04:08:08 +0000 Market-First fix3 基建：审计包自动生成工具（完整性门禁 NOT_READY/READY_FOR_AUDIT）+ 已知基线失败清单
+643b91cd247f2e4e3c6bbcb8baf820ea677790c2 2026-11-17 04:07:17 +0000 Market-First fix3：P0-A benchmark触发器/时间锚信任路径/交易日历 + P0-B registry精确绑定 + 台账/快照工具/对抗测试库

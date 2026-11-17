@@ -1,0 +1,33 @@
+{
+ "logs": {
+  "full_pytest": {
+   "has_summary_line": true,
+   "summary_line": "1 failed, 294 passed, 3 warnings in 249.70s (0:04:09)",
+   "counts": {
+    "passed": 294,
+    "failed": 1,
+    "errors": 0
+   },
+   "failed_tests": [
+    "tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent"
+   ]
+  },
+  "special_pytest": {
+   "has_summary_line": true,
+   "summary_line": "79 passed, 1 warning in 2.55s",
+   "counts": {
+    "passed": 79,
+    "failed": 0,
+    "errors": 0
+   },
+   "failed_tests": []
+  },
+  "e2e": {
+   "lines": 131
+  }
+ },
+ "known_baseline_failures": [
+  "test_ledger_fingerprint_idempotent"
+ ],
+ "unregistered_failures": []
+}

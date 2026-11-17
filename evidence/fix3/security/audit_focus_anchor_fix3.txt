@@ -1,0 +1,33 @@
+== fix3 安全枚举 3：forward 时间锚信任路径 ==
+-- create_sample 中 discovered_at / created_at 的使用 --
+19:- 发现事件实际创建时间 = discovery_events.discovered_at，即数据
+67:  = max(调用方声称的 discovered_at 日期, 库内服务器侧
+68:  ingested_at 日期 discovery_events.created_at)，声称与库内
+70:  'discovery_time_anchor'）。回填声称不能把 backfill 变
+265:        " ORDER BY discovered_at DESC, id DESC", (candidate_id,))
+347:        claimed_date = (_shanghai_date(event["discovered_at"])
+350:        # discovered_at 由调用方经 DiscoveryEvent 传入、内容可
+351:        # 回填伪造；discovery_events.created_at 由 pool.ingest
+352:        # 在入库时以服务器时间落字（ingested_at），事件内容
+353:        # 无法回填。锚 = max(claimed, ingested)：入场必须晚于
+354:        # 两者——回填声称的旧 discovered_at 不能把 backfill
+356:        ingested_date = None
+357:        if event is not None and event.get("created_at"):
+358:            ingested_date = _shanghai_date(event["created_at"])
+360:        if ingested_date is not None and (
+362:                or ingested_date > discovered_date):
+363:            discovered_date = ingested_date
+365:                and ingested_date is not None
+366:                and claimed_date != ingested_date):
+368:                candidate_id, field="discovery_time_anchor",
+371:                reason="discovered_at claim (%s) differs from "
+372:                       "server-side ingested_at date (%s); "
+374:                       % (claimed_date, ingested_date,
+453:                " benchmark_price, maturity_status, created_at, "
+605:                " created_at) VALUES (?, ?, ?, ?, ?)",
+-- pool.ingest 中 created_at 落字（服务器侧） --
+51:                " first_seen_at, last_seen_at, created_at, updated_at)"
+77:            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+85:            " old_value, new_value, actor, reason, created_at)"
+95:            " old_value, new_value, actor, reason, created_at)"
+124:                " old_value, new_value, actor, reason, created_at)"

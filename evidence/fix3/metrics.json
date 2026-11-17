@@ -1,0 +1,47 @@
+{
+ "release_id": "fix3",
+ "issues_total": 12,
+ "issues_by_status": {
+  "READY_FOR_AUDIT": 10,
+  "OPEN": 2
+ },
+ "issues_by_severity": {
+  "P0": 10,
+  "P1": 2
+ },
+ "issues_first_found_in_audit_rounds": [
+  "MF-FWD-001",
+  "MF-DEDUP-001",
+  "MF-DEDUP-002",
+  "MF-BENCH-001",
+  "MF-REG-001",
+  "MF-CACHE-001",
+  "MF-PROMO-001",
+  "MF-HANDOFF-001"
+ ],
+ "issues_fixed_this_release": [
+  "MF-FWD-002",
+  "MF-BENCH-002",
+  "MF-BENCH-003",
+  "MF-REG-002"
+ ],
+ "issues_new_this_release": [
+  "MF-FWD-002",
+  "MF-BENCH-002",
+  "MF-BENCH-003",
+  "MF-REG-002"
+ ],
+ "full_pytest_counts": {
+  "passed": 294,
+  "failed": 1,
+  "errors": 0
+ },
+ "baseline_failures_known": [
+  "test_ledger_fingerprint_idempotent"
+ ],
+ "unregistered_failures": [],
+ "production_changed_tables": [],
+ "evidence_completeness": "8/8",
+ "audit_duration": "待独立审计填写（开发方不自报）",
+ "note": "效率指标只作过程度量，不以提交数/测试数/PASS 比例论绩效（指令 V1.0 第七节）。"
+}

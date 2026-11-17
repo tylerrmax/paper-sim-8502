@@ -1,0 +1,62 @@
+{
+ "label": "fix3_post_migration_canonical",
+ "source_path": "/home/hatch/workspace/l2-remediation/market-first/market_first/market_first.db",
+ "snapshot_file": "market_first.db",
+ "taken_at": "2026-11-17T04:13:28+00:00",
+ "file_sha256": "3b515fd0012897d7beb18b2c1cf85acb6a203bd6f76349ea6d67e575e197a44e",
+ "file_size": 86016,
+ "tables": {
+  "approvals": {
+   "row_count": 2,
+   "content_sha256": "1811d6fa01dd64229a8ffbb04df63621c7e1e987145328e10228491e5fd74783"
+  },
+  "candidate_history": {
+   "row_count": 20,
+   "content_sha256": "3572b5ba6485b4636640fd94d553b62b2fdc9763560ecfef6f4c198db636f52a"
+  },
+  "candidates": {
+   "row_count": 3,
+   "content_sha256": "75e1e8bd5c36ecd5e91941a238d83a60e4ccd5651ce73876c5d868e995dcb232"
+  },
+  "discovery_events": {
+   "row_count": 4,
+   "content_sha256": "6d1840a5695c88a2669bfa2957d2baea0593b090dad627f955863f4738f951f4"
+  },
+  "fetched_bars": {
+   "row_count": 0,
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "fetched_coverage": {
+   "row_count": 0,
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "handoffs": {
+   "row_count": 1,
+   "content_sha256": "fad7a0c728547f322447ff4625c15de25fd4f315a8cae22afeffc15b4954796a"
+  },
+  "research_reports": {
+   "row_count": 1,
+   "content_sha256": "cf929c97ed59ffb0e84b51c9a8d8ee045b788d2d27e489fcdb4d388a14b0f921"
+  },
+  "rule_registry": {
+   "row_count": 0,
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "sample_exclusions": {
+   "row_count": 1,
+   "content_sha256": "29d7faa298e98574b2a065bfe3593abae5e3128ee454219c88a9a52cc6e99bf7"
+  },
+  "validation_decisions": {
+   "row_count": 0,
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "validation_samples": {
+   "row_count": 2,
+   "content_sha256": "77520318ea44ecd132280c6d549cd246469d038b086800b50f609510848b370e"
+  }
+ },
+ "triggers": [
+  "trg_validation_samples_benchmark_immutable",
+  "trg_validation_samples_no_delete"
+ ]
+}

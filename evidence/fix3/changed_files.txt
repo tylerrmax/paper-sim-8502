@@ -1,0 +1,15 @@
+ARCHITECTURE.md
+audit_issues.jsonl
+market_first/calendar.py
+market_first/db.py
+market_first/snapshot_tool.py
+market_first/validation.py
+tests/test_adversarial_regression.py
+tests/test_market_first_benchmark_integrity.py
+tests/test_market_first_forward_time.py
+tests/test_market_first_promotion_handoff.py
+tests/test_market_first_rule_binding.py
+tests/test_market_first_rule_registry.py
+tests/test_market_first_validation_gate.py
+tools/baseline_failures.txt
+tools/build_audit_package.py

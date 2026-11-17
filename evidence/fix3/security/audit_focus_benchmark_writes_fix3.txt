@@ -1,0 +1,24 @@
+== fix3 安全枚举 1：benchmark_price 全部写入路径（market_first/ 全量 grep） ==
+market_first/db.py:73:    benchmark_price REAL,
+market_first/db.py:316:BEFORE UPDATE OF benchmark_price, benchmark_date,
+market_first/db.py:321:    WHERE NEW.benchmark_price IS NOT OLD.benchmark_price
+market_first/run_e2e.py:111:        entry_date=entry_date, benchmark_price=bench, kind="backfill")
+market_first/run_e2e.py:281:        benchmark_price=main_event.price_at_discovery,
+market_first/run_e2e.py:288:             forced["benchmark_price"], forced["benchmark_date"]))
+market_first/validation.py:11:  after[N-1] 收盘 / benchmark_price - 1（N=5/10/20，数据可得才填）；
+market_first/validation.py:12:  max_drawdown 以 benchmark_price 为初始峰值，对 after[:20] 收盘
+market_first/validation.py:54:  的 entry 日收盘与已记录 benchmark_price 不一致（行情源
+market_first/validation.py:319:                  benchmark_price=None, kind="backfill",
+market_first/validation.py:330:    - kind='backfill' 必须显式给 entry_date 与 benchmark_price。
+market_first/validation.py:424:            if req_entry is None or benchmark_price is None:
+market_first/validation.py:427:                    "benchmark_price")
+market_first/validation.py:429:            final_bench = float(benchmark_price)
+market_first/validation.py:453:                " benchmark_price, maturity_status, created_at, "
+market_first/validation.py:500:    benchmark = float(sample["benchmark_price"])
+
+== benchmark 三列出现在 UPDATE SET 中的位置（应仅 evaluate 的 COALESCE benchmark_revision_json，非 benchmark 本列） ==
+market_first/validation.py:564:            "UPDATE validation_samples SET ret_t5 = ?, ret_t10 = ?, "
+
+== 数据库层触发器（ensure_fix3_schema） ==
+315:CREATE TRIGGER IF NOT EXISTS trg_validation_samples_benchmark_immutable
+326:CREATE TRIGGER IF NOT EXISTS trg_validation_samples_no_delete

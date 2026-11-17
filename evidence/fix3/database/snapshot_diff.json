@@ -1,0 +1,51 @@
+{
+ "canonical": {
+  "file_sha256_before": "45f54e5e4fab10102d3f14e3b067de3a8eb5b7b07b6ea63ee8b01b117a1de011",
+  "file_sha256_after": "3b515fd0012897d7beb18b2c1cf85acb6a203bd6f76349ea6d67e575e197a44e",
+  "file_changed": true,
+  "triggers_before": [],
+  "triggers_after": [
+   "trg_validation_samples_benchmark_immutable",
+   "trg_validation_samples_no_delete"
+  ],
+  "tables": {
+   "approvals": {
+    "changed": false
+   },
+   "candidate_history": {
+    "changed": false
+   },
+   "candidates": {
+    "changed": false
+   },
+   "discovery_events": {
+    "changed": false
+   },
+   "fetched_bars": {
+    "changed": false
+   },
+   "fetched_coverage": {
+    "changed": false
+   },
+   "handoffs": {
+    "changed": false
+   },
+   "research_reports": {
+    "changed": false
+   },
+   "rule_registry": {
+    "changed": false
+   },
+   "sample_exclusions": {
+    "changed": false
+   },
+   "validation_decisions": {
+    "changed": false
+   },
+   "validation_samples": {
+    "changed": false
+   }
+  },
+  "changed_tables": []
+ }
+}

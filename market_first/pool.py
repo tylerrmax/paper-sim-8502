@@ -7,6 +7,7 @@ candidate_history 为 append-only（本模块只 INSERT、从不 UPDATE/DELETE�
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime
 
 from market_first.db import connect, init_db
@@ -42,7 +43,8 @@ class CandidatePool:
         pool.clock，以应用层路径模拟「发现即入库」等入库
         时刻——替代旧测试直写 UPDATE discovery_events SET
         created_at 的手法（该 UPDATE 已被 DB 触发器禁止，
-        见 db.ensure_redteam_schema）。
+        见 db.ensure_redteam_schema）。夹具落字经 ingest
+        受控通道（方案 A 通道标记同事务绑定），构造不变。
         """
         self.db_path = init_db(db_path)
         self.conn = connect(self.db_path)
@@ -50,7 +52,18 @@ class CandidatePool:
 
     # -- 写入 -----------------------------------------------------------
     def ingest(self, event, actor="discovery"):
-        """摄入一个发现事件，返回 (candidate_id, created_bool)。"""
+        """摄入一个发现事件，返回 (candidate_id, created_bool)。
+
+        受控通道（P0-3 方案 A，2026-11-23）：事件行落字前，
+        在同一事务内先写一条 ingest_channel_marks 通道标记
+        （mark=uuid4，标记行 created_at 为真实服务器时间，
+        不随夹具时钟），事件行以 ingest_mark_id 绑定该标
+        记。DB 触发器 trg_rt_discovery_events_insert_channel
+        据此区分受控写序与直写 INSERT：无有效标记的事件行
+        created_at 必须为服务器当前时间，NULL/历史回填被
+        拒；经本通道落字的历史时刻（夹具模拟）与 NULL
+        （缺锚前提）带有效标记、合法通过。
+        """
         now = self.clock() if self.clock else _now_iso()
         row = self.conn.execute(
             "SELECT id FROM candidates WHERE market=? AND symbol=?",
@@ -81,15 +94,23 @@ class CandidatePool:
                     " WHERE id=?",
                     (event.discovered_at, now, candidate_id),
                 )
+        mark_cur = self.conn.execute(
+            "INSERT INTO ingest_channel_marks (candidate_id, mark,"
+            " created_at) VALUES (?, ?, ?)",
+            (candidate_id, uuid.uuid4().hex, _now_iso()),
+        )
+        mark_id = mark_cur.lastrowid
         self.conn.execute(
             "INSERT INTO discovery_events (candidate_id, source_id,"
             " market, symbol, discovered_at, trigger_condition,"
             " price_at_discovery, price_data_time, evidence_json,"
-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " created_at, ingest_mark_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (candidate_id, event.source_id, event.market, event.symbol,
              event.discovered_at, event.trigger_condition,
              event.price_at_discovery, event.price_data_time,
-             json.dumps(event.evidence or {}, ensure_ascii=False), now),
+             json.dumps(event.evidence or {}, ensure_ascii=False),
+             now, mark_id),
         )
         self.conn.execute(
             "INSERT INTO candidate_history (candidate_id, field,"

@@ -38,6 +38,14 @@ CREATE TABLE IF NOT EXISTS discovery_events (
     price_at_discovery REAL,
     price_data_time TEXT,
     evidence_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    ingest_mark_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS ingest_channel_marks (
+    id INTEGER PRIMARY KEY,
+    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
+    mark TEXT NOT NULL UNIQUE,
     created_at TEXT
 );
 
@@ -647,6 +655,76 @@ END;
 """
 
 
+# P0-3 完整落地（2026-11-23，方案 A 受控通道标记，用户定案）：
+# - ingest_channel_marks 为受控通道标记表：pool.ingest 在与
+#   事件行同一事务内先落标记行（mark=uuid4、created_at 为
+#   真实服务器时间），事件行以 ingest_mark_id 绑定之；
+# - trg_rt_discovery_events_insert_channel：无有效标记的
+#   INSERT 必须 created_at 为服务器当前时间（±120 秒口径
+#   的过去侧；未来侧由既有 insert_future 触发器管辖）——
+#   NULL、不可解析、历史回填一律拒绝；声称标记但标记不
+#   存在/跨候选/已被消费，一律拒绝；带有效标记的 INSERT
+#   不受时间值限制（时钟夹具的历史时刻与 NULL 缺锚前提
+#   经通道合法落字，与墙钟无关）；
+# - 标记行 append-only：禁止 UPDATE；被事件行引用后禁止
+#   DELETE（未被引用者可删，不构成任何事件的通道证据）。
+# 口径（照 P0-2 修订）：本机制证明标记的存在性、唯一性与
+# 不可变性——事件行「经受控写序落字」的形态；不证明调用
+# 方身份（直写自造标记整套伪造属固有界限，见设计文档
+# DESIGN-P0-3-CHANNEL-A.md 与对抗实测）。
+_P03A_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS ingest_channel_marks (
+    id INTEGER PRIMARY KEY,
+    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
+    mark TEXT NOT NULL UNIQUE,
+    created_at TEXT
+);
+"""
+
+_P03A_TRIGGERS_SQL = """
+CREATE TRIGGER IF NOT EXISTS trg_rt_discovery_events_insert_channel
+BEFORE INSERT ON discovery_events
+BEGIN
+    SELECT RAISE(ABORT, 'discovery_events ingest_mark_id must reference a valid unconsumed ingest channel mark of the same candidate (P0-5 channel guard)')
+    WHERE NEW.ingest_mark_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM ingest_channel_marks m
+        WHERE m.id = NEW.ingest_mark_id
+          AND m.candidate_id = NEW.candidate_id
+          AND NOT EXISTS (
+            SELECT 1 FROM discovery_events e
+            WHERE e.ingest_mark_id = m.id));
+    SELECT RAISE(ABORT, 'discovery_events created_at must be server-current (within 120s) or carry a valid ingest channel mark (P0-5 channel guard)')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM ingest_channel_marks m
+        WHERE m.id = NEW.ingest_mark_id
+          AND m.candidate_id = NEW.candidate_id
+          AND NOT EXISTS (
+            SELECT 1 FROM discovery_events e
+            WHERE e.ingest_mark_id = m.id))
+      AND (NEW.created_at IS NULL
+        OR julianday(NEW.created_at) IS NULL
+        OR (julianday('now') - julianday(NEW.created_at))
+            * 86400.0 > 120.0);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_ingest_channel_marks_no_update
+BEFORE UPDATE ON ingest_channel_marks
+BEGIN
+    SELECT RAISE(ABORT, 'ingest_channel_marks are append-only channel evidence: UPDATE forbidden (P0-5 channel guard)');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_ingest_channel_marks_no_delete_bound
+BEFORE DELETE ON ingest_channel_marks
+BEGIN
+    SELECT RAISE(ABORT, 'ingest_channel_marks bound to a discovery event cannot be deleted (P0-5 channel guard)')
+    WHERE EXISTS (
+        SELECT 1 FROM discovery_events e
+        WHERE e.ingest_mark_id = OLD.id);
+END;
+"""
+
+
 def ensure_redteam_schema(conn) -> None:
     """幂等安装红队集中修复（2026-11-23）的 DB 层保护触发器。
 
@@ -677,6 +755,15 @@ def ensure_redteam_schema(conn) -> None:
     - V3 审计补正（2026-11-23）：approvals 生命周期保护
       （P0-1）与 discovery_events INSERT 未来时间拒绝
       （P0-3）触发器，见 _V3C_TRIGGERS_SQL 注释。
+    - P0-3 完整落地（2026-11-23，方案 A 受控通道标记）：
+      ingest_channel_marks 表 + discovery_events.
+      ingest_mark_id 绑定列与一对一唯一索引 +
+      insert_channel 触发器——无有效通道标记的 INSERT，
+      created_at 为 NULL/不可解析/早于服务器时间 120 秒
+      以上一律拒绝；带有效标记者不受时间值限制。ingest
+      恒先落标记行再落事件行并绑定、同事务，天然通过。
+      本闸证明标记的存在性/唯一性/不可变性（经受控写序
+      落字的形态），不证明调用方身份，见 _P03A 注释。
 
     触发器只新增、不动既有数据。
     """
@@ -698,6 +785,21 @@ def ensure_redteam_schema(conn) -> None:
         "DROP TRIGGER IF EXISTS trg_rt_sample_exclusions_audit_insert")
     conn.executescript(_V3C2_TRIGGERS_SQL)
     conn.executescript(_V3C_TRIGGERS_SQL)
+    # P0-3 方案 A 迁移：通道标记表 + 事件行绑定列 + 一对一
+    # 唯一索引（存量行 ingest_mark_id 为 NULL，SQLite
+    # UNIQUE 不约束 NULL）+ 通道触发器。
+    conn.executescript(_P03A_TABLES_SQL)
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(discovery_events)")}
+    if cols and "ingest_mark_id" not in cols:
+        conn.execute(
+            "ALTER TABLE discovery_events"
+            " ADD COLUMN ingest_mark_id INTEGER")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS"
+        " idx_discovery_events_ingest_mark_id"
+        " ON discovery_events(ingest_mark_id)")
+    conn.executescript(_P03A_TRIGGERS_SQL)
     conn.commit()
 
 

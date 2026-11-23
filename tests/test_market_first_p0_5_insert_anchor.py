@@ -13,15 +13,15 @@ UPDATE 不可变保护，直接 INSERT 可写任意时刻，时间锚的
 - 既有 UPDATE 不可变保护保留（p0_5_created_at_guard 组
   回归实证，本文件亦含一条复核）。
 
-未实施（如实登记，待审计裁定）：NULL 拒绝与历史回填
-窗口与既有可信测试时钟夹具存在真实冲突——夹具以固定
-字符串模拟历史入库时刻（最老 2026-11-10，其年龄随墙钟
-无限增长，任何有限窗口都会在未来某日无代码变更地击穿
-夹具），且 test_missing_ingest_time_rejects_forward 的
-被测前提就是库内存在 created_at=NULL 的事件行。冲突
-全量与可选方案（受控通道标记/宽限窗口/维持现状）见
-evidence/v3-audit-correction-20261123/design/
-DESIGN-V3-CORRECTION.md，本文件不以时限性窗口冒充修复。
+后续落地（2026-11-23 P0-3 完整落地批）：NULL 拒绝与
+历史回填拦截已按用户定案的方案 A（受控通道标记）实施
+——无有效通道标记的 NULL/回填 INSERT 由
+trg_rt_discovery_events_insert_channel 拒绝，经 ingest
+通道（含时钟夹具）落字的历史时刻与 NULL 前提带标记合
+法通过，见 test_market_first_p0_5_channel_marks.py。本
+文件覆盖的未来时间拒绝口径不变。方案 A 落地前的冲突
+分析见 evidence/v3-audit-correction-20261123/design/
+DESIGN-V3-CORRECTION.md。
 """
 import sqlite3
 from datetime import datetime, timedelta

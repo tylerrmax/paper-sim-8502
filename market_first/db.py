@@ -433,6 +433,45 @@ WHEN NEW.created_at IS NOT OLD.created_at
 BEGIN
     SELECT RAISE(ABORT, 'discovery_events.created_at is server-stamped at ingest and immutable (P0-5)');
 END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_rule_registry_approved_insert
+BEFORE INSERT ON rule_registry
+WHEN NEW.status = 'approved'
+BEGIN
+    SELECT RAISE(ABORT, 'rule_registry approved requires approved_by (P0-3 db guard)')
+    WHERE NEW.approved_by IS NULL OR trim(NEW.approved_by) = '';
+    SELECT RAISE(ABORT, 'rule_registry approved requires approval_basis (P0-3 db guard)')
+    WHERE NEW.approval_basis IS NULL OR trim(NEW.approval_basis) = '';
+    SELECT RAISE(ABORT, 'rule_registry approved_at must be server-current within 120s (P0-3 db guard)')
+    WHERE NEW.approved_at IS NULL
+       OR abs(julianday(NEW.approved_at) - julianday('now')) * 86400.0 > 120.0;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_rule_registry_approved_update
+BEFORE UPDATE OF status ON rule_registry
+WHEN NEW.status = 'approved' AND OLD.status <> 'approved'
+BEGIN
+    SELECT RAISE(ABORT, 'rule_registry approved requires approved_by (P0-3 db guard)')
+    WHERE NEW.approved_by IS NULL OR trim(NEW.approved_by) = '';
+    SELECT RAISE(ABORT, 'rule_registry approved requires approval_basis (P0-3 db guard)')
+    WHERE NEW.approval_basis IS NULL OR trim(NEW.approval_basis) = '';
+    SELECT RAISE(ABORT, 'rule_registry approved_at must be server-current within 120s (P0-3 db guard)')
+    WHERE NEW.approved_at IS NULL
+       OR abs(julianday(NEW.approved_at) - julianday('now')) * 86400.0 > 120.0;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_registry_history_approved_insert
+BEFORE INSERT ON registry_history
+WHEN NEW.field = 'status' AND NEW.new_value = 'approved'
+BEGIN
+    SELECT RAISE(ABORT, 'registry_history approved entry requires matching approved rule_registry row (P0-3 db guard)')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM rule_registry
+        WHERE rule_id = NEW.entity_id AND version = NEW.entity_version
+          AND status = 'approved'
+          AND approved_by IS NOT NULL AND trim(approved_by) <> ''
+          AND approval_basis IS NOT NULL AND trim(approval_basis) <> '');
+END;
 """
 
 
@@ -442,6 +481,13 @@ def ensure_redteam_schema(conn) -> None:
     - P0-5：discovery_events.created_at 落字后不可 UPDATE
       篡改（回填/前移/后移全拒）；生成仍由 pool.ingest 以
       服务器时间（或测试注入的可信时钟）完成。
+    - P0-3：rule_registry 进入 approved（INSERT 或 status
+      UPDATE 流转）必须 approved_by/approval_basis 非空且
+      approved_at 与 DB 服务器时间差 ≤120 秒；registry_history
+      的 approved 流转记录必须有状态一致的 registry 行对应
+      （应用路径恒先写 registry 后写 history、同事务，天然
+      通过）。设计与诚实残余见 evidence 设计文档
+      DESIGN-P0-3-P0-5-RT-5.md。
     触发器只新增、不动既有数据。
     """
     conn.executescript(_REDTEAM_TRIGGERS_SQL)

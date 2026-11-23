@@ -1,0 +1,1649 @@
+diff --git a/DELIVERY-P0-3-CHANNEL-A-20261123.md b/DELIVERY-P0-3-CHANNEL-A-20261123.md
+new file mode 100644
+index 0000000..b241af9
+--- /dev/null
++++ b/DELIVERY-P0-3-CHANNEL-A-20261123.md
+@@ -0,0 +1,143 @@
++# DELIVERY：P0-3 完整落地——方案 A 受控通道标记（2026-11-23）
++
++基线：unified-arch `61b1d98`（代码冻结对象 610128d）。
++隔离分支：`market-first/p0-3-channel-a-20261123`
++（worktree `~/workspace/l2-remediation/p0-3-channel-a`）。
++授权：用户 2026-11-23 15:13「全部批准、继续进入下一阶段」
++——V4 GAPS G-06 三方案中定案方案 A（受控通道标记，唯一
++与时间无关的长期修复），不再等审计裁定。
++
++## ① 检查对象
++
++V4 GAPS G-06 登记的 P0-3 未实施部分：discovery_events
++直接 INSERT 的 created_at 为 NULL 或历史回填时无 DB 层
++校验。V3 补正批已实施未来时间拒绝（>120 秒）；NULL 与
++回填因与可信时钟夹具的结构性冲突（夹具固定字符串历史
++时刻年龄随墙钟无限增长；缺锚用例前提需库内存在 NULL
++行；触发器无法区分夹具写入与直写写入）未实施。本批以
++方案 A 收口：按写序而非时间值区分合法写入与直写。
++
++## ② 实际证据
++
++**修复提交**：`c0a062c`（独立提交）
++
++- schema（db.ensure_redteam_schema 幂等迁移 + SCHEMA_SQL
++  同步）：新表 `ingest_channel_marks(id, candidate_id,
++  mark UNIQUE, created_at)`；discovery_events 新增
++  `ingest_mark_id` 列与一对一 UNIQUE 索引（存量行 NULL
++  不受约束）。
++- 触发器 `trg_rt_discovery_events_insert_channel`：
++  无有效标记的 INSERT，created_at 为 NULL / 不可解析 /
++  早于服务器时间 120 秒以上 -> RAISE(ABORT)；声称标记
++  但不存在、跨候选或已被消费 -> RAISE(ABORT)；带有效
++  标记的 INSERT 不受时间值限制。未来时间拒绝沿既有
++  insert_future 触发器（对全部 INSERT 生效）保留。
++- 标记不可变：`trg_rt_ingest_channel_marks_no_update`
++  （append-only）、`trg_rt_ingest_channel_marks_
++  no_delete_bound`（被引用禁删；未引用可删，范围边界
++  如实登记）。
++- pool.ingest 受控通道：同事务先落标记行（mark=uuid4、
++  标记行 created_at 为真实服务器时间），事件行以
++  ingest_mark_id 绑定，末尾单次 commit 不变。
++- 设计文档：evidence/p0-3-channel-a-20261123/design/
++  DESIGN-P0-3-CHANNEL-A.md（含标记存储选型理由：专用
++  表 + ID 绑定与 P0-2 的 audit_history_id 模式同构，
++  不污染 candidate_history 审计语义）。
++
++**新增对抗测试 12 用例**（tests/test_market_first_
++p0_5_channel_marks.py，分组 -v 日志逐用例名/结果/退出
++码见 evidence 日志 p0_3_group_tests.log，组总 40
++passed、exit 0）：
++
++| 用例 | 结果 |
++|---|---|
++| test_direct_insert_null_created_at_without_mark_blocked | PASSED |
++| test_direct_insert_backfilled_created_at_without_mark_blocked | PASSED |
++| test_direct_insert_unparseable_created_at_without_mark_blocked | PASSED |
++| test_direct_insert_recent_past_within_tolerance_passes | PASSED |
++| test_channel_ingest_binds_mark_one_to_one | PASSED |
++| test_channel_ingest_null_created_at_premise_constructible | PASSED |
++| test_consumed_mark_reuse_blocked | PASSED |
++| test_dangling_mark_reference_blocked | PASSED |
++| test_cross_candidate_mark_reference_blocked | PASSED |
++| test_forged_mark_full_set_bypass_measured | PASSED（实测放行，见 ⑤） |
++| test_bound_mark_update_and_delete_blocked | PASSED |
++| test_unbound_mark_delete_allowed_scope_boundary | PASSED |
++
++未来时间直写拒绝由既有 test_market_first_p0_5_insert_
++anchor.py 覆盖（本批引用不重复），该文件本批全过。
++
++**夹具迁移登记（断言零改动）**：
++
++- 唯一生产改动点为 pool.ingest 写序；全仓 25 处
++  pool.clock 夹具赋值（19 个测试文件）均经 ingest 落
++  字，通道内化后自动带标记——测试调用点零改动、用例
++  集合不变、断言零改动。
++- test_missing_ingest_time_rejects_forward 构造不变：
++  clock 返回 None 时 ingest 经通道落 NULL created_at
++  事件行（带标记），前提继续成立，本批全量实测通过；
++  新增 test_channel_ingest_null_created_at_premise_
++  constructible 为前提可构造性的直接证据。
++- 既有测试文件仅两处文档更新（无逻辑/断言改动）：
++  test_market_first_p0_5_insert_anchor.py 与
++  test_market_first_p0_5_created_at_guard.py 的模块
++  docstring 残余段落更新为方案 A 落地后的实际状态。
++
++**回归对照**（同命令同环境：`pytest tests/ -q
++--ignore=tests/test_gapfill.py --ignore=tests/
++test_ui_regression.py`，解释器为 paper-trading-sim
++.venv 的 pytest 9.1.1）：
++
++- 基线（纯 61b1d98）：396 passed / 7 failed，exit 1；
++- 修复后：408 passed / 7 failed（+12 恰为新增用例），
++  exit 1；失败集与基线逐项 diff **完全相同、新增失败
++  为零**（基线失败 = 6 个 stress_test 环境性失败 +
++  既有基线失败 test_ledger_fingerprint_idempotent，
++  环境性失败单独登记、不伪报 PASS）。
++
++**合并与复跑**：`<MERGE_INFO>`；合并后按登记口径复跑
++Market-First 全组（tests/test_market_first_*.py +
++tests/test_adversarial_regression.py）：`<POSTMERGE>`。
++
++**生产隔离**：生产库 sim.db SHA256 开工/收工两点均为
++c914ec8c7c0df93d5e4d86a531d16dabe48cbb652cecca2fb24c1c52985e138f，
++逐字节一致；全程隔离临时库。
++
++**台账**：MF-FWD-002 追加本批提交与残余更新，状态保持
++READY_FOR_AUDIT，未自标 CLOSED。
++
++## ③ 复核方法
++
++修复前后同命令同环境全量对照 + 失败集程序化 diff；
++新增用例分组 -v 逐项留名/结果/退出码；触发器经 init_db
++实际安装后以直写 SQL 对抗验证（含伪造实测）；合并后按
++V2 起登记口径独立复跑 Market-First 全组；冻结包 ZIP
++完整性 + SHA256SUMS 复算 + bundle verify 三重校验；
++台账 JSON 逐行解析计数。
++
++## ④ 结论
++
++P0-3 完整落地：discovery_events 直接 INSERT 的 NULL、
++历史回填、不可解析 created_at 已由受控通道标记闸收口，
++未来时间拒绝保留；时钟夹具与缺锚前提经通道合法落字、
++与墙钟无关，无时限性窗口。本批范围内已验证通过，状态
++READY_FOR_AUDIT，送审对象为 V5 冻结包（NOT_READY 仅剩
++证据形式项，见 V5 GAPS）。
++
++## ⑤ 剩余风险
++
++1. **整套一致伪造（实测）**：直写者自造标记行再按其 ID
++   写回填事件行，DB 层放行（test_forged_mark_full_set_
++   bypass_measured 实测）——标记机制证明「经受控写序」
++   的形态（存在性/唯一性/不可变性），不证明调用方身
++   份，与 RT-1/RT-2 同级固有界限，待独立审计裁定；伪
++   造标记落字后即被绑定锁定（禁改禁删），行为本身留
++   下不可删除的证据行；handoff 下游核验与审计抽查为
++   第二道防线。
++2. 无标记直写的 120 秒当前时间窗口内落字放行（正对
++   照实证）：该窗口内的 created_at 与服务器当前时间
++   不可区分，本就是「服务器当前时间」口径本身，非回
++   填通道。
++3. 既有基线失败 test_ledger_fingerprint_idempotent 与
++   6 个 stress_test 环境性失败不在本批范围（双边同在、
++   如实登记）。
+diff --git a/audit_issues.jsonl b/audit_issues.jsonl
+index 4ed4bf5..d6341dd 100644
+--- a/audit_issues.jsonl
++++ b/audit_issues.jsonl
+@@ -1,5 +1,5 @@
+ {"issue_id": "MF-FWD-001", "first_found_in": "fix1-audit", "module": "validation", "severity": "P0", "description": "Forward 时间定义不成立：样本以发现日之前收盘为前向入场基准（回填入场冒充 forward，有前视偏差）", "repro": "样本 1 于 2026-11-16 实际创建却以 2026-11-13 收盘 26.25 为 benchmark", "fix_commits": ["2c4b9f9"], "tests": ["test_market_first_forward_time.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "样本 1 原行保留并经 sample_exclusions 排除于 forward_stats，不入统计"}
+-{"issue_id": "MF-FWD-002", "first_found_in": "fix3-prescreen", "module": "validation", "severity": "P0", "description": "Forward 时间门禁信任路径：create_sample 的时间锚取自 discovery_events.discovered_at，而该值由调用方经 DiscoveryEvent 传入、可回填伪造；库内服务器侧 ingested_at（事件 created_at）未被用作锚", "repro": "构造 discovered_at 回填至过去的 DiscoveryEvent 并 ingest，再以 claimed 发现日之后的 entry 建样本，fix2 口径下可冒充 forward", "fix_commits": ["643b91c", "bbdbe95", "1818018", "47f1a55"], "tests": ["test_adversarial_regression.py::test_a3_backdated_discovery_claim_cannot_fake_forward", "test_market_first_p0_5_time_anchor.py", "test_market_first_p0_5_created_at_guard.py", "test_market_first_p0_5_insert_anchor.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "2026-11-23 judge P0 集成收紧（P0-5）：锚由 max(声称, 入库) 改为服务器入库时间单一锚，discovered_at 不再参与锚计算；事件行缺 created_at 时 forward 以 trusted_ingest_time_missing 留痕拒绝；2026-09 声称发现、2026-11 才入库的对抗三形态全过，已随 086b23e 合并入 unified-arch；待独立审计置 CLOSED；2026-11-23 红队集中修复第 6 项：created_at 可信性已落地——触发器禁止 discovery_events.created_at 落字后被 UPDATE篡改，测试改用 CandidatePool 可信时钟夹具（15 处迁移、断言零改动）；诚实残余：直写 INSERT 伪造新事件行与合法 ingest在 DB 层不可区分，待审计裁定；已随 0d93eb8 合并入 unified-arch；2026-11-23 V3 审计补正 P0-3（47f1a55，部分实施）：discovery_events 直接 INSERT 的未来时间已封（created_at 晚于服务器时间 120 秒以上拒绝，trg_rt_discovery_events_created_at_insert_future），新增测试 5 用例；NULL 拒绝与历史回填窗口未实施——与既有可信时钟夹具存在真实冲突（夹具以固定字符串模拟历史入库时刻、最老 2026-11-10 且年龄随墙钟无限增长，任何有限窗口终将击穿夹具；且既有用例故意写 NULL 验证缺锚拒绝），冲突全量与可选方案（受控通道标记/宽限窗口/维持现状）见设计文档 DESIGN-V3-CORRECTION.md，待独立审计裁定；待独立审计置 CLOSED"}
++{"issue_id": "MF-FWD-002", "first_found_in": "fix3-prescreen", "module": "validation", "severity": "P0", "description": "Forward 时间门禁信任路径：create_sample 的时间锚取自 discovery_events.discovered_at，而该值由调用方经 DiscoveryEvent 传入、可回填伪造；库内服务器侧 ingested_at（事件 created_at）未被用作锚", "repro": "构造 discovered_at 回填至过去的 DiscoveryEvent 并 ingest，再以 claimed 发现日之后的 entry 建样本，fix2 口径下可冒充 forward", "fix_commits": ["643b91c", "bbdbe95", "1818018", "47f1a55", "c0a062c"], "tests": ["test_adversarial_regression.py::test_a3_backdated_discovery_claim_cannot_fake_forward", "test_market_first_p0_5_time_anchor.py", "test_market_first_p0_5_created_at_guard.py", "test_market_first_p0_5_insert_anchor.py", "test_market_first_p0_5_channel_marks.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "2026-11-23 judge P0 集成收紧（P0-5）：锚由 max(声称, 入库) 改为服务器入库时间单一锚，discovered_at 不再参与锚计算；事件行缺 created_at 时 forward 以 trusted_ingest_time_missing 留痕拒绝；2026-09 声称发现、2026-11 才入库的对抗三形态全过，已随 086b23e 合并入 unified-arch；待独立审计置 CLOSED；2026-11-23 红队集中修复第 6 项：created_at 可信性已落地——触发器禁止 discovery_events.created_at 落字后被 UPDATE篡改，测试改用 CandidatePool 可信时钟夹具（15 处迁移、断言零改动）；诚实残余：直写 INSERT 伪造新事件行与合法 ingest在 DB 层不可区分，待审计裁定；已随 0d93eb8 合并入 unified-arch；2026-11-23 V3 审计补正 P0-3（47f1a55，部分实施）：discovery_events 直接 INSERT 的未来时间已封（created_at 晚于服务器时间 120 秒以上拒绝，trg_rt_discovery_events_created_at_insert_future），新增测试 5 用例；NULL 拒绝与历史回填窗口未实施——与既有可信时钟夹具存在真实冲突（夹具以固定字符串模拟历史入库时刻、最老 2026-11-10 且年龄随墙钟无限增长，任何有限窗口终将击穿夹具；且既有用例故意写 NULL 验证缺锚拒绝），冲突全量与可选方案（受控通道标记/宽限窗口/维持现状）见设计文档 DESIGN-V3-CORRECTION.md，待独立审计裁定；待独立审计置 CLOSED；2026-11-23 P0-3 完整落地（方案 A 受控通道标记，用户 15:13 定案，c0a062c）：ingest_channel_marks 通道标记 + discovery_events.ingest_mark_id 一对一绑定 + trg_rt_discovery_events_insert_channel——无有效标记的 INSERT，created_at 为 NULL/不可解析/早于服务器时间 120 秒以上一律拒绝，未来时间拒绝保留；时钟夹具与缺锚 NULL 前提经 ingest 通道带标记合法落字、与墙钟无关，G-06 待裁定项已按方案 A 实施（待独立审计复核）；诚实残余：直写自造标记整套一致伪造实测放行（标记证明经受控写序的形态、不证明调用方身份，与 RT-1/RT-2 同级固有界限），伪造标记落字后被绑定锁定禁改禁删；待独立审计置 CLOSED"}
+ {"issue_id": "MF-DEDUP-001", "first_found_in": "fix1-audit", "module": "research", "severity": "P0", "description": "机构事件双路同事件双计：同一龙虎榜事件经双路抓取被计两次，机构净买翻倍", "repro": "002623 同一事件（trade_id=100444236）双计 62,637,085.6，应为 31,318,542.80", "fix_commits": ["2c4b9f9"], "tests": ["test_market_first_inst_dedup.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "上游对同一事件给出不同 trade_id 时双路仍各计一次，按审计口径视为独立事件"}
+ {"issue_id": "MF-DEDUP-002", "first_found_in": "fix2-audit", "module": "research", "severity": "P0", "description": "去重退化规则：trade_id 缺失时仅凭全元组相同自动合并，可能误删真实独立事件", "repro": "两条 trade_id 缺失、全元组相同但实为两起事件的记录，fix1 口径下被 drop 一条", "fix_commits": ["7e4e7e3"], "tests": ["test_market_first_inst_dedup.py", "test_adversarial_regression.py (B section)"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "uncertain 全计入为保守口径，若实为同一事件净额会高估，报告已单列影响额供人工判断"}
+ {"issue_id": "MF-BENCH-001", "first_found_in": "fix2-audit", "module": "validation", "severity": "P0", "description": "Benchmark 收盘完整性：仅凭 bars 中存在某日记录即认定该日收盘形成，盘中未完成 bar 可被用作 benchmark", "repro": "取数当日盘中以当日未收盘 bar 建 forward 样本，fix1 口径下可通过", "fix_commits": ["7e4e7e3"], "tests": ["test_market_first_benchmark_integrity.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "fix2 以时间规则判定收盘确认；市场日历完善见 MF-BENCH-003"}
+diff --git a/evidence/p0-3-channel-a-20261123/design/DESIGN-P0-3-CHANNEL-A.md b/evidence/p0-3-channel-a-20261123/design/DESIGN-P0-3-CHANNEL-A.md
+new file mode 100644
+index 0000000..152c54d
+--- /dev/null
++++ b/evidence/p0-3-channel-a-20261123/design/DESIGN-P0-3-CHANNEL-A.md
+@@ -0,0 +1,110 @@
++# P0-3 完整落地设计：方案 A 受控通道标记（2026-11-23，基线 61b1d98）
++
++对象：V4 GAPS G-06 登记的 P0-3 未实施部分——discovery_events
++直接 INSERT 的 created_at 为 NULL 或历史回填时无 DB 层校验。
++V3 补正批只实施了未来时间拒绝（>120 秒），NULL 与回填窗口
++因与可信时钟夹具的结构性冲突未实施（冲突全量见
++evidence/v3-audit-correction-20261123/design/
++DESIGN-V3-CORRECTION.md）。用户 2026-11-23 15:13 定案采用
++方案 A（受控通道标记）：唯一与时间无关的长期修复。
++
++## 冲突回顾（方案 A 为何成立）
++
++- 时钟夹具经 pool.ingest 以固定字符串写 created_at（最老
++  2026-11-10），其年龄随墙钟无限增长——任何以服务器当前
++  时间为参照的有限回填窗口终将击穿夹具；
++- test_missing_ingest_time_rejects_forward 的被测前提是库内
++  存在 created_at=NULL 的事件行——DB 层无条件拒 NULL 会使
++  前提不可构造；
++- DB 触发器无法区分「夹具经 ingest 写入」与「直写 SQL
++  写入」——两者在 DB 层是同一条 INSERT。
++
++方案 A 的解法：不按时间值区分，按**写序**区分。合法写入
++（ingest，含时钟夹具路径）先落一条通道标记、再落事件行并
++以 ID 绑定标记，同事务完成；触发器只对「无有效标记」的
++INSERT 启用时间校验。夹具的历史时刻与 NULL 时刻都经
++ingest 通道落字、带有效标记，不受时间窗口影响，与墙钟
++无关、无到期日。
++
++## 机制设计（沿 P0-2 绑定模式）
++
++标记存储选用专用表而非 DESIGN-V3-CORRECTION 方案 A 草案
++的 candidate_history 行：candidate_history 是候选字段变更
++审计日志（ingest 本已每事件写一行 discovery_event 记录），
++混入通道工件会污染其语义；且「未被引用」判定本就需要在
++事件行上落绑定 ID。专用表 + ID 绑定与 P0-2 的
++sample_exclusions.audit_history_id 模式完全同构，口径一致。
++
++schema（ensure_redteam_schema 幂等迁移，SCHEMA_SQL 同步）：
++
++- 新表 `ingest_channel_marks(id, candidate_id, mark,
++  created_at)`：mark 为 ingest 生成的 uuid4 hex、UNIQUE；
++  created_at 由 ingest 以**真实服务器时间**落字（不用夹具
++  时钟）——标记证明的是「该事件于真实时刻 T 经受控写序
++  入库」，事件行 created_at 承载入库时刻值（生产为服务器
++  时间、测试为夹具模拟时刻），两者分工明确。
++- discovery_events 新增列 `ingest_mark_id INTEGER`
++  （存量行 NULL，不受追溯约束）；UNIQUE 索引
++  idx_discovery_events_ingest_mark_id 兜底一对一（SQLite
++  UNIQUE 不约束 NULL）。
++
++ingest 写序（pool.ingest，单事务、末尾单次 commit 不变）：
++
++  候选 upsert -> INSERT 标记行 -> INSERT 事件行（带
++  ingest_mark_id）-> INSERT candidate_history 行 -> commit。
++
++触发器（db.py `_P03A_TRIGGERS_SQL`，ensure 幂等安装）：
++
++- `trg_rt_discovery_events_insert_channel`（BEFORE INSERT
++  ON discovery_events）：
++  1. 声称标记（ingest_mark_id 非 NULL）但标记无效——不存
++     在、属其他候选、或已被另一事件行消费——一律拒绝；
++  2. 无有效标记时启用时间校验：created_at 为 NULL、不可
++     解析（julianday 为 NULL）、或早于 DB 服务器时间
++     120 秒以上（与 registry approved_at、INSERT 未来
++     时间窗口同口径）——一律拒绝；
++  3. 带有效标记的 INSERT 不受时间值限制（历史时刻、NULL
++     均可），这正是夹具与缺锚前提的合法通道。
++- 未来时间拒绝：既有
++  trg_rt_discovery_events_created_at_insert_future 原样
++  保留（对全部 INSERT 生效，含带标记行——夹具从不写未来
++  时刻，普查已证）。
++- `trg_rt_ingest_channel_marks_no_update`：标记行禁止
++  UPDATE（append-only 通道证据）。
++- `trg_rt_ingest_channel_marks_no_delete_bound`：已被事件
++  行引用的标记行禁止 DELETE；未被引用的标记行可删（它
++  尚未绑定任何事件、不构成任何事件的通道证据，删除不
++  改变任何已落字事件的可验证性）——闸的范围边界如实
++  登记。
++
++## 证明力与边界（照 P0-2 修订口径，不夸大）
++
++本机制证明的是：每条带非当前时刻（或 NULL）created_at
++的事件行，都绑定一条**存在、属同一候选、一对一、绑定后
++不可改删**的通道标记，即证据的**存在性、唯一性与不可变
++性**——事件行「经受控写序落字」的形态成立。它**不证明
++调用方身份**：直写者自造一条标记行、再按其 ID 写回填
++事件行，DB 层无法区分（对抗测试
++test_forged_mark_full_set_bypass_measured 实测放行并如实
++登记）。这与 RT-1/RT-2 的「全套一致伪造」同属 SQLite
++单文件模型固有界限；伪造的标记行本身即成为不可删除的
++落字证据，审计抽查可据此追溯。handoff 下游核验与审计
++抽查仍为第二道防线。
++
++## 夹具迁移登记（断言零改动）
++
++- 唯一生产改动点：pool.ingest 写序（加标记行、事件行带
++  绑定 ID）。全仓 25 处 pool.clock 夹具赋值（19 个测试
++  文件）均经 ingest 落字，通道内化后自动带标记——测试
++  调用点零改动、用例集合不变、断言零改动。
++- test_missing_ingest_time_rejects_forward：构造不变——
++  clock 返回 None 时 ingest 经通道落 NULL created_at
++  事件行（带标记），前提继续成立；新增
++  test_channel_ingest_null_created_at_premise_constructible
++  作为该前提可构造性的直接证据。
++- 既有测试文件仅两处**文档**更新（无逻辑/断言改动）：
++  test_market_first_p0_5_insert_anchor.py 与
++  test_market_first_p0_5_created_at_guard.py 的模块
++  docstring 中「未实施/残余待裁定」段落更新为方案 A
++  落地后的实际状态，避免文档与行为脱节（与 P0-2 批
++  修订 rt2_db_guard docstring 的先例同口径）。
+diff --git a/evidence/p0-3-channel-a-20261123/logs/baseline_failures.txt b/evidence/p0-3-channel-a-20261123/logs/baseline_failures.txt
+new file mode 100644
+index 0000000..4ea9333
+--- /dev/null
++++ b/evidence/p0-3-channel-a-20261123/logs/baseline_failures.txt
+@@ -0,0 +1,7 @@
++FAILED tests/stress_test.py::test_10_datasource_fallback - ModuleNotFoundErro...
++FAILED tests/stress_test.py::test_4_exactly_once_commands - AssertionError: a...
++FAILED tests/stress_test.py::test_5_snapshot_atomicity - AssertionError: 集成...
++FAILED tests/stress_test.py::test_6_ashare_dryrun - ModuleNotFoundError: No m...
++FAILED tests/stress_test.py::test_7_concurrent_apply - AssertionError: 并发进...
++FAILED tests/stress_test.py::test_9_table_consistency - AssertionError: apply...
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
+diff --git a/evidence/p0-3-channel-a-20261123/logs/baseline_full_61b1d98.log b/evidence/p0-3-channel-a-20261123/logs/baseline_full_61b1d98.log
+new file mode 100644
+index 0000000..698a5c5
+--- /dev/null
++++ b/evidence/p0-3-channel-a-20261123/logs/baseline_full_61b1d98.log
+@@ -0,0 +1,362 @@
++...FFFF.FF.............................................................. [ 17%]
++......F................................................................. [ 35%]
++........................................................................ [ 53%]
++........................................................................ [ 71%]
++........................................................................ [ 89%]
++...........................................                              [100%]
++=================================== FAILURES ===================================
++_________________________ test_4_exactly_once_commands _________________________
++
++    def test_4_exactly_once_commands():
++        """指令 exactly-once：同一批指令跑两次，第二次 applied_ids 为空、
++        duplicate_ids 列出重复 id，fills 不得重复，台账有记录。"""
++        fresh_db()
++        con = sqlite3.connect(TEST_DB)
++        # 找一个真实存在、尚未成交的信号（不限 60 天窗口；引擎的审批门禁本身不限窗口）
++        sig = con.execute(
++            "SELECT s.date,s.account,s.symbol,s.side FROM signals s"
++            " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
++            " AND f.symbol=s.symbol AND f.side=s.side"
++            " WHERE f.date IS NULL"
++            " ORDER BY s.date DESC LIMIT 1").fetchone()
++        con.close()
++        cmds = [{"id": "stress-setmode-1", "kind": "set_mode",
++                 "payload_json": json.dumps({"mode": "manual"})}]
++        if sig:
++            d, a, s, side = sig
++            cmds.append({"id": "stress-approve-1", "kind": "approve",
++                         "payload_json": json.dumps(
++                             {"date": d, "account": a, "symbol": s, "side": side})})
++        ids = [c["id"] for c in cmds]
++    
++>       out1 = _apply_once(cmds)
++               ^^^^^^^^^^^^^^^^^
++
++tests/stress_test.py:232: 
++_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
++
++cmds = [{'id': 'stress-setmode-1', 'kind': 'set_mode', 'payload_json': '{"mode": "manual"}'}, {'id': 'stress-approve-1', 'kind': 'approve', 'payload_json': '{"date": "2026-10-30", "account": "sim_a", "symbol": "600150", "side": "SELL"}'}]
++
++    def _apply_once(cmds):
++        env = dict(os.environ)
++        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                           input=json.dumps(cmds), capture_output=True, text=True,
++                           env=env, cwd=BASE, timeout=300)
++>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
++            p.returncode, p.stderr[-500:])
++E       AssertionError: apply_commands 退出码 1，stderr= "/home/hatch/workspace/l2-remediation/p0-3-channel-a/apply_commands.py", line 72, in main
++E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
++E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
++E             raise CalledProcessError(retcode, process.args,
++E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py']' returned non-zero exit status 1.
++E         
++E       assert 1 == 0
++E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati...hon\', \'/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
++
++tests/stress_test.py:204: AssertionError
++__________________________ test_5_snapshot_atomicity ___________________________
++
++    def test_5_snapshot_atomicity():
++        """快照读写并发：300 次并发写 + 持续读，零 torn read；
++        再用真实 sync_snapshot.py 跑 8 次做集成验证。"""
++        from sync_snapshot import atomic_write_json  # noqa: E402
++        path = "/tmp/stress_snap.json"
++        if os.path.exists(path):
++            os.remove(path)
++        stop, errors = threading.Event(), []
++        reads = [0]
++    
++        def writer():
++            try:
++                for i in range(300):
++                    atomic_write_json(path, {"asof": "2026-10-05", "i": i,
++                                             "final": i == 299, "blob": "x" * 20000,
++                                             "accounts": [{"account": "sim_hk"}]})
++            except Exception as e:  # noqa: BLE001
++                errors.append(("writer", repr(e)))
++            finally:
++                stop.set()
++    
++        def reader():
++            try:
++                while not stop.is_set():
++                    try:
++                        with open(path, encoding="utf-8") as f:
++                            d = json.load(f)
++                    except FileNotFoundError:
++                        continue
++                    assert d.get("asof") == "2026-10-05" and "blob" in d and "i" in d
++                    reads[0] += 1
++            except Exception as e:  # noqa: BLE001
++                errors.append(("reader", repr(e)))
++    
++        ts = [threading.Thread(target=writer), threading.Thread(target=reader),
++              threading.Thread(target=reader)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=120)
++        assert not errors, "并发读写出错：%r" % errors[:2]
++        assert reads[0] > 50, "有效读取次数过少：%d" % reads[0]
++    
++        # 集成：真实脚本并发写，持续读
++        path2 = "/tmp/stress_snap2.json"
++        env = dict(os.environ)
++        env["PAPER_SIM_SNAPSHOT"] = path2
++        stop2, errors2, reads2 = threading.Event(), [], [0]
++    
++        def writer2():
++            try:
++                for _ in range(8):
++                    subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")],
++                                   env=env, cwd=BASE, capture_output=True,
++                                   check=True, timeout=300)
++            except Exception as e:  # noqa: BLE001
++                errors2.append(("writer", repr(e)))
++            finally:
++                stop2.set()
++    
++        def reader2():
++            try:
++                while not stop2.is_set():
++                    try:
++                        with open(path2, encoding="utf-8") as f:
++                            d = json.load(f)
++                    except FileNotFoundError:
++                        continue
++                    assert isinstance(d.get("accounts"), list) and d.get("asof")
++                    reads2[0] += 1
++            except Exception as e:  # noqa: BLE001
++                errors2.append(("reader", repr(e)))
++    
++        ts = [threading.Thread(target=writer2), threading.Thread(target=reader2)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=600)
++>       assert not errors2, "集成并发出错：%r" % errors2[:2]
++E       AssertionError: 集成并发出错：[('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py'])")]
++E       assert not [('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py'])")]
++
++tests/stress_test.py:341: AssertionError
++_____________________________ test_6_ashare_dryrun _____________________________
++
++    def test_6_ashare_dryrun():
++        """10-08 A股管道冒烟：只读拉取 002446/688305 前复权日K，不入库；
++        要求有足够历史（>100 行）且最新日期 ≥ 2026-09-30（节前最后交易日）。"""
++>       from data.quotes import fetch_kline  # noqa: E402
++        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++E       ModuleNotFoundError: No module named 'data'
++
++tests/stress_test.py:350: ModuleNotFoundError
++___________________________ test_7_concurrent_apply ____________________________
++
++    def test_7_concurrent_apply():
++        """并发指令竞态：两个 apply_commands 进程同时处理同一批指令。
++        构造可成交场景：清空 fills → manual 跑出 signals → 双进程并发批准最早的 BUY。
++        断言：fills 无 (date,account,symbol,side) 重复键；
++        processed_commands 每 id 恰一行；两进程都正常输出 JSON。
++        注：两进程各自都算“应用了”指令（幂等应用），各自 applied_ids 都含 id；
++        关键不变量是成交不重复、台账不重复行——崩溃恢复语义（先重算、后记账）保持不变。"""
++        dup_evidence = None
++        for attempt in range(6):
++            fresh_db()
++            _set_control("running", "manual")
++            con = sqlite3.connect(TEST_DB)
++            con.execute("DELETE FROM fills")
++            con.commit()
++            con.close()
++            pipe_run(TEST_DB, CFG)  # 生成 signals；manual 无审批 → 零成交
++            buy = _earliest_executable_buy()
++            assert buy, "无可执行 BUY 信号可审批（全部被禁入闸拦截时测试前提不成立）"
++            d, a, s, side = buy
++            cmds = [{"id": "stress7-approve-%d" % attempt, "kind": "approve",
++                     "payload_json": json.dumps(
++                         {"date": d, "account": a, "symbol": s, "side": side})}]
++>           out1, out2 = _apply_concurrent(cmds)
++                         ^^^^^^^^^^^^^^^^^^^^^^^
++
++tests/stress_test.py:442: 
++_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
++
++cmds = [{'id': 'stress7-approve-0', 'kind': 'approve', 'payload_json': '{"date": "2026-10-19", "account": "sim_a", "symbol": "002639", "side": "BUY"}'}]
++
++    def _apply_concurrent(cmds):
++        """真并发：两个 apply_commands 进程同时处理同一批指令。
++        用线程同时 communicate，保证两进程的 stdin 几乎同时送达、
++        pipeline 阶段真实重叠（顺序 communicate 会退化成串行，
++        后进程直接看到前进程的台账，测不到竞态）。返回 (out1, out2)。"""
++        env = dict(os.environ)
++        data = json.dumps(cmds).encode("utf-8")
++        ps = [subprocess.Popen([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
++                               stderr=subprocess.PIPE, env=env, cwd=BASE)
++              for _ in range(2)]
++        results = [None, None]
++    
++        def run_one(i, p):
++            try:
++                stdout, stderr = p.communicate(data, timeout=300)
++                line = [ln for ln in stdout.decode().splitlines() if ln.strip()][-1]
++                results[i] = (p.returncode, json.loads(line), stderr.decode()[-500:])
++            except Exception as e:  # noqa: BLE001
++                results[i] = (None, None, "communicate 异常 %r" % e)
++    
++        ts = [threading.Thread(target=run_one, args=(i, p)) for i, p in enumerate(ps)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=320)
++        outs = []
++        for i, (rc, out, err) in enumerate(results):
++>           assert rc == 0, "并发进程%d异常，退出码 %r，stderr=%s" % (i, rc, err)
++E           AssertionError: 并发进程0异常，退出码 None，stderr=communicate 异常 JSONDecodeError('Expecting value: line 1 column 1 (char 0)')
++E           assert None == 0
++
++tests/stress_test.py:413: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++___________________________ test_9_table_consistency ___________________________
++
++    def test_9_table_consistency():
++        """新表一致性：processed_commands 在各建表入口语义一致。
++        入口① db/schema.sql（经 run_daily.init_db，支持 PAPER_SIM_DB 指向测试库）；
++        入口② apply_commands.py 自包含 DDL。
++        验证：两入口建出的列定义/主键一致（归一化 DDL + PRAGMA 比对）；
++        缺表旧库（当前生产库即第一轮之前的旧库形态）+ apply_commands → 表被补建（迁移路径）。"""
++        # 入口①：init_db 建测试库（PAPER_SIM_DB 已指向测试路径；
++        # 注意：必须在 import 之前设置环境变量，因为 run_daily.DB 在模块加载时绑定）
++        db1 = "/tmp/stress_initdb.db"
++        if os.path.exists(db1):
++            os.remove(db1)
++        os.environ["PAPER_SIM_DB"] = db1
++        from run_daily import init_db  # noqa: E402
++        init_db().close()
++        ddl1, info1 = _table_info(db1, "processed_commands")
++    
++        # 入口②：缺表旧库 + apply_commands（set_mode 触发自包含 DDL）
++        # 注：用 DROP 显式构造“缺表旧库”，不再依赖生产库恰好是旧形态
++        #（2026-10-09 起生产库已有 processed_commands 表）。
++        db2 = "/tmp/stress_legacy.db"
++        if os.path.exists(db2):
++            os.remove(db2)
++        shutil.copyfile(PROD_DB, db2)
++        con = sqlite3.connect(db2)
++        con.execute("DROP TABLE IF EXISTS processed_commands")
++        con.commit()
++        missing = con.execute(
++            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
++            " AND name='processed_commands'").fetchone()[0]
++        con.close()
++        assert missing == 0, "前置条件破坏：旧库构造失败，processed_commands 表仍在"
++        env = dict(os.environ)
++        env["PAPER_SIM_DB"] = db2
++        cmds = [{"id": "stress9-setmode", "kind": "set_mode",
++                 "payload_json": json.dumps({"mode": "manual"})}]
++        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                           input=json.dumps(cmds), capture_output=True, text=True,
++                           env=env, cwd=BASE, timeout=300)
++>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
++            p.returncode, p.stderr[-500:])
++E       AssertionError: apply_commands 退出码 1，stderr= "/home/hatch/workspace/l2-remediation/p0-3-channel-a/apply_commands.py", line 72, in main
++E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
++E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
++E             raise CalledProcessError(retcode, process.args,
++E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py']' returned non-zero exit status 1.
++E         
++E       assert 1 == 0
++E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati...hon\', \'/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
++
++tests/stress_test.py:670: AssertionError
++_________________________ test_10_datasource_fallback __________________________
++
++    def test_10_datasource_fallback():
++        """数据源熔断：腾讯主源异常/空窗口时，自动切换新浪备用源（A股），
++        数据不断档。模拟两种故障：抛异常、返回空列表。"""
++>       from data import quotes  # noqa: E402
++        ^^^^^^^^^^^^^^^^^^^^^^^
++E       ModuleNotFoundError: No module named 'data'
++
++tests/stress_test.py:685: ModuleNotFoundError
++______________________ test_ledger_fingerprint_idempotent ______________________
++
++tmp_path = PosixPath('/tmp/pytest-of-root/pytest-7/test_ledger_fingerprint_idempo0')
++
++    def test_ledger_fingerprint_idempotent(tmp_path):
++        """同库连跑两次（模拟重复跑批/进程重启重跑）：账本指纹不变、
++        不产生重复成交，且与改造前基线全等。"""
++        db = str(tmp_path / "prod_copy.db")
++        shutil.copy2(PROD_DB, db)
++        cfg = _load_cfg()
++        pipeline_run(db, cfg)
++        fp1 = _fingerprint(db)
++        pipeline_run(db, cfg)
++        fp2 = _fingerprint(db)
++        base = json.load(open(os.path.join(EVID, "ledger_fingerprint.json"),
++                              encoding="utf-8"))["baseline_pre_batch2"]
++        _evidence("ledger_fingerprint_idempotent", {
++            "input": "生产库副本 + 现行管线连跑两次",
++            "expected": "两次指纹相等且与改造前基线（行数/逐行哈希/Σqty/Σamount/Σpnl）全等",
++            "actual": {"after_run1": fp1, "after_run2": fp2, "baseline": base},
++            "fills": fp2["fills"]})
++        assert fp1 == fp2
++        for k in ("rows", "sha256", "sum_qty", "sum_amount", "sum_pnl"):
++>           assert fp1["fills"][k] == base["fills"][k], k
++E           AssertionError: rows
++E           assert 50 == 51
++
++tests/test_e2e_batch2.py:609: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++=============================== warnings summary ===============================
++tests/stress_test.py::test_1_missing_quote
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_1_missing_quote returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_2_idempotent_rerun
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_2_idempotent_rerun returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_3_cash_identity
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_3_cash_identity returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_8_control_state_machine
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_8_control_state_machine returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=4955) is multi-threaded, use of fork() may lead to deadlocks in the child.
++    self.pid = os.fork()
++
++tests/test_market_first_cache_isolation.py::test_get_bars_never_touches_prod_shared_cache
++  /home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 002446 数据陈旧: 最新 2026-11-13（距今10天）
++    warnings.warn(
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++=========================== short test summary info ============================
++FAILED tests/stress_test.py::test_4_exactly_once_commands - AssertionError: a...
++FAILED tests/stress_test.py::test_5_snapshot_atomicity - AssertionError: 集成...
++FAILED tests/stress_test.py::test_6_ashare_dryrun - ModuleNotFoundError: No m...
++FAILED tests/stress_test.py::test_7_concurrent_apply - AssertionError: 并发进...
++FAILED tests/stress_test.py::test_9_table_consistency - AssertionError: apply...
++FAILED tests/stress_test.py::test_10_datasource_fallback - ModuleNotFoundErro...
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
++7 failed, 396 passed, 7 warnings in 241.52s (0:04:01)
++BASELINE_EXIT=1
+diff --git a/evidence/p0-3-channel-a-20261123/logs/fixed_failures.txt b/evidence/p0-3-channel-a-20261123/logs/fixed_failures.txt
+new file mode 100644
+index 0000000..4ea9333
+--- /dev/null
++++ b/evidence/p0-3-channel-a-20261123/logs/fixed_failures.txt
+@@ -0,0 +1,7 @@
++FAILED tests/stress_test.py::test_10_datasource_fallback - ModuleNotFoundErro...
++FAILED tests/stress_test.py::test_4_exactly_once_commands - AssertionError: a...
++FAILED tests/stress_test.py::test_5_snapshot_atomicity - AssertionError: 集成...
++FAILED tests/stress_test.py::test_6_ashare_dryrun - ModuleNotFoundError: No m...
++FAILED tests/stress_test.py::test_7_concurrent_apply - AssertionError: 并发进...
++FAILED tests/stress_test.py::test_9_table_consistency - AssertionError: apply...
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
+diff --git a/evidence/p0-3-channel-a-20261123/logs/fixed_full.log b/evidence/p0-3-channel-a-20261123/logs/fixed_full.log
+new file mode 100644
+index 0000000..7dc73c5
+--- /dev/null
++++ b/evidence/p0-3-channel-a-20261123/logs/fixed_full.log
+@@ -0,0 +1,362 @@
++...FFFF.FF.............................................................. [ 17%]
++......F................................................................. [ 34%]
++........................................................................ [ 52%]
++........................................................................ [ 69%]
++........................................................................ [ 86%]
++.......................................................                  [100%]
++=================================== FAILURES ===================================
++_________________________ test_4_exactly_once_commands _________________________
++
++    def test_4_exactly_once_commands():
++        """指令 exactly-once：同一批指令跑两次，第二次 applied_ids 为空、
++        duplicate_ids 列出重复 id，fills 不得重复，台账有记录。"""
++        fresh_db()
++        con = sqlite3.connect(TEST_DB)
++        # 找一个真实存在、尚未成交的信号（不限 60 天窗口；引擎的审批门禁本身不限窗口）
++        sig = con.execute(
++            "SELECT s.date,s.account,s.symbol,s.side FROM signals s"
++            " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
++            " AND f.symbol=s.symbol AND f.side=s.side"
++            " WHERE f.date IS NULL"
++            " ORDER BY s.date DESC LIMIT 1").fetchone()
++        con.close()
++        cmds = [{"id": "stress-setmode-1", "kind": "set_mode",
++                 "payload_json": json.dumps({"mode": "manual"})}]
++        if sig:
++            d, a, s, side = sig
++            cmds.append({"id": "stress-approve-1", "kind": "approve",
++                         "payload_json": json.dumps(
++                             {"date": d, "account": a, "symbol": s, "side": side})})
++        ids = [c["id"] for c in cmds]
++    
++>       out1 = _apply_once(cmds)
++               ^^^^^^^^^^^^^^^^^
++
++tests/stress_test.py:232: 
++_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
++
++cmds = [{'id': 'stress-setmode-1', 'kind': 'set_mode', 'payload_json': '{"mode": "manual"}'}, {'id': 'stress-approve-1', 'kind': 'approve', 'payload_json': '{"date": "2026-10-30", "account": "sim_a", "symbol": "600150", "side": "SELL"}'}]
++
++    def _apply_once(cmds):
++        env = dict(os.environ)
++        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                           input=json.dumps(cmds), capture_output=True, text=True,
++                           env=env, cwd=BASE, timeout=300)
++>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
++            p.returncode, p.stderr[-500:])
++E       AssertionError: apply_commands 退出码 1，stderr= "/home/hatch/workspace/l2-remediation/p0-3-channel-a/apply_commands.py", line 72, in main
++E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
++E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
++E             raise CalledProcessError(retcode, process.args,
++E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py']' returned non-zero exit status 1.
++E         
++E       assert 1 == 0
++E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati...hon\', \'/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
++
++tests/stress_test.py:204: AssertionError
++__________________________ test_5_snapshot_atomicity ___________________________
++
++    def test_5_snapshot_atomicity():
++        """快照读写并发：300 次并发写 + 持续读，零 torn read；
++        再用真实 sync_snapshot.py 跑 8 次做集成验证。"""
++        from sync_snapshot import atomic_write_json  # noqa: E402
++        path = "/tmp/stress_snap.json"
++        if os.path.exists(path):
++            os.remove(path)
++        stop, errors = threading.Event(), []
++        reads = [0]
++    
++        def writer():
++            try:
++                for i in range(300):
++                    atomic_write_json(path, {"asof": "2026-10-05", "i": i,
++                                             "final": i == 299, "blob": "x" * 20000,
++                                             "accounts": [{"account": "sim_hk"}]})
++            except Exception as e:  # noqa: BLE001
++                errors.append(("writer", repr(e)))
++            finally:
++                stop.set()
++    
++        def reader():
++            try:
++                while not stop.is_set():
++                    try:
++                        with open(path, encoding="utf-8") as f:
++                            d = json.load(f)
++                    except FileNotFoundError:
++                        continue
++                    assert d.get("asof") == "2026-10-05" and "blob" in d and "i" in d
++                    reads[0] += 1
++            except Exception as e:  # noqa: BLE001
++                errors.append(("reader", repr(e)))
++    
++        ts = [threading.Thread(target=writer), threading.Thread(target=reader),
++              threading.Thread(target=reader)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=120)
++        assert not errors, "并发读写出错：%r" % errors[:2]
++        assert reads[0] > 50, "有效读取次数过少：%d" % reads[0]
++    
++        # 集成：真实脚本并发写，持续读
++        path2 = "/tmp/stress_snap2.json"
++        env = dict(os.environ)
++        env["PAPER_SIM_SNAPSHOT"] = path2
++        stop2, errors2, reads2 = threading.Event(), [], [0]
++    
++        def writer2():
++            try:
++                for _ in range(8):
++                    subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")],
++                                   env=env, cwd=BASE, capture_output=True,
++                                   check=True, timeout=300)
++            except Exception as e:  # noqa: BLE001
++                errors2.append(("writer", repr(e)))
++            finally:
++                stop2.set()
++    
++        def reader2():
++            try:
++                while not stop2.is_set():
++                    try:
++                        with open(path2, encoding="utf-8") as f:
++                            d = json.load(f)
++                    except FileNotFoundError:
++                        continue
++                    assert isinstance(d.get("accounts"), list) and d.get("asof")
++                    reads2[0] += 1
++            except Exception as e:  # noqa: BLE001
++                errors2.append(("reader", repr(e)))
++    
++        ts = [threading.Thread(target=writer2), threading.Thread(target=reader2)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=600)
++>       assert not errors2, "集成并发出错：%r" % errors2[:2]
++E       AssertionError: 集成并发出错：[('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py'])")]
++E       assert not [('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py'])")]
++
++tests/stress_test.py:341: AssertionError
++_____________________________ test_6_ashare_dryrun _____________________________
++
++    def test_6_ashare_dryrun():
++        """10-08 A股管道冒烟：只读拉取 002446/688305 前复权日K，不入库；
++        要求有足够历史（>100 行）且最新日期 ≥ 2026-09-30（节前最后交易日）。"""
++>       from data.quotes import fetch_kline  # noqa: E402
++        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++E       ModuleNotFoundError: No module named 'data'
++
++tests/stress_test.py:350: ModuleNotFoundError
++___________________________ test_7_concurrent_apply ____________________________
++
++    def test_7_concurrent_apply():
++        """并发指令竞态：两个 apply_commands 进程同时处理同一批指令。
++        构造可成交场景：清空 fills → manual 跑出 signals → 双进程并发批准最早的 BUY。
++        断言：fills 无 (date,account,symbol,side) 重复键；
++        processed_commands 每 id 恰一行；两进程都正常输出 JSON。
++        注：两进程各自都算“应用了”指令（幂等应用），各自 applied_ids 都含 id；
++        关键不变量是成交不重复、台账不重复行——崩溃恢复语义（先重算、后记账）保持不变。"""
++        dup_evidence = None
++        for attempt in range(6):
++            fresh_db()
++            _set_control("running", "manual")
++            con = sqlite3.connect(TEST_DB)
++            con.execute("DELETE FROM fills")
++            con.commit()
++            con.close()
++            pipe_run(TEST_DB, CFG)  # 生成 signals；manual 无审批 → 零成交
++            buy = _earliest_executable_buy()
++            assert buy, "无可执行 BUY 信号可审批（全部被禁入闸拦截时测试前提不成立）"
++            d, a, s, side = buy
++            cmds = [{"id": "stress7-approve-%d" % attempt, "kind": "approve",
++                     "payload_json": json.dumps(
++                         {"date": d, "account": a, "symbol": s, "side": side})}]
++>           out1, out2 = _apply_concurrent(cmds)
++                         ^^^^^^^^^^^^^^^^^^^^^^^
++
++tests/stress_test.py:442: 
++_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
++
++cmds = [{'id': 'stress7-approve-0', 'kind': 'approve', 'payload_json': '{"date": "2026-10-19", "account": "sim_a", "symbol": "002639", "side": "BUY"}'}]
++
++    def _apply_concurrent(cmds):
++        """真并发：两个 apply_commands 进程同时处理同一批指令。
++        用线程同时 communicate，保证两进程的 stdin 几乎同时送达、
++        pipeline 阶段真实重叠（顺序 communicate 会退化成串行，
++        后进程直接看到前进程的台账，测不到竞态）。返回 (out1, out2)。"""
++        env = dict(os.environ)
++        data = json.dumps(cmds).encode("utf-8")
++        ps = [subprocess.Popen([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
++                               stderr=subprocess.PIPE, env=env, cwd=BASE)
++              for _ in range(2)]
++        results = [None, None]
++    
++        def run_one(i, p):
++            try:
++                stdout, stderr = p.communicate(data, timeout=300)
++                line = [ln for ln in stdout.decode().splitlines() if ln.strip()][-1]
++                results[i] = (p.returncode, json.loads(line), stderr.decode()[-500:])
++            except Exception as e:  # noqa: BLE001
++                results[i] = (None, None, "communicate 异常 %r" % e)
++    
++        ts = [threading.Thread(target=run_one, args=(i, p)) for i, p in enumerate(ps)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=320)
++        outs = []
++        for i, (rc, out, err) in enumerate(results):
++>           assert rc == 0, "并发进程%d异常，退出码 %r，stderr=%s" % (i, rc, err)
++E           AssertionError: 并发进程0异常，退出码 None，stderr=communicate 异常 JSONDecodeError('Expecting value: line 1 column 1 (char 0)')
++E           assert None == 0
++
++tests/stress_test.py:413: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++___________________________ test_9_table_consistency ___________________________
++
++    def test_9_table_consistency():
++        """新表一致性：processed_commands 在各建表入口语义一致。
++        入口① db/schema.sql（经 run_daily.init_db，支持 PAPER_SIM_DB 指向测试库）；
++        入口② apply_commands.py 自包含 DDL。
++        验证：两入口建出的列定义/主键一致（归一化 DDL + PRAGMA 比对）；
++        缺表旧库（当前生产库即第一轮之前的旧库形态）+ apply_commands → 表被补建（迁移路径）。"""
++        # 入口①：init_db 建测试库（PAPER_SIM_DB 已指向测试路径；
++        # 注意：必须在 import 之前设置环境变量，因为 run_daily.DB 在模块加载时绑定）
++        db1 = "/tmp/stress_initdb.db"
++        if os.path.exists(db1):
++            os.remove(db1)
++        os.environ["PAPER_SIM_DB"] = db1
++        from run_daily import init_db  # noqa: E402
++        init_db().close()
++        ddl1, info1 = _table_info(db1, "processed_commands")
++    
++        # 入口②：缺表旧库 + apply_commands（set_mode 触发自包含 DDL）
++        # 注：用 DROP 显式构造“缺表旧库”，不再依赖生产库恰好是旧形态
++        #（2026-10-09 起生产库已有 processed_commands 表）。
++        db2 = "/tmp/stress_legacy.db"
++        if os.path.exists(db2):
++            os.remove(db2)
++        shutil.copyfile(PROD_DB, db2)
++        con = sqlite3.connect(db2)
++        con.execute("DROP TABLE IF EXISTS processed_commands")
++        con.commit()
++        missing = con.execute(
++            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
++            " AND name='processed_commands'").fetchone()[0]
++        con.close()
++        assert missing == 0, "前置条件破坏：旧库构造失败，processed_commands 表仍在"
++        env = dict(os.environ)
++        env["PAPER_SIM_DB"] = db2
++        cmds = [{"id": "stress9-setmode", "kind": "set_mode",
++                 "payload_json": json.dumps({"mode": "manual"})}]
++        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                           input=json.dumps(cmds), capture_output=True, text=True,
++                           env=env, cwd=BASE, timeout=300)
++>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
++            p.returncode, p.stderr[-500:])
++E       AssertionError: apply_commands 退出码 1，stderr= "/home/hatch/workspace/l2-remediation/p0-3-channel-a/apply_commands.py", line 72, in main
++E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
++E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
++E             raise CalledProcessError(retcode, process.args,
++E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py']' returned non-zero exit status 1.
++E         
++E       assert 1 == 0
++E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati...hon\', \'/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
++
++tests/stress_test.py:670: AssertionError
++_________________________ test_10_datasource_fallback __________________________
++
++    def test_10_datasource_fallback():
++        """数据源熔断：腾讯主源异常/空窗口时，自动切换新浪备用源（A股），
++        数据不断档。模拟两种故障：抛异常、返回空列表。"""
++>       from data import quotes  # noqa: E402
++        ^^^^^^^^^^^^^^^^^^^^^^^
++E       ModuleNotFoundError: No module named 'data'
++
++tests/stress_test.py:685: ModuleNotFoundError
++______________________ test_ledger_fingerprint_idempotent ______________________
++
++tmp_path = PosixPath('/tmp/pytest-of-root/pytest-9/test_ledger_fingerprint_idempo0')
++
++    def test_ledger_fingerprint_idempotent(tmp_path):
++        """同库连跑两次（模拟重复跑批/进程重启重跑）：账本指纹不变、
++        不产生重复成交，且与改造前基线全等。"""
++        db = str(tmp_path / "prod_copy.db")
++        shutil.copy2(PROD_DB, db)
++        cfg = _load_cfg()
++        pipeline_run(db, cfg)
++        fp1 = _fingerprint(db)
++        pipeline_run(db, cfg)
++        fp2 = _fingerprint(db)
++        base = json.load(open(os.path.join(EVID, "ledger_fingerprint.json"),
++                              encoding="utf-8"))["baseline_pre_batch2"]
++        _evidence("ledger_fingerprint_idempotent", {
++            "input": "生产库副本 + 现行管线连跑两次",
++            "expected": "两次指纹相等且与改造前基线（行数/逐行哈希/Σqty/Σamount/Σpnl）全等",
++            "actual": {"after_run1": fp1, "after_run2": fp2, "baseline": base},
++            "fills": fp2["fills"]})
++        assert fp1 == fp2
++        for k in ("rows", "sha256", "sum_qty", "sum_amount", "sum_pnl"):
++>           assert fp1["fills"][k] == base["fills"][k], k
++E           AssertionError: rows
++E           assert 50 == 51
++
++tests/test_e2e_batch2.py:609: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++=============================== warnings summary ===============================
++tests/stress_test.py::test_1_missing_quote
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_1_missing_quote returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_2_idempotent_rerun
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_2_idempotent_rerun returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_3_cash_identity
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_3_cash_identity returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_8_control_state_machine
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_8_control_state_machine returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=5824) is multi-threaded, use of fork() may lead to deadlocks in the child.
++    self.pid = os.fork()
++
++tests/test_market_first_cache_isolation.py::test_get_bars_never_touches_prod_shared_cache
++  /home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 002446 数据陈旧: 最新 2026-11-13（距今10天）
++    warnings.warn(
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++=========================== short test summary info ============================
++FAILED tests/stress_test.py::test_4_exactly_once_commands - AssertionError: a...
++FAILED tests/stress_test.py::test_5_snapshot_atomicity - AssertionError: 集成...
++FAILED tests/stress_test.py::test_6_ashare_dryrun - ModuleNotFoundError: No m...
++FAILED tests/stress_test.py::test_7_concurrent_apply - AssertionError: 并发进...
++FAILED tests/stress_test.py::test_9_table_consistency - AssertionError: apply...
++FAILED tests/stress_test.py::test_10_datasource_fallback - ModuleNotFoundErro...
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
++7 failed, 408 passed, 7 warnings in 241.15s (0:04:01)
++FIXED_EXIT=1
+diff --git a/evidence/p0-3-channel-a-20261123/logs/p0_3_group_tests.log b/evidence/p0-3-channel-a-20261123/logs/p0_3_group_tests.log
+new file mode 100644
+index 0000000..d962a25
+--- /dev/null
++++ b/evidence/p0-3-channel-a-20261123/logs/p0_3_group_tests.log
+@@ -0,0 +1,50 @@
++============================= test session starts ==============================
++platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
++cachedir: .pytest_cache
++rootdir: /home/hatch/workspace/l2-remediation/p0-3-channel-a
++plugins: anyio-4.15.1
++collecting ... collected 40 items
++
++tests/test_market_first_p0_5_channel_marks.py::test_direct_insert_null_created_at_without_mark_blocked PASSED [  2%]
++tests/test_market_first_p0_5_channel_marks.py::test_direct_insert_backfilled_created_at_without_mark_blocked PASSED [  5%]
++tests/test_market_first_p0_5_channel_marks.py::test_direct_insert_unparseable_created_at_without_mark_blocked PASSED [  7%]
++tests/test_market_first_p0_5_channel_marks.py::test_direct_insert_recent_past_within_tolerance_passes PASSED [ 10%]
++tests/test_market_first_p0_5_channel_marks.py::test_channel_ingest_binds_mark_one_to_one PASSED [ 12%]
++tests/test_market_first_p0_5_channel_marks.py::test_channel_ingest_null_created_at_premise_constructible PASSED [ 15%]
++tests/test_market_first_p0_5_channel_marks.py::test_consumed_mark_reuse_blocked PASSED [ 17%]
++tests/test_market_first_p0_5_channel_marks.py::test_dangling_mark_reference_blocked PASSED [ 20%]
++tests/test_market_first_p0_5_channel_marks.py::test_cross_candidate_mark_reference_blocked PASSED [ 22%]
++tests/test_market_first_p0_5_channel_marks.py::test_forged_mark_full_set_bypass_measured PASSED [ 25%]
++tests/test_market_first_p0_5_channel_marks.py::test_bound_mark_update_and_delete_blocked PASSED [ 27%]
++tests/test_market_first_p0_5_channel_marks.py::test_unbound_mark_delete_allowed_scope_boundary PASSED [ 30%]
++tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_future_created_at_blocked PASSED [ 32%]
++tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_far_future_created_at_blocked PASSED [ 35%]
++tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_current_server_time_passes PASSED [ 37%]
++tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_within_tolerance_passes PASSED [ 40%]
++tests/test_market_first_p0_5_insert_anchor.py::test_update_guard_still_active PASSED [ 42%]
++tests/test_market_first_p0_5_created_at_guard.py::test_created_at_update_backfill_blocked PASSED [ 45%]
++tests/test_market_first_p0_5_created_at_guard.py::test_created_at_update_forward_shift_blocked PASSED [ 47%]
++tests/test_market_first_p0_5_created_at_guard.py::test_clock_fixture_controls_ingest_time_via_app_path PASSED [ 50%]
++tests/test_market_first_p0_5_created_at_guard.py::test_clock_assignable_between_ingests PASSED [ 52%]
++tests/test_market_first_p0_5_created_at_guard.py::test_production_default_uses_server_time PASSED [ 55%]
++tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_explicit_entry_forced_backfill PASSED [ 57%]
++tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_history_bars_only_rejected PASSED [ 60%]
++tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_entry_anchored_at_ingest PASSED [ 62%]
++tests/test_market_first_p0_5_time_anchor.py::test_missing_ingest_time_rejects_forward PASSED [ 65%]
++tests/test_market_first_p0_5_time_anchor.py::test_claimed_discovery_after_ingest_does_not_extend_anchor PASSED [ 67%]
++tests/test_market_first_p0_5_time_anchor.py::test_same_day_ingest_positive_control PASSED [ 70%]
++tests/test_market_first_forward_time.py::test_forward_entry_is_next_trading_day_after_close_discovery PASSED [ 72%]
++tests/test_market_first_forward_time.py::test_forward_intraday_discovery_still_next_trading_day PASSED [ 75%]
++tests/test_market_first_forward_time.py::test_forward_weekend_discovery_entry_monday PASSED [ 77%]
++tests/test_market_first_forward_time.py::test_entry_before_discovery_forced_backfill PASSED [ 80%]
++tests/test_market_first_forward_time.py::test_historical_backfill_long_gap PASSED [ 82%]
++tests/test_market_first_forward_time.py::test_forward_price_missing_rejected_and_traced PASSED [ 85%]
++tests/test_market_first_forward_time.py::test_forward_without_discovery_event_rejected PASSED [ 87%]
++tests/test_market_first_forward_time.py::test_excluded_sample_not_in_forward_stats_and_row_unchanged PASSED [ 90%]
++tests/test_market_first_rt3_instflow_anchor.py::test_forged_future_discovered_at_cannot_flip_sign PASSED [ 92%]
++tests/test_market_first_rt3_instflow_anchor.py::test_claimed_date_variation_does_not_change_subtotal PASSED [ 95%]
++tests/test_market_first_rt3_instflow_anchor.py::test_latest_selected_by_created_at_positive_control PASSED [ 97%]
++tests/test_market_first_rt3_instflow_anchor.py::test_missing_created_at_falls_back_to_id_order PASSED [100%]
++
++============================== 40 passed in 0.67s ==============================
++GROUP_EXIT=0
+diff --git a/market_first/db.py b/market_first/db.py
+index 7ea2a52..14cbb39 100644
+--- a/market_first/db.py
++++ b/market_first/db.py
+@@ -38,6 +38,14 @@ CREATE TABLE IF NOT EXISTS discovery_events (
+     price_at_discovery REAL,
+     price_data_time TEXT,
+     evidence_json TEXT DEFAULT '{}',
++    created_at TEXT,
++    ingest_mark_id INTEGER
++);
++
++CREATE TABLE IF NOT EXISTS ingest_channel_marks (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    mark TEXT NOT NULL UNIQUE,
+     created_at TEXT
+ );
+ 
+@@ -647,6 +655,76 @@ END;
+ """
+ 
+ 
++# P0-3 完整落地（2026-11-23，方案 A 受控通道标记，用户定案）：
++# - ingest_channel_marks 为受控通道标记表：pool.ingest 在与
++#   事件行同一事务内先落标记行（mark=uuid4、created_at 为
++#   真实服务器时间），事件行以 ingest_mark_id 绑定之；
++# - trg_rt_discovery_events_insert_channel：无有效标记的
++#   INSERT 必须 created_at 为服务器当前时间（±120 秒口径
++#   的过去侧；未来侧由既有 insert_future 触发器管辖）——
++#   NULL、不可解析、历史回填一律拒绝；声称标记但标记不
++#   存在/跨候选/已被消费，一律拒绝；带有效标记的 INSERT
++#   不受时间值限制（时钟夹具的历史时刻与 NULL 缺锚前提
++#   经通道合法落字，与墙钟无关）；
++# - 标记行 append-only：禁止 UPDATE；被事件行引用后禁止
++#   DELETE（未被引用者可删，不构成任何事件的通道证据）。
++# 口径（照 P0-2 修订）：本机制证明标记的存在性、唯一性与
++# 不可变性——事件行「经受控写序落字」的形态；不证明调用
++# 方身份（直写自造标记整套伪造属固有界限，见设计文档
++# DESIGN-P0-3-CHANNEL-A.md 与对抗实测）。
++_P03A_TABLES_SQL = """
++CREATE TABLE IF NOT EXISTS ingest_channel_marks (
++    id INTEGER PRIMARY KEY,
++    candidate_id INTEGER NOT NULL REFERENCES candidates(id),
++    mark TEXT NOT NULL UNIQUE,
++    created_at TEXT
++);
++"""
++
++_P03A_TRIGGERS_SQL = """
++CREATE TRIGGER IF NOT EXISTS trg_rt_discovery_events_insert_channel
++BEFORE INSERT ON discovery_events
++BEGIN
++    SELECT RAISE(ABORT, 'discovery_events ingest_mark_id must reference a valid unconsumed ingest channel mark of the same candidate (P0-5 channel guard)')
++    WHERE NEW.ingest_mark_id IS NOT NULL
++      AND NOT EXISTS (
++        SELECT 1 FROM ingest_channel_marks m
++        WHERE m.id = NEW.ingest_mark_id
++          AND m.candidate_id = NEW.candidate_id
++          AND NOT EXISTS (
++            SELECT 1 FROM discovery_events e
++            WHERE e.ingest_mark_id = m.id));
++    SELECT RAISE(ABORT, 'discovery_events created_at must be server-current (within 120s) or carry a valid ingest channel mark (P0-5 channel guard)')
++    WHERE NOT EXISTS (
++        SELECT 1 FROM ingest_channel_marks m
++        WHERE m.id = NEW.ingest_mark_id
++          AND m.candidate_id = NEW.candidate_id
++          AND NOT EXISTS (
++            SELECT 1 FROM discovery_events e
++            WHERE e.ingest_mark_id = m.id))
++      AND (NEW.created_at IS NULL
++        OR julianday(NEW.created_at) IS NULL
++        OR (julianday('now') - julianday(NEW.created_at))
++            * 86400.0 > 120.0);
++END;
++
++CREATE TRIGGER IF NOT EXISTS trg_rt_ingest_channel_marks_no_update
++BEFORE UPDATE ON ingest_channel_marks
++BEGIN
++    SELECT RAISE(ABORT, 'ingest_channel_marks are append-only channel evidence: UPDATE forbidden (P0-5 channel guard)');
++END;
++
++CREATE TRIGGER IF NOT EXISTS trg_rt_ingest_channel_marks_no_delete_bound
++BEFORE DELETE ON ingest_channel_marks
++BEGIN
++    SELECT RAISE(ABORT, 'ingest_channel_marks bound to a discovery event cannot be deleted (P0-5 channel guard)')
++    WHERE EXISTS (
++        SELECT 1 FROM discovery_events e
++        WHERE e.ingest_mark_id = OLD.id);
++END;
++"""
++
++
+ def ensure_redteam_schema(conn) -> None:
+     """幂等安装红队集中修复（2026-11-23）的 DB 层保护触发器。
+ 
+@@ -677,6 +755,15 @@ def ensure_redteam_schema(conn) -> None:
+     - V3 审计补正（2026-11-23）：approvals 生命周期保护
+       （P0-1）与 discovery_events INSERT 未来时间拒绝
+       （P0-3）触发器，见 _V3C_TRIGGERS_SQL 注释。
++    - P0-3 完整落地（2026-11-23，方案 A 受控通道标记）：
++      ingest_channel_marks 表 + discovery_events.
++      ingest_mark_id 绑定列与一对一唯一索引 +
++      insert_channel 触发器——无有效通道标记的 INSERT，
++      created_at 为 NULL/不可解析/早于服务器时间 120 秒
++      以上一律拒绝；带有效标记者不受时间值限制。ingest
++      恒先落标记行再落事件行并绑定、同事务，天然通过。
++      本闸证明标记的存在性/唯一性/不可变性（经受控写序
++      落字的形态），不证明调用方身份，见 _P03A 注释。
+ 
+     触发器只新增、不动既有数据。
+     """
+@@ -698,6 +785,21 @@ def ensure_redteam_schema(conn) -> None:
+         "DROP TRIGGER IF EXISTS trg_rt_sample_exclusions_audit_insert")
+     conn.executescript(_V3C2_TRIGGERS_SQL)
+     conn.executescript(_V3C_TRIGGERS_SQL)
++    # P0-3 方案 A 迁移：通道标记表 + 事件行绑定列 + 一对一
++    # 唯一索引（存量行 ingest_mark_id 为 NULL，SQLite
++    # UNIQUE 不约束 NULL）+ 通道触发器。
++    conn.executescript(_P03A_TABLES_SQL)
++    cols = {r[1] for r in conn.execute(
++        "PRAGMA table_info(discovery_events)")}
++    if cols and "ingest_mark_id" not in cols:
++        conn.execute(
++            "ALTER TABLE discovery_events"
++            " ADD COLUMN ingest_mark_id INTEGER")
++    conn.execute(
++        "CREATE UNIQUE INDEX IF NOT EXISTS"
++        " idx_discovery_events_ingest_mark_id"
++        " ON discovery_events(ingest_mark_id)")
++    conn.executescript(_P03A_TRIGGERS_SQL)
+     conn.commit()
+ 
+ 
+diff --git a/market_first/pool.py b/market_first/pool.py
+index 396d806..74dcc38 100644
+--- a/market_first/pool.py
++++ b/market_first/pool.py
+@@ -7,6 +7,7 @@ candidate_history 为 append-only（本模块只 INSERT、从不 UPDATE/DELETE
+ from __future__ import annotations
+ 
+ import json
++import uuid
+ from datetime import datetime
+ 
+ from market_first.db import connect, init_db
+@@ -42,7 +43,8 @@ class CandidatePool:
+         pool.clock，以应用层路径模拟「发现即入库」等入库
+         时刻——替代旧测试直写 UPDATE discovery_events SET
+         created_at 的手法（该 UPDATE 已被 DB 触发器禁止，
+-        见 db.ensure_redteam_schema）。
++        见 db.ensure_redteam_schema）。夹具落字经 ingest
++        受控通道（方案 A 通道标记同事务绑定），构造不变。
+         """
+         self.db_path = init_db(db_path)
+         self.conn = connect(self.db_path)
+@@ -50,7 +52,18 @@ class CandidatePool:
+ 
+     # -- 写入 -----------------------------------------------------------
+     def ingest(self, event, actor="discovery"):
+-        """摄入一个发现事件，返回 (candidate_id, created_bool)。"""
++        """摄入一个发现事件，返回 (candidate_id, created_bool)。
++
++        受控通道（P0-3 方案 A，2026-11-23）：事件行落字前，
++        在同一事务内先写一条 ingest_channel_marks 通道标记
++        （mark=uuid4，标记行 created_at 为真实服务器时间，
++        不随夹具时钟），事件行以 ingest_mark_id 绑定该标
++        记。DB 触发器 trg_rt_discovery_events_insert_channel
++        据此区分受控写序与直写 INSERT：无有效标记的事件行
++        created_at 必须为服务器当前时间，NULL/历史回填被
++        拒；经本通道落字的历史时刻（夹具模拟）与 NULL
++        （缺锚前提）带有效标记、合法通过。
++        """
+         now = self.clock() if self.clock else _now_iso()
+         row = self.conn.execute(
+             "SELECT id FROM candidates WHERE market=? AND symbol=?",
+@@ -81,15 +94,23 @@ class CandidatePool:
+                     " WHERE id=?",
+                     (event.discovered_at, now, candidate_id),
+                 )
++        mark_cur = self.conn.execute(
++            "INSERT INTO ingest_channel_marks (candidate_id, mark,"
++            " created_at) VALUES (?, ?, ?)",
++            (candidate_id, uuid.uuid4().hex, _now_iso()),
++        )
++        mark_id = mark_cur.lastrowid
+         self.conn.execute(
+             "INSERT INTO discovery_events (candidate_id, source_id,"
+             " market, symbol, discovered_at, trigger_condition,"
+             " price_at_discovery, price_data_time, evidence_json,"
+-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            " created_at, ingest_mark_id)"
++            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (candidate_id, event.source_id, event.market, event.symbol,
+              event.discovered_at, event.trigger_condition,
+              event.price_at_discovery, event.price_data_time,
+-             json.dumps(event.evidence or {}, ensure_ascii=False), now),
++             json.dumps(event.evidence or {}, ensure_ascii=False),
++             now, mark_id),
+         )
+         self.conn.execute(
+             "INSERT INTO candidate_history (candidate_id, field,"
+diff --git a/tests/test_market_first_p0_5_channel_marks.py b/tests/test_market_first_p0_5_channel_marks.py
+new file mode 100644
+index 0000000..c1de1c6
+--- /dev/null
++++ b/tests/test_market_first_p0_5_channel_marks.py
+@@ -0,0 +1,300 @@
++# -*- coding: utf-8 -*-
++"""P0-5 受控通道标记测试（2026-11-23，P0-3 方案 A 完整落地）。
++
++缺口（V3 独立审计 P0-3 未实施部分）：discovery_events 直接
++INSERT 的 created_at 为 NULL 或历史回填时无 DB 层校验；
++以有限时间窗口拦截与可信时钟夹具结构性冲突（夹具固定字
++符串的历史时刻年龄随墙钟无限增长），V3 补正批只封了未来
++时间。本批按用户定案的方案 A 落地：
++
++- pool.ingest 受控通道：与事件行同一事务内先落
++  ingest_channel_marks 标记行，事件行以 ingest_mark_id
++  一对一绑定；
++- trg_rt_discovery_events_insert_channel：无有效标记的
++  INSERT，created_at 为 NULL / 不可解析 / 早于服务器
++  时间 120 秒以上 -> RAISE(ABORT)；声称标记但标记不存
++  在、跨候选或已被消费 -> RAISE(ABORT)；
++- 标记行 append-only（禁 UPDATE），被引用后禁 DELETE。
++
++证明力边界（如实登记，照 P0-2 修订口径）：标记机制证明
++事件行「经受控写序落字」的形态——标记存在、属同一候
++选、一对一、绑定后不可改删；它不证明调用方身份，直写
++者自造标记行整套伪造仍可绕过（本文件
++test_forged_mark_full_set_bypass_measured 实测放行），
++属 SQLite 单文件模型固有界限，待审计裁定。未来时间拒
++绝由既有 trg_rt_discovery_events_created_at_insert_future
++管辖（test_market_first_p0_5_insert_anchor.py 已覆盖，
++本文件不重复）。
++"""
++import sqlite3
++from datetime import datetime, timedelta
++
++import pytest
++
++from market_first.models import DiscoveryEvent
++from market_first.pool import CandidatePool
++
++
++def _event(discovered_at="2026-11-16T09:00:00+08:00",
++           symbol="603893"):
++    return DiscoveryEvent(
++        market="SH", symbol=symbol, name="测试标的",
++        source_id="inst_lhb_stored", discovered_at=discovered_at,
++        trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
++
++
++def _pool_with_candidate(tmp_path):
++    pool = CandidatePool(db_path=str(tmp_path / "mf.db"))
++    cid, _ = pool.ingest(_event())
++    return pool, cid
++
++
++def _direct_insert_event(pool, cid, created_at, mark_id=None,
++                         symbol="603893"):
++    pool.conn.execute(
++        "INSERT INTO discovery_events (candidate_id, source_id,"
++        " market, symbol, discovered_at, trigger_condition,"
++        " price_at_discovery, price_data_time, evidence_json,"
++        " created_at, ingest_mark_id) VALUES (?,"
++        " 'inst_lhb_stored', 'SH', ?,"
++        " '2026-11-16T09:00:00+08:00', 'inst_net>0', 10.0,"
++        " '2026-11-16', '{}', ?, ?)",
++        (cid, symbol, created_at, mark_id))
++
++
++def _direct_insert_mark(pool, cid, mark):
++    cur = pool.conn.execute(
++        "INSERT INTO ingest_channel_marks (candidate_id, mark,"
++        " created_at) VALUES (?, ?, ?)",
++        (cid, mark, _iso(datetime.now().astimezone())))
++    return cur.lastrowid
++
++
++def _event_count(pool, cid):
++    return pool.conn.execute(
++        "SELECT COUNT(*) c FROM discovery_events"
++        " WHERE candidate_id=?", (cid,)).fetchone()["c"]
++
++
++def _iso(dt):
++    return dt.astimezone().isoformat(timespec="seconds")
++
++
++# --- 无标记直写：NULL / 回填 / 不可解析 -----------------------------
++
++def test_direct_insert_null_created_at_without_mark_blocked(tmp_path):
++    """直写 INSERT created_at=NULL 且无通道标记 -> 拒绝，
++    行不落库（缺锚事件不得绕过受控通道直写产生）。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_insert_event(pool, cid, None)
++    pool.conn.rollback()
++    assert _event_count(pool, cid) == 1
++
++
++def test_direct_insert_backfilled_created_at_without_mark_blocked(
++        tmp_path):
++    """直写 INSERT created_at 为两天前（天级历史回填）且无
++    通道标记 -> 拒绝，行不落库。回填量以相对偏移构造，
++    与墙钟无关。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    backfilled = _iso(datetime.now().astimezone()
++                      - timedelta(days=2))
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_insert_event(pool, cid, backfilled)
++    pool.conn.rollback()
++    assert _event_count(pool, cid) == 1
++
++
++def test_direct_insert_unparseable_created_at_without_mark_blocked(
++        tmp_path):
++    """直写 INSERT created_at 为不可解析字符串且无标记 ->
++    拒绝（不可解析即无可信锚，不得落字）。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_insert_event(pool, cid, "not-a-timestamp")
++    pool.conn.rollback()
++    assert _event_count(pool, cid) == 1
++
++
++def test_direct_insert_recent_past_within_tolerance_passes(tmp_path):
++    """正对照（范围边界）：无标记直写 created_at 为 60 秒
++    前——仍属服务器当前时间口径（120 秒窗口内，与 registry
++    approved_at 同口径）-> 放行。本闸拦的是 NULL 与明显
++    回填，不拦当前时刻附近的落字。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    recent = _iso(datetime.now().astimezone()
++                  - timedelta(seconds=60))
++    _direct_insert_event(pool, cid, recent)
++    pool.conn.commit()
++    assert _event_count(pool, cid) == 2
++
++
++# --- 受控通道正常路径 -------------------------------------------------
++
++def test_channel_ingest_binds_mark_one_to_one(tmp_path):
++    """通道正对照：时钟夹具的历史时刻经 ingest 落字，事件
++    行带 ingest_mark_id 绑定一条同候选标记行；标记行
++    created_at 为真实服务器时间（非夹具时刻）；第二次
++    ingest 绑定另一条标记，一对一不复用。"""
++    pool = CandidatePool(
++        db_path=str(tmp_path / "mf.db"),
++        clock=lambda: "2026-11-10T16:30:00+08:00")
++    cid, _ = pool.ingest(_event("2026-09-15T09:00:00+08:00"))
++    ev1 = pool.events_for(cid)[0]
++    assert ev1["created_at"] == "2026-11-10T16:30:00+08:00"
++    mark1 = pool.conn.execute(
++        "SELECT * FROM ingest_channel_marks WHERE id=?",
++        (ev1["ingest_mark_id"],)).fetchone()
++    assert mark1 is not None
++    assert mark1["candidate_id"] == cid
++    stamped = datetime.fromisoformat(mark1["created_at"])
++    assert abs(datetime.now().astimezone().timestamp()
++               - stamped.timestamp()) < 300
++    pool.clock = lambda: "2026-11-13T16:30:00+08:00"
++    pool.ingest(_event("2026-09-16T09:00:00+08:00"))
++    ev2 = pool.events_for(cid)[1]
++    assert ev2["ingest_mark_id"] != ev1["ingest_mark_id"]
++    n = pool.conn.execute(
++        "SELECT COUNT(*) c FROM ingest_channel_marks").fetchone()["c"]
++    assert n == 2
++
++
++def test_channel_ingest_null_created_at_premise_constructible(
++        tmp_path):
++    """缺锚前提经通道可构造：clock 返回 None 时 ingest 落
++    created_at=NULL 的事件行（带有效标记），行存在且绑定
++    成立——test_missing_ingest_time_rejects_forward 的被测
++    前提在本闸下继续成立（该用例本身未改动）。"""
++    pool = CandidatePool(db_path=str(tmp_path / "mf.db"))
++    pool.clock = lambda: None
++    cid, _ = pool.ingest(_event())
++    row = pool.events_for(cid)[0]
++    assert row["created_at"] is None
++    assert row["ingest_mark_id"] is not None
++    mark = pool.conn.execute(
++        "SELECT * FROM ingest_channel_marks WHERE id=?",
++        (row["ingest_mark_id"],)).fetchone()
++    assert mark["candidate_id"] == cid
++
++
++# --- 标记引用对抗：复用 / 悬空 / 跨候选 --------------------------------
++
++def test_consumed_mark_reuse_blocked(tmp_path):
++    """复用对抗：直写 INSERT 引用已被合法事件消费的标记
++    id（created_at 取当前时间，隔离一对一规则本身）->
++    拒绝，一对一绑定不可绕过。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    used_mark = pool.events_for(cid)[0]["ingest_mark_id"]
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_insert_event(
++            pool, cid, _iso(datetime.now().astimezone()),
++            mark_id=used_mark)
++    pool.conn.rollback()
++    assert _event_count(pool, cid) == 1
++
++
++def test_dangling_mark_reference_blocked(tmp_path):
++    """悬空引用对抗：直写 INSERT 声称不存在的标记 id ->
++    拒绝（声称通道标记就必须真实存在且有效）。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_insert_event(
++            pool, cid, _iso(datetime.now().astimezone()),
++            mark_id=999999)
++    pool.conn.rollback()
++    assert _event_count(pool, cid) == 1
++
++
++def test_cross_candidate_mark_reference_blocked(tmp_path):
++    """跨候选对抗：候选 A 的未消费标记被候选 B 的回填事件
++    引用 -> 拒绝（标记只证明其所属候选的通道落字）。"""
++    pool, cid_a = _pool_with_candidate(tmp_path)
++    ev_b = DiscoveryEvent(
++        market="SZ", symbol="002623", name="亚玛顿",
++        source_id="inst_lhb_live",
++        discovered_at="2026-11-16T09:00:00+08:00",
++        trigger_condition="inst_net>0", evidence={"inst_net": 1.0})
++    cid_b, _ = pool.ingest(ev_b)
++    mark_a = _direct_insert_mark(pool, cid_a, "mark-for-a-only")
++    pool.conn.commit()
++    backfilled = _iso(datetime.now().astimezone()
++                      - timedelta(days=2))
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_insert_event(pool, cid_b, backfilled,
++                             mark_id=mark_a, symbol="002623")
++    pool.conn.rollback()
++    assert _event_count(pool, cid_b) == 1
++
++
++# --- 标记伪造（整套一致伪造）实测与标记不可变性 -------------------------
++
++def test_forged_mark_full_set_bypass_measured(tmp_path):
++    """伪造实测（如实登记）：直写者自造一条标记行、再按其
++    id 写回填事件行——整套一致伪造在 DB 层放行，本机制不
++    证明调用方身份（与 RT-1/RT-2 同级固有界限）。但伪造
++    标记落字后即被绑定锁定：UPDATE 与 DELETE 均被拒，
++    伪造行为本身留下不可删除的证据行。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    forged_mark = _direct_insert_mark(pool, cid, "forged-mark-1")
++    backfilled = _iso(datetime.now().astimezone()
++                      - timedelta(days=30))
++    _direct_insert_event(pool, cid, backfilled,
++                         mark_id=forged_mark)
++    pool.conn.commit()
++    assert _event_count(pool, cid) == 2
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute(
++            "UPDATE ingest_channel_marks SET mark='x'"
++            " WHERE id=?", (forged_mark,))
++    pool.conn.rollback()
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute(
++            "DELETE FROM ingest_channel_marks WHERE id=?",
++            (forged_mark,))
++    pool.conn.rollback()
++    row = pool.conn.execute(
++        "SELECT * FROM ingest_channel_marks WHERE id=?",
++        (forged_mark,)).fetchone()
++    assert row["mark"] == "forged-mark-1"
++
++
++def test_bound_mark_update_and_delete_blocked(tmp_path):
++    """合法通道标记的不可变性：ingest 绑定的标记行 UPDATE
++    （改 mark 值）与 DELETE 均被拒，标记行逐字不变。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    mark_id = pool.events_for(cid)[0]["ingest_mark_id"]
++    before = dict(pool.conn.execute(
++        "SELECT * FROM ingest_channel_marks WHERE id=?",
++        (mark_id,)).fetchone())
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute(
++            "UPDATE ingest_channel_marks SET mark='tampered'"
++            " WHERE id=?", (mark_id,))
++    pool.conn.rollback()
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute(
++            "DELETE FROM ingest_channel_marks WHERE id=?",
++            (mark_id,))
++    pool.conn.rollback()
++    after = dict(pool.conn.execute(
++        "SELECT * FROM ingest_channel_marks WHERE id=?",
++        (mark_id,)).fetchone())
++    assert after == before
++
++
++def test_unbound_mark_delete_allowed_scope_boundary(tmp_path):
++    """范围边界正对照：从未被任何事件引用的标记行可删
++    除——它不构成任何事件的通道证据，删除不改变任何已
++    落字事件的可验证性；闸只锁定已绑定标记。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    orphan = _direct_insert_mark(pool, cid, "orphan-mark")
++    pool.conn.commit()
++    pool.conn.execute(
++        "DELETE FROM ingest_channel_marks WHERE id=?",
++        (orphan,))
++    pool.conn.commit()
++    n = pool.conn.execute(
++        "SELECT COUNT(*) c FROM ingest_channel_marks"
++        " WHERE id=?", (orphan,)).fetchone()["c"]
++    assert n == 0
+diff --git a/tests/test_market_first_p0_5_created_at_guard.py b/tests/test_market_first_p0_5_created_at_guard.py
+index 2d9928c..b94c12b 100644
+--- a/tests/test_market_first_p0_5_created_at_guard.py
++++ b/tests/test_market_first_p0_5_created_at_guard.py
+@@ -14,8 +14,11 @@ forward 时间锚的唯一可信依据，但表无写入保护——直写 UPDAT
+ - 旧测试 15 处直写 UPDATE created_at 已全量迁移到时钟夹具
+   （逐项登记见交付说明，断言零改动）。
+ 
+-残余（如实登记）：直写 INSERT 一条带任意 created_at 的新
+-事件行在 DB 层与合法 ingest 不可区分，本批不拦，待审计裁定。
++残余更新（2026-11-23 P0-3 方案 A 落地）：直写 INSERT
++新事件行已由受控通道标记闸收口——无有效标记的 NULL/
++回填 INSERT 被拒（test_market_first_p0_5_channel_marks
++.py）；仅余「直写自造标记整套一致伪造」固有界限（实测
++放行、如实登记），待审计裁定。
+ """
+ import sqlite3
+ from datetime import datetime
+diff --git a/tests/test_market_first_p0_5_insert_anchor.py b/tests/test_market_first_p0_5_insert_anchor.py
+index ea866ca..f0e47a4 100644
+--- a/tests/test_market_first_p0_5_insert_anchor.py
++++ b/tests/test_market_first_p0_5_insert_anchor.py
+@@ -13,15 +13,15 @@ UPDATE 不可变保护，直接 INSERT 可写任意时刻，时间锚的
+ - 既有 UPDATE 不可变保护保留（p0_5_created_at_guard 组
+   回归实证，本文件亦含一条复核）。
+ 
+-未实施（如实登记，待审计裁定）：NULL 拒绝与历史回填
+-窗口与既有可信测试时钟夹具存在真实冲突——夹具以固定
+-字符串模拟历史入库时刻（最老 2026-11-10，其年龄随墙钟
+-无限增长，任何有限窗口都会在未来某日无代码变更地击穿
+-夹具），且 test_missing_ingest_time_rejects_forward 的
+-被测前提就是库内存在 created_at=NULL 的事件行。冲突
+-全量与可选方案（受控通道标记/宽限窗口/维持现状）见
+-evidence/v3-audit-correction-20261123/design/
+-DESIGN-V3-CORRECTION.md，本文件不以时限性窗口冒充修复。
++后续落地（2026-11-23 P0-3 完整落地批）：NULL 拒绝与
++历史回填拦截已按用户定案的方案 A（受控通道标记）实施
++——无有效通道标记的 NULL/回填 INSERT 由
++trg_rt_discovery_events_insert_channel 拒绝，经 ingest
++通道（含时钟夹具）落字的历史时刻与 NULL 前提带标记合
++法通过，见 test_market_first_p0_5_channel_marks.py。本
++文件覆盖的未来时间拒绝口径不变。方案 A 落地前的冲突
++分析见 evidence/v3-audit-correction-20261123/design/
++DESIGN-V3-CORRECTION.md。
+ """
+ import sqlite3
+ from datetime import datetime, timedelta

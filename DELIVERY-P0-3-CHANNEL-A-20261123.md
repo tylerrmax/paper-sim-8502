@@ -95,9 +95,13 @@ test_ui_regression.py`，解释器为 paper-trading-sim
   既有基线失败 test_ledger_fingerprint_idempotent，
   环境性失败单独登记、不伪报 PASS）。
 
-**合并与复跑**：`<MERGE_INFO>`；合并后按登记口径复跑
-Market-First 全组（tests/test_market_first_*.py +
-tests/test_adversarial_regression.py）：`<POSTMERGE>`。
+**合并与复跑**：交付提交 `b307477`（fix 分支）后
+--no-ff 零冲突合并入 unified-arch，合并提交
+`2cf2234`；合并后按登记口径复跑 Market-First 全组
+（tests/test_market_first_*.py +
+tests/test_adversarial_regression.py）：**189 passed**
+（V4 同口径 177 + 新增 12），exit 0，日志见 V5 包
+04 节。
 
 **生产隔离**：生产库 sim.db SHA256 开工/收工两点均为
 c914ec8c7c0df93d5e4d86a531d16dabe48cbb652cecca2fb24c1c52985e138f，

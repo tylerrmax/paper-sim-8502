@@ -1,0 +1,3 @@
+2cf223416eda59204320acb09f168eba9ab545a2 Merge P0-3 方案 A 受控通道标记 (NULL/回填 INSERT 校验完整落地) into unified-arch
+b307477c85850a9ce44ff60a2b6f1ef671b100f8 P0-3 方案 A 交付: 台账 MF-FWD-002 追加 c0a062c 引用与残余更新 + DELIVERY 五项交账
+c0a062ccaf64637fe87eb78b31963018fade85a7 P0-3 方案 A: discovery_events 受控通道标记完整落地 (ingest_channel_marks + ingest_mark_id 一对一绑定 + insert_channel 触发器, NULL/回填/不可解析 INSERT 校验)

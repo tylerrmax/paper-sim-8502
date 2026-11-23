@@ -1,0 +1,50 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/hatch/workspace/l2-remediation/p0-3-channel-a
+plugins: anyio-4.15.1
+collecting ... collected 40 items
+
+tests/test_market_first_p0_5_channel_marks.py::test_direct_insert_null_created_at_without_mark_blocked PASSED [  2%]
+tests/test_market_first_p0_5_channel_marks.py::test_direct_insert_backfilled_created_at_without_mark_blocked PASSED [  5%]
+tests/test_market_first_p0_5_channel_marks.py::test_direct_insert_unparseable_created_at_without_mark_blocked PASSED [  7%]
+tests/test_market_first_p0_5_channel_marks.py::test_direct_insert_recent_past_within_tolerance_passes PASSED [ 10%]
+tests/test_market_first_p0_5_channel_marks.py::test_channel_ingest_binds_mark_one_to_one PASSED [ 12%]
+tests/test_market_first_p0_5_channel_marks.py::test_channel_ingest_null_created_at_premise_constructible PASSED [ 15%]
+tests/test_market_first_p0_5_channel_marks.py::test_consumed_mark_reuse_blocked PASSED [ 17%]
+tests/test_market_first_p0_5_channel_marks.py::test_dangling_mark_reference_blocked PASSED [ 20%]
+tests/test_market_first_p0_5_channel_marks.py::test_cross_candidate_mark_reference_blocked PASSED [ 22%]
+tests/test_market_first_p0_5_channel_marks.py::test_forged_mark_full_set_bypass_measured PASSED [ 25%]
+tests/test_market_first_p0_5_channel_marks.py::test_bound_mark_update_and_delete_blocked PASSED [ 27%]
+tests/test_market_first_p0_5_channel_marks.py::test_unbound_mark_delete_allowed_scope_boundary PASSED [ 30%]
+tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_future_created_at_blocked PASSED [ 32%]
+tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_far_future_created_at_blocked PASSED [ 35%]
+tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_current_server_time_passes PASSED [ 37%]
+tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_within_tolerance_passes PASSED [ 40%]
+tests/test_market_first_p0_5_insert_anchor.py::test_update_guard_still_active PASSED [ 42%]
+tests/test_market_first_p0_5_created_at_guard.py::test_created_at_update_backfill_blocked PASSED [ 45%]
+tests/test_market_first_p0_5_created_at_guard.py::test_created_at_update_forward_shift_blocked PASSED [ 47%]
+tests/test_market_first_p0_5_created_at_guard.py::test_clock_fixture_controls_ingest_time_via_app_path PASSED [ 50%]
+tests/test_market_first_p0_5_created_at_guard.py::test_clock_assignable_between_ingests PASSED [ 52%]
+tests/test_market_first_p0_5_created_at_guard.py::test_production_default_uses_server_time PASSED [ 55%]
+tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_explicit_entry_forced_backfill PASSED [ 57%]
+tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_history_bars_only_rejected PASSED [ 60%]
+tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_entry_anchored_at_ingest PASSED [ 62%]
+tests/test_market_first_p0_5_time_anchor.py::test_missing_ingest_time_rejects_forward PASSED [ 65%]
+tests/test_market_first_p0_5_time_anchor.py::test_claimed_discovery_after_ingest_does_not_extend_anchor PASSED [ 67%]
+tests/test_market_first_p0_5_time_anchor.py::test_same_day_ingest_positive_control PASSED [ 70%]
+tests/test_market_first_forward_time.py::test_forward_entry_is_next_trading_day_after_close_discovery PASSED [ 72%]
+tests/test_market_first_forward_time.py::test_forward_intraday_discovery_still_next_trading_day PASSED [ 75%]
+tests/test_market_first_forward_time.py::test_forward_weekend_discovery_entry_monday PASSED [ 77%]
+tests/test_market_first_forward_time.py::test_entry_before_discovery_forced_backfill PASSED [ 80%]
+tests/test_market_first_forward_time.py::test_historical_backfill_long_gap PASSED [ 82%]
+tests/test_market_first_forward_time.py::test_forward_price_missing_rejected_and_traced PASSED [ 85%]
+tests/test_market_first_forward_time.py::test_forward_without_discovery_event_rejected PASSED [ 87%]
+tests/test_market_first_forward_time.py::test_excluded_sample_not_in_forward_stats_and_row_unchanged PASSED [ 90%]
+tests/test_market_first_rt3_instflow_anchor.py::test_forged_future_discovered_at_cannot_flip_sign PASSED [ 92%]
+tests/test_market_first_rt3_instflow_anchor.py::test_claimed_date_variation_does_not_change_subtotal PASSED [ 95%]
+tests/test_market_first_rt3_instflow_anchor.py::test_latest_selected_by_created_at_positive_control PASSED [ 97%]
+tests/test_market_first_rt3_instflow_anchor.py::test_missing_created_at_falls_back_to_id_order PASSED [100%]
+
+============================== 40 passed in 0.67s ==============================
+GROUP_EXIT=0

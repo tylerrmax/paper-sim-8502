@@ -1,0 +1,6 @@
+evidence/judge-p0-audit-freeze-20261123-v5/01_source_and_commits/unified-arch.bundle is okay
+The bundle contains this ref:
+2cf223416eda59204320acb09f168eba9ab545a2 refs/heads/market-first/unified-arch
+The bundle requires this ref:
+c490424939422639280d19fa36bcccd34da83184 
+The bundle uses this hash algorithm: sha1

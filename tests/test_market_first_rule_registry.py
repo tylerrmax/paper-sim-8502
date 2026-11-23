@@ -13,6 +13,7 @@ from datetime import date, timedelta
 import pytest
 
 from market_first import promotion, validation
+from market_first import bars as bars_mod
 from market_first.models import DiscoveryEvent
 from market_first.pool import CandidatePool
 from market_first.promotion import IllegalTransitionError, transition
@@ -45,15 +46,8 @@ def _candidate_validating(tmp_path):
         source_id="inst_lhb_live",
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
+    pool.clock = lambda: ev.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid, _ = pool.ingest(ev)
-    # fix3 信任路径（MF-FWD-002）：时间锚以库内服务器侧
-    # ingested_at 为准；本 helper 模拟生产不变量「发现即
-    # 入库」，把事件 created_at 对齐到模拟发现时刻；
-    # 本文件全部断言未改动。
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev.discovered_at, cid))
-    pool.conn.commit()
     for state in ("pending_research", "researching", "validating"):
         transition(pool, cid, state, actor="tester")
     return pool, cid
@@ -65,6 +59,7 @@ def _mature_forward(pool, cid):
     sid = validation.create_sample(
         pool, cid, ev["source_id"], kind="forward",
         discovery_event_id=ev["id"], bars=bars)
+    bars_mod.store_bars(pool.get_by_id(cid)["symbol"], bars, "test-fixture", pool.db_path)  # RT-5 夹具迁移（2026-11-23）：经 bars 层受控通道落库 fetched_bars，evaluate 校验依据；断言未改动。
     validation.evaluate_sample(pool, sid, bars)
     return sid
 
@@ -215,12 +210,8 @@ def test_rule_version_change_new_decisions_use_new_version(tmp_path):
         source_id="inst_lhb_live",
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 50.0})
+    pool.clock = lambda: ev.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid2, _ = pool.ingest(ev)
-    # 同 _candidate_validating 的 fix3 对齐：模拟发现即入库。
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev.discovered_at, cid2))
-    pool.conn.commit()
     for state in ("pending_research", "researching", "validating"):
         transition(pool, cid2, state, actor="tester")
     _mature_forward(pool, cid2)

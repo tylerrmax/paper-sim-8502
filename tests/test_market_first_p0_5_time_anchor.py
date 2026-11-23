@@ -43,11 +43,8 @@ def _pool_with_event(tmp_path, discovered_at, ingested_at,
         market="SZ", symbol="002623", name="亚玛顿",
         source_id=source_id, discovered_at=discovered_at,
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
+    pool.clock = lambda: ingested_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid, _ = pool.ingest(ev)
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ingested_at, cid))
-    pool.conn.commit()
     ev_row = pool.events_for(cid)[0]
     return pool, cid, ev_row["id"]
 

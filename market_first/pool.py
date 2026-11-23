@@ -33,14 +33,25 @@ def _to_dicts(rows):
 
 
 class CandidatePool:
-    def __init__(self, db_path=None):
+    def __init__(self, db_path=None, clock=None):
+        """clock：可信测试时钟夹具（P0-5，2026-11-23）。
+
+        缺省 None -> ingest 落字时刻取真实服务器时间
+        _now_iso()，生产行为不变。测试可注入 clock（无参
+        callable，返回 ISO 时刻字符串）或在 ingest 前赋值
+        pool.clock，以应用层路径模拟「发现即入库」等入库
+        时刻——替代旧测试直写 UPDATE discovery_events SET
+        created_at 的手法（该 UPDATE 已被 DB 触发器禁止，
+        见 db.ensure_redteam_schema）。
+        """
         self.db_path = init_db(db_path)
         self.conn = connect(self.db_path)
+        self.clock = clock
 
     # -- 写入 -----------------------------------------------------------
     def ingest(self, event, actor="discovery"):
         """摄入一个发现事件，返回 (candidate_id, created_bool)。"""
-        now = _now_iso()
+        now = self.clock() if self.clock else _now_iso()
         row = self.conn.execute(
             "SELECT id FROM candidates WHERE market=? AND symbol=?",
             (event.market, event.symbol),
@@ -99,13 +110,25 @@ class CandidatePool:
         self.conn.commit()
 
     def set_fields(self, cid, actor, reason=None, **fields):
-        """更新白名单字段；每个实际变化的字段写一条 history。"""
+        """更新白名单字段；每个实际变化的字段写一条 history。
+
+        MF-PROMO-001 封口（2026-11-23 红队集中修复）：本通用
+        写原语禁止把 promotion_status 改 'approved'，无条件
+        拒绝——approved 只能经 promotion.decide 正式审批
+        （带 approver 与 basis、落 approvals 记录）进入；
+        promotion 状态机的合法流转走专用写通道
+        _transition_promotion_status，不经本函数。
+        """
         bad = set(fields) - _ALLOWED_FIELDS
         if bad:
             raise ValueError(
                 "不允许修改的字段：%s（仅允许 %s）"
                 % (sorted(bad), sorted(_ALLOWED_FIELDS))
             )
+        if fields.get("promotion_status") == "approved":
+            raise ValueError(
+                "promotion_status 不得经 set_fields 直改 approved："
+                "只能经 promotion.decide 审批进入（MF-PROMO-001）")
         current = self.get_by_id(cid)
         if current is None:
             raise ValueError("候选不存在：id=%s" % (cid,))
@@ -128,6 +151,37 @@ class CandidatePool:
                  None if new_val is None else str(new_val),
                  actor, reason, now),
             )
+        self.conn.commit()
+
+    def _transition_promotion_status(self, cid, actor, reason, new_status):
+        """promotion 状态机专用写通道（仅供 market_first.promotion
+        的 _apply_transition 调用，调用方已完成合法性判定）。
+
+        与 set_fields 的区别：本通道是 promotion_status 流转的
+        唯一字段级写入口（MF-PROMO-001）；set_fields 对
+        promotion_status='approved' 无条件拒绝。写字段的同时
+        写一条 candidate_history（与 set_fields 同口径）。
+        """
+        current = self.get_by_id(cid)
+        if current is None:
+            raise ValueError("候选不存在：id=%s" % (cid,))
+        old_val = current.get("promotion_status")
+        if old_val == new_status:
+            return
+        now = _now_iso()
+        self.conn.execute(
+            "UPDATE candidates SET promotion_status=?, updated_at=?"
+            " WHERE id=?",
+            (new_status, now, cid),
+        )
+        self.conn.execute(
+            "INSERT INTO candidate_history (candidate_id, field,"
+            " old_value, new_value, actor, reason, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (cid, "promotion_status",
+             None if old_val is None else str(old_val),
+             str(new_status), actor, reason, now),
+        )
         self.conn.commit()
 
     # -- 读取 -----------------------------------------------------------

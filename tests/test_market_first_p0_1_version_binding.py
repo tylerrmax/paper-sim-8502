@@ -19,6 +19,7 @@ from datetime import date, timedelta
 import pytest
 
 from market_first import validation
+from market_first import bars as bars_mod
 from market_first.models import DiscoveryEvent
 from market_first.pool import CandidatePool
 from market_first.promotion import transition
@@ -54,11 +55,8 @@ def _candidate_validating(tmp_path):
         source_id="inst_lhb_live",
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
+    pool.clock = lambda: ev.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid, _ = pool.ingest(ev)
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev.discovered_at, cid))
-    pool.conn.commit()
     for state in ("pending_research", "researching", "validating"):
         transition(pool, cid, state, actor="tester")
     return pool, cid
@@ -70,6 +68,7 @@ def _mature_forward(pool, cid):
     sid = validation.create_sample(
         pool, cid, ev["source_id"], kind="forward",
         discovery_event_id=ev["id"], bars=bars)
+    bars_mod.store_bars(pool.get_by_id(cid)["symbol"], bars, "test-fixture", pool.db_path)  # RT-5 夹具迁移（2026-11-23）：经 bars 层受控通道落库 fetched_bars，evaluate 校验依据；断言未改动。
     validation.evaluate_sample(pool, sid, bars)
     return sid
 
@@ -92,12 +91,17 @@ def _register_approved(pool, version, **kw):
 
 
 def test_v1_impl_cannot_impersonate_v2_via_explicit_version(tmp_path):
-    """v1 实现以显式 version='v2' 登记（冒充）：登记条目的
-    impl_version 恒为实现自报的 'v1'，judge v2 必须拒绝。"""
+    """v1 实现冒充 v2：judge v2 必须拒绝。
+
+    构造变更登记（2026-11-23 P0-1 登记期拒绝）：原构造以
+    register_rule_implementation(version='v2') 登记自报 v1 的
+    实现——该冒充构造已被登记期拒绝封口，无法再经 API 产生；
+    改为直写登记表污染（条目 impl_version 仍为实现自报的
+    'v1'），下方全部断言逐字保留。"""
     pool, cid = _candidate_validating(tmp_path)
     _mature_forward(pool, cid)
-    validation.register_rule_implementation(RID, _Rule("v1"),
-                                            version="v2")
+    validation.RULE_IMPLEMENTATIONS[(RID, "v2")] = {
+        "impl_key": RID, "impl_version": "v1", "rule": _Rule("v1")}
     entry = validation.RULE_IMPLEMENTATIONS[(RID, "v2")]
     # 显式 version 只改变登记键，覆盖不了实现自报版本
     assert entry["impl_version"] == "v1"

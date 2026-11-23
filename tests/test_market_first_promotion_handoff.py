@@ -10,6 +10,7 @@ from datetime import date, timedelta
 import pytest
 
 from market_first import validation
+from market_first import bars as bars_mod
 from market_first.handoff import HandoffNotApprovedError, simulate_handoff
 from market_first.models import DiscoveryEvent
 from market_first.pool import CandidatePool
@@ -68,6 +69,7 @@ def _judge_pass(pool, cid):
         pool, cid, ev["source_id"], kind="forward",
         discovery_event_id=ev["id"], bars=bars,
         fetched_at="2026-11-17T16:00:00+08:00")
+    bars_mod.store_bars(pool.get_by_id(cid)["symbol"], bars, "test-fixture", pool.db_path)  # RT-5 夹具迁移（2026-11-23）：经 bars 层受控通道落库 fetched_bars，evaluate 校验依据；断言未改动。
     validation.evaluate_sample(pool, sid, bars)
     out = validation.judge_validation(
         pool, cid, rule_id="test_rule",
@@ -82,15 +84,8 @@ def _candidate(tmp_path, symbol="603893"):
         source_id="inst_lhb_stored",
         discovered_at="2026-11-16T09:00:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
+    pool.clock = lambda: ev.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid, _ = pool.ingest(ev)
-    # fix3 信任路径（MF-FWD-002）：时间锚以库内服务器侧
-    # ingested_at 为准；本 helper 模拟生产不变量「发现即
-    # 入库」，把事件 created_at 对齐到模拟发现时刻；
-    # 本文件全部断言未改动。
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev.discovered_at, cid))
-    pool.conn.commit()
     return pool, cid
 
 

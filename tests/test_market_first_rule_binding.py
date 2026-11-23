@@ -13,6 +13,7 @@ from datetime import date, timedelta
 import pytest
 
 from market_first import validation
+from market_first import bars as bars_mod
 from market_first.models import DiscoveryEvent
 from market_first.pool import CandidatePool
 from market_first.promotion import transition
@@ -48,11 +49,8 @@ def _candidate_validating(tmp_path):
         source_id="inst_lhb_live",
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
+    pool.clock = lambda: ev.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid, _ = pool.ingest(ev)
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev.discovered_at, cid))
-    pool.conn.commit()
     for state in ("pending_research", "researching", "validating"):
         transition(pool, cid, state, actor="tester")
     return pool, cid
@@ -64,6 +62,7 @@ def _mature_forward(pool, cid):
     sid = validation.create_sample(
         pool, cid, ev["source_id"], kind="forward",
         discovery_event_id=ev["id"], bars=bars)
+    bars_mod.store_bars(pool.get_by_id(cid)["symbol"], bars, "test-fixture", pool.db_path)  # RT-5 夹具迁移（2026-11-23）：经 bars 层受控通道落库 fetched_bars，evaluate 校验依据；断言未改动。
     validation.evaluate_sample(pool, sid, bars)
     return sid
 
@@ -131,9 +130,13 @@ def test_no_impl_for_registered_version(tmp_path):
 def test_impl_mismatch_impl_impersonates_version(tmp_path):
     pool, cid = _candidate_validating(tmp_path)
     _mature_forward(pool, cid)
-    # 以 v1 之名登记自报 v2 的实现（冒充）
-    validation.register_rule_implementation(RID, _Rule("v2"),
-                                            version="v1")
+    # 构造变更登记（2026-11-23 P0-1 登记期拒绝）：原构造以
+    # register_rule_implementation(version='v1') 登记自报 v2 的
+    # 实现——该冒充构造已被登记期拒绝封口，无法再经 API 产生；
+    # 改为直写登记表污染（模拟表外错配），judge 的 IMPL_MISMATCH
+    # 双边核对断言与覆盖意图逐字保留。
+    validation.RULE_IMPLEMENTATIONS[(RID, "v1")] = {
+        "impl_key": RID, "impl_version": "v2", "rule": _Rule("v2")}
     _register(pool, "v1")  # 注册表绑定 impl_version=v1
     out = validation.judge_validation(
         pool, cid, rule_id=RID, rule_version="v1")

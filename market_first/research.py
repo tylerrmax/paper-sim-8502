@@ -267,6 +267,12 @@ class InstFlowModule:
 
     无事件 -> subtotal=None（缺失不充数）；有事件时
     subtotal = +8.0（最新 inst_net>0）/ -8.0（<0）/ 0.0（=0）。
+
+    「最新」口径（RT-3，2026-11-23 自红队补正）：以服务器
+    入库时间 created_at 为排序锚（与 P0-5 单一锚一致），
+    created_at 缺失时以事件 id 序兜底；来源声称的
+    discovered_at 只留痕（evidence.latest_discovered_at），
+    不作选择依据——声称时间伪造不得改变因子符号。
     """
 
     module_id = "inst_flow"
@@ -328,13 +334,22 @@ class InstFlowModule:
             "dedup_version": DEDUP_VERSION,
         }
         parsed = []
-        for ev_id, ev, _evidence in kept:
+        for seq, (ev_id, ev, _evidence) in enumerate(kept):
             net = self._extract_inst_net(ev)
             if net is None:
                 continue
-            when = str(ev.get("discovered_at") or ev.get("created_at")
-                       or "")
-            parsed.append((when, net))
+            # RT-3：排序锚只用服务器入库时间 created_at；
+            # 缺失时以事件 id（整数）序兜底，再次以输入序兜底。
+            # discovered_at 为来源声称值，只随选中事件留痕。
+            created = str(ev.get("created_at") or "")
+            id_part = (ev_id if isinstance(ev_id, int)
+                       and not isinstance(ev_id, bool) else seq)
+            parsed.append({
+                "sort_key": (created, id_part),
+                "net": net,
+                "created_at": created,
+                "discovered_at": str(ev.get("discovered_at") or ""),
+            })
         if not parsed:
             factors = {"available": False,
                        "reason": ("no_inst_events" if not events
@@ -343,8 +358,9 @@ class InstFlowModule:
             return {"factors": factors, "subtotal": None,
                     "evidence": {"events_count": len(events),
                                  "dedup": dedup_info}}
-        latest_when, latest_net = max(parsed, key=lambda t: t[0])
-        total_net = sum(net for _, net in parsed)
+        latest = max(parsed, key=lambda p: p["sort_key"])
+        latest_net = latest["net"]
+        total_net = sum(p["net"] for p in parsed)
         if latest_net > 0:
             subtotal = 8.0
         elif latest_net < 0:
@@ -358,7 +374,9 @@ class InstFlowModule:
                    "latest_inst_net": latest_net,
                    "total_inst_net": total_net}
         evidence = {"events_count": len(parsed),
-                    "latest_discovered_at": latest_when,
+                    "latest_discovered_at": latest["discovered_at"],
+                    "latest_created_at": latest["created_at"],
+                    "latest_selected_by": "created_at",
                     "latest_inst_net": latest_net,
                     "total_inst_net": total_net,
                     "dedup": dedup_info}

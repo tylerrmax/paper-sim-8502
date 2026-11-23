@@ -182,11 +182,13 @@ def _row_dict(cur, row):
 def _ensure(conn):
     from market_first.db import (ensure_fix1_schema, ensure_fix2_schema,
                                  ensure_fix3_schema,
-                                 ensure_p0int_schema)
+                                 ensure_p0int_schema,
+                                 ensure_redteam_schema)
     ensure_fix1_schema(conn)
     ensure_fix2_schema(conn)
     ensure_fix3_schema(conn)
     ensure_p0int_schema(conn)
+    ensure_redteam_schema(conn)
 
 
 def _record_registry_history(conn, entity_type, entity_id,
@@ -570,6 +572,46 @@ def get_sample(pool, sample_id) -> dict:
             conn.close()
 
 
+def _verify_eval_bars(pool, sample, bars):
+    """RT-5 bars 可信校验（2026-11-23 红队集中修复第 7 项）。
+
+    返回 None 表示可信；返回原因字符串表示不可信。校验口径：
+    标的取样本 candidate 的库内 symbol（非调用方声称）；调用方
+    bars 必须与系统自有行情落库 fetched_bars（bars 取数层
+    经 store_bars/get_bars 落库）逐 bar 一致——日期存在且
+    OHLCV 浮点差 <= 1e-6。fetched_bars 无该标的记录视为
+    无法验证（不可信）。
+    """
+    conn, owns = _resolve_conn(pool)
+    try:
+        _ensure(conn)
+        row = conn.execute(
+            "SELECT symbol FROM candidates WHERE id = ?",
+            (sample["candidate_id"],)).fetchone()
+        symbol = row[0] if row else None
+        if not symbol:
+            return "candidate symbol missing"
+        ref_rows = conn.execute(
+            "SELECT date, open, high, low, close, volume"
+            " FROM fetched_bars WHERE symbol = ?",
+            (str(symbol),)).fetchall()
+        if not ref_rows:
+            return "no fetched_bars for symbol %s" % (symbol,)
+        ref = {str(r[0])[:10]: r for r in ref_rows}
+        for b in bars:
+            d = str(b[0])[:10]
+            r = ref.get(d)
+            if r is None:
+                return "bar date %s not in fetched_bars" % d
+            for i in range(1, 6):
+                if abs(float(b[i]) - float(r[i])) > 1e-6:
+                    return "bar value mismatch on %s" % d
+        return None
+    finally:
+        if owns:
+            conn.close()
+
+
 def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
                     data_version=None) -> dict:
     """评估样本并回写 -> 更新后的样本行 dict。
@@ -578,6 +620,14 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
     bars 日期须为 'YYYY-MM-DD'）。成熟度口径见模块 docstring。
     回写同时记录 bars_asof（本次评估所用 bars 的最大日期）与
     data_version（评估数据版本/来源标识，入参传入）。
+
+    RT-5（2026-11-23）：forward 样本的 bars 不再无条件接受
+    调用方入参——必须先过 _verify_eval_bars（与自有
+    fetched_bars 逐 bar 一致）；不可信/无法验证时不计算任何
+    收益，写 maturity_status='not_evaluable'、
+    missing_reason='bars_untrusted: ...'（与既有 missing
+    口径一致的等价拒绝），不产生有效 forward 结果。
+    data_version 仍只留痕，不作可信依据。
     """
     sample = get_sample(pool, sample_id)
     if sample is None:
@@ -588,23 +638,30 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
     bars_asof = max((str(b[0])[:10] for b in bars), default=None)
     after = [b for b in bars if str(b[0]) > entry_date]
 
+    untrusted = None
+    if bars and sample.get("kind") == "forward":
+        untrusted = _verify_eval_bars(pool, sample, bars)
+
     # fix2-1：benchmark 不可变。当前 bars 中 entry 日收盘与已
     # 记录 benchmark 不一致 = 行情源事后修订：只记录、绝不
     # 覆盖 benchmark，评估继续以原 benchmark 计算。
+    # RT-5：bars 不可信时不据其做修订检测（伪造 bars 不得
+    # 产生 benchmark_revision 留痕）。
     revision = None
-    for b in bars:
-        if str(b[0])[:10] == entry_date:
-            observed_close = float(b[4])
-            if abs(observed_close - benchmark) > 1e-9:
-                revision = {
-                    "detected": True,
-                    "entry_date": entry_date,
-                    "recorded_benchmark": benchmark,
-                    "observed_close": observed_close,
-                    "detected_at": _now_iso(),
-                    "eval_version": eval_version,
-                }
-            break
+    if untrusted is None:
+        for b in bars:
+            if str(b[0])[:10] == entry_date:
+                observed_close = float(b[4])
+                if abs(observed_close - benchmark) > 1e-9:
+                    revision = {
+                        "detected": True,
+                        "entry_date": entry_date,
+                        "recorded_benchmark": benchmark,
+                        "observed_close": observed_close,
+                        "detected_at": _now_iso(),
+                        "eval_version": eval_version,
+                    }
+                break
     if revision is not None:
         pool.record_history(
             sample["candidate_id"], field="benchmark_revision",
@@ -620,7 +677,10 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
     max_drawdown = None
     missing_reason = None
 
-    if not bars:
+    if untrusted is not None:
+        maturity_status = "not_evaluable"
+        missing_reason = "bars_untrusted: %s" % untrusted
+    elif not bars:
         maturity_status = "missing"
         missing_reason = "no_price_data"
     elif not after:
@@ -677,25 +737,52 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
 
     只新增 sample_exclusions 行，绝不改动样本行本身。重复排除
     同一 (sample_id, excluded_from) 抛 ValueError。
+
+    RT-2 来源强制（2026-11-23 自红队补正）：排除记录直接改变
+    forward_stats 与 judge 的样本构成，reason 与 decided_by
+    必须非空（空白/纯空格视为无，与 P0-3「空白即无依据」口径
+    一致）；缺失在写库前抛 ValueError，排除不落字、样本与
+    统计构成不变。
+
+    RT-2 原子性强化（2026-11-23 红队集中修复第 2 项强化）：
+    排除行与审计留痕（candidate_history 的 sample_exclusion
+    行，actor=decided_by、reason=reason）在同一事务内写入，
+    单次 commit；任一步失败整体 rollback——排除不落字、审计
+    不落字、连接不留悬挂事务，forward_stats 构成不变。
     """
+    if not (reason and str(reason).strip()):
+        raise ValueError("excluding a sample requires reason")
+    if not (decided_by and str(decided_by).strip()):
+        raise ValueError("excluding a sample requires decided_by")
     conn, owns = _resolve_conn(pool)
     try:
         _ensure(conn)
-        if get_sample(pool, sample_id) is None:
+        sample = get_sample(pool, sample_id)
+        if sample is None:
             raise ValueError("validation sample not found: id=%r"
                              % (sample_id,))
         try:
+            now = _now_iso()
             cur = conn.execute(
                 "INSERT INTO sample_exclusions "
                 "(sample_id, excluded_from, reason, decided_by, "
                 " created_at) VALUES (?, ?, ?, ?, ?)",
-                (sample_id, excluded_from, reason, decided_by,
-                 _now_iso()))
+                (sample_id, excluded_from, reason, decided_by, now))
+            conn.execute(
+                "INSERT INTO candidate_history "
+                "(candidate_id, field, old_value, new_value, actor,"
+                " reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sample["candidate_id"], "sample_exclusion", None,
+                 str(excluded_from), decided_by, reason, now))
             conn.commit()
         except sqlite3.IntegrityError as e:
+            conn.rollback()
             raise ValueError(
                 "sample %r already excluded from %r (%s)"
                 % (sample_id, excluded_from, e)) from e
+        except Exception:
+            conn.rollback()
+            raise
         return cur.lastrowid
     finally:
         if owns:
@@ -799,11 +886,24 @@ def register_rule_implementation(rule_id, rule, version=None,
     只登记实现不等于批准：正式判定还要求 rule_registry 表中
     有同 (rule_id, version) 的 approved 行且 impl 绑定一致
     （见 register_rule / judge_validation）。
+
+    P0-1 登记期拒绝（2026-11-23 用户定案）：显式 version 与
+    实现自报版本不一致时，登记期直接 ValueError 拒绝——不再
+    允许「以 v1 之名登记 v2 实现」的冒充构造进入登记表；
+    judge 侧的 IMPL_MISMATCH 双边核对保持不变（对直写污染
+    登记表等表外错配继续兜底拒绝）。
     """
     if not hasattr(rule, "evaluate"):
         raise TypeError(
             "rule implementation must provide evaluate(scope, metrics)")
-    ver = str(version or getattr(rule, "version", "") or "")
+    self_version = str(getattr(rule, "version", "") or "")
+    if version is not None and str(version) != self_version:
+        raise ValueError(
+            "registration version %r does not match implementation "
+            "self-reported version %r: mismatched registration "
+            "rejected at registration time (P0-1)"
+            % (str(version), self_version))
+    ver = str(version or self_version)
     if not ver:
         raise ValueError(
             "rule implementation requires a version "

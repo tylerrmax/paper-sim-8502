@@ -426,6 +426,28 @@ def ensure_p0int_schema(conn) -> None:
     conn.commit()
 
 
+_REDTEAM_TRIGGERS_SQL = """
+CREATE TRIGGER IF NOT EXISTS trg_rt_discovery_events_created_at_no_update
+BEFORE UPDATE OF created_at ON discovery_events
+WHEN NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'discovery_events.created_at is server-stamped at ingest and immutable (P0-5)');
+END;
+"""
+
+
+def ensure_redteam_schema(conn) -> None:
+    """幂等安装红队集中修复（2026-11-23）的 DB 层保护触发器。
+
+    - P0-5：discovery_events.created_at 落字后不可 UPDATE
+      篡改（回填/前移/后移全拒）；生成仍由 pool.ingest 以
+      服务器时间（或测试注入的可信时钟）完成。
+    触发器只新增、不动既有数据。
+    """
+    conn.executescript(_REDTEAM_TRIGGERS_SQL)
+    conn.commit()
+
+
 def init_db(db_path: str | None = None) -> str:
     """建表（幂等）并返回实际库路径。"""
     path = _resolve(db_path)
@@ -437,6 +459,7 @@ def init_db(db_path: str | None = None) -> str:
         ensure_fix2_schema(conn)
         ensure_fix3_schema(conn)
         ensure_p0int_schema(conn)
+        ensure_redteam_schema(conn)
     finally:
         conn.close()
     return path

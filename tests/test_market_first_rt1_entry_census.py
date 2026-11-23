@@ -62,11 +62,8 @@ def _walk_to_validating(tmp_path, symbol="603893"):
         source_id="inst_lhb_stored",
         discovered_at="2026-11-16T09:00:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
+    pool.clock = lambda: ev.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid, _ = pool.ingest(ev)
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev.discovered_at, cid))
-    pool.conn.commit()
     for state in ("pending_research", "researching", "validating"):
         transition(pool, cid, state, actor="tester", reason="walk")
     return pool, cid

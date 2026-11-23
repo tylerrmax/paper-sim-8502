@@ -91,11 +91,8 @@ def _pool_with_sample(tmp_path):
         source_id="inst_lhb_live",
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
+    pool.clock = lambda: ev.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid, _ = pool.ingest(ev)
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev.discovered_at, cid))
-    pool.conn.commit()
     ev_row = pool.events_for(cid)[0]
     sid = validation.create_sample(
         pool, cid, ev_row["source_id"], kind="forward",
@@ -277,11 +274,8 @@ def test_c7_every_validation_passed_has_passed_decision(tmp_path):
         source_id="inst_lhb_live",
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 50.0})
+    pool.clock = lambda: ev2.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid2, _ = pool.ingest(ev2)
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev2.discovered_at, cid2))
-    pool.conn.commit()
     for state in ("pending_research", "researching", "validating"):
         transition(pool, cid2, state, actor="tester")
     ev2_row = pool.events_for(cid2)[0]

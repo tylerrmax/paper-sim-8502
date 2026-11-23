@@ -182,11 +182,13 @@ def _row_dict(cur, row):
 def _ensure(conn):
     from market_first.db import (ensure_fix1_schema, ensure_fix2_schema,
                                  ensure_fix3_schema,
-                                 ensure_p0int_schema)
+                                 ensure_p0int_schema,
+                                 ensure_redteam_schema)
     ensure_fix1_schema(conn)
     ensure_fix2_schema(conn)
     ensure_fix3_schema(conn)
     ensure_p0int_schema(conn)
+    ensure_redteam_schema(conn)
 
 
 def _record_registry_history(conn, entity_type, entity_id,

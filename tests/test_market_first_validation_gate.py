@@ -62,15 +62,8 @@ def _candidate_validating(tmp_path):
         source_id="inst_lhb_live",
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
+    pool.clock = lambda: ev.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid, _ = pool.ingest(ev)
-    # fix3 信任路径（MF-FWD-002）：时间锚以库内服务器侧
-    # ingested_at 为准；本 helper 模拟生产不变量「发现即
-    # 入库」，把事件 created_at 对齐到模拟发现时刻；
-    # 本文件全部断言未改动。
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev.discovered_at, cid))
-    pool.conn.commit()
     for state in ("pending_research", "researching", "validating"):
         transition(pool, cid, state, actor="tester")
     return pool, cid

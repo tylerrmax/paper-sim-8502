@@ -36,11 +36,8 @@ def _pool_with_sample(tmp_path):
         source_id="inst_lhb_live",
         discovered_at="2026-11-13T16:30:00+08:00",
         trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
+    pool.clock = lambda: ev.discovered_at  # P0-5 可信时钟夹具迁移（2026-11-23）：ingest 落字时刻即模拟入库时刻，替代旧直写 UPDATE created_at 手法；断言未改动。
     cid, _ = pool.ingest(ev)
-    pool.conn.execute(
-        "UPDATE discovery_events SET created_at=?"
-        " WHERE candidate_id=?", (ev.discovered_at, cid))
-    pool.conn.commit()
     ev_id = pool.events_for(cid)[0]["id"]
     sid = create_sample(pool, cid, "inst_lhb_live", kind="forward",
                         discovery_event_id=ev_id, bars=BARS)

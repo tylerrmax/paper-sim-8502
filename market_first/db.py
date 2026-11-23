@@ -496,6 +496,24 @@ BEGIN
           AND approver IS NOT NULL AND trim(approver) <> ''
           AND basis IS NOT NULL AND trim(basis) <> '');
 END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_sample_exclusions_audit_insert
+BEFORE INSERT ON sample_exclusions
+BEGIN
+    SELECT RAISE(ABORT, 'sample_exclusions requires non-empty reason (RT-2 db guard)')
+    WHERE NEW.reason IS NULL OR trim(NEW.reason) = '';
+    SELECT RAISE(ABORT, 'sample_exclusions requires non-empty decided_by (RT-2 db guard)')
+    WHERE NEW.decided_by IS NULL OR trim(NEW.decided_by) = '';
+    SELECT RAISE(ABORT, 'sample_exclusions requires matching candidate_history audit row in same transaction (RT-2 db guard)')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM candidate_history h
+        JOIN validation_samples s ON s.id = NEW.sample_id
+        WHERE h.candidate_id = s.candidate_id
+          AND h.field = 'sample_exclusion'
+          AND h.new_value = NEW.excluded_from
+          AND h.actor = NEW.decided_by
+          AND h.reason = NEW.reason);
+END;
 """
 
 
@@ -517,6 +535,13 @@ def ensure_redteam_schema(conn) -> None:
       流转）必须有 decision='approved' 且 approver/basis
       均非空的 approvals 行对应（decide 恒先写 approvals
       后流转、同事务，天然通过）。
+    - RT-2 底层闸（2026-11-23 补强批）：sample_exclusions
+      每条 INSERT 必须 reason/decided_by 非空，且同事务内
+      已有逐字对应的 candidate_history 审计行
+      （field='sample_exclusion'、actor=decided_by、
+      reason=reason；exclude_sample 恒先写审计行后写排除
+      行、同事务，天然通过）。设计见 evidence 设计补记
+      DESIGN-BOTTOM-LAYER.md。
     触发器只新增、不动既有数据。
     """
     conn.executescript(_REDTEAM_TRIGGERS_SQL)

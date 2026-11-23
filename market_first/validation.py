@@ -749,6 +749,12 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
     行，actor=decided_by、reason=reason）在同一事务内写入，
     单次 commit；任一步失败整体 rollback——排除不落字、审计
     不落字、连接不留悬挂事务，forward_stats 构成不变。
+
+    RT-2 底层闸配合（2026-11-23 补强批）：DB 触发器
+    trg_rt_sample_exclusions_audit_insert 要求排除行落字时
+    同事务内已有逐字对应的审计行，故本函数写序为先写
+    candidate_history 审计行、后写 sample_exclusions 行
+    （两行集合与字段不变，仍同事务单次 commit）。
     """
     if not (reason and str(reason).strip()):
         raise ValueError("excluding a sample requires reason")
@@ -763,17 +769,17 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
                              % (sample_id,))
         try:
             now = _now_iso()
-            cur = conn.execute(
-                "INSERT INTO sample_exclusions "
-                "(sample_id, excluded_from, reason, decided_by, "
-                " created_at) VALUES (?, ?, ?, ?, ?)",
-                (sample_id, excluded_from, reason, decided_by, now))
             conn.execute(
                 "INSERT INTO candidate_history "
                 "(candidate_id, field, old_value, new_value, actor,"
                 " reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (sample["candidate_id"], "sample_exclusion", None,
                  str(excluded_from), decided_by, reason, now))
+            cur = conn.execute(
+                "INSERT INTO sample_exclusions "
+                "(sample_id, excluded_from, reason, decided_by, "
+                " created_at) VALUES (?, ?, ?, ?, ?)",
+                (sample_id, excluded_from, reason, decided_by, now))
             conn.commit()
         except sqlite3.IntegrityError as e:
             conn.rollback()

@@ -1,0 +1,9 @@
+........................................................................ [ 51%]
+...................................................................      [100%]
+=============================== warnings summary ===============================
+tests/test_market_first_cache_isolation.py::test_get_bars_never_touches_prod_shared_cache
+  /home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 002446 数据陈旧: 最新 2026-11-13（距今10天）
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+139 passed, 216 deselected, 1 warning in 7.06s

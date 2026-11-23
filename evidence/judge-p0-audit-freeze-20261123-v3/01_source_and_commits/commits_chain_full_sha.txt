@@ -1,0 +1,17 @@
+bf2135b47e1a2ad407192f20e624274c7c53667e Merge 红队修复 V1.0 底层边界补齐 (RT-1 晋升 DB 闸 + RT-2 排除 DB 闸) into unified-arch
+2bfef8f972427c57f5b63dbbd290e5b81eecef69 底层补强批交付: 台账 MF-PROMO-002/MF-VAL-001 追加底层闸引用 + 回归日志 + DELIVERY-BOTTOM-LAYER 五项交账
+59b2eb7dd43550cbc5ed793a9dd95a5510f49521 RT-2 底层闸: sample_exclusions 落字须有同事务逐字对应审计行 (DB 触发器)
+f273d5bb2113db21e8b8f16da9be1c08b9a8622c RT-1 底层闸: candidates 进入 promotion_status=approved 须有有效 approvals 记录 (DB 触发器)
+a84fb4a76d5cfb4ebc2e99ab16da0311aa56e0a6 V2 审计冻结包组装: evidence/judge-p0-audit-freeze-20261123-v2 (43 文件, 冻结 HEAD dd70483)
+dd70483c47841ced7dbf23f873d601ed2592535d 红队修复 V1.0 交付: 台账八项 READY_FOR_AUDIT + RT-4/RT-6 新增 OPEN + 证据包 + DELIVERY 五项交账
+0d93eb8fe392008aaf26cf96d948607c18f495a4 Merge 红队缺陷集中修复 V1.0 (RT-1/RT-2/RT-3 + P0-1 登记期拒绝 + P0-3 数据库审批保护 + P0-5 created_at 可信性 + RT-5 bars 校验 + MF-PROMO-001) into unified-arch
+8b16cd5994b5a0d0c35df979e2bc383a51a27873 RT-5: evaluate_sample 校验 bars 与自有 fetched_bars 逐 bar 一致
+acf54d918774e260c5c41e0072484b6a5bfc6be2 P0-3 数据库审批保护: registry/history 触发器 (先设计后实施)
+1818018b700295ba726aea11fd61b9a9d5051085 P0-5 created_at 可信性: 服务器落字+触发器禁篡改+可信时钟夹具
+ebd77178dd40c64c78842a074ce1e3ffba8e2bb5 RT-2 强化: exclude_sample 排除与审计留痕同事务原子写入
+75b4b88bce296b13c48cc3ce3d6a05469d96ba1a RT-1 强化: 晋升批准入口全枚举普查测试
+cdce3934cf0e7504aabc4694cdf56e495276ac4a P0-1 登记期拒绝: register_rule_implementation 拒绝登记版本!=实现自报版本
+bd731e24bbf7d66ff6cba98593f65db63097927b MF-PROMO-001: set_fields 禁直改 promotion_status=approved，状态机改走专用写通道
+417d32454047455c2f2dbd62f81dd2657d3b23e1 RT-3: InstFlowModule 最新事件改以 created_at 为排序锚（自红队补正）
+405ecfca9378ae9e44bc07bd4c5febd05903730b RT-2: exclude_sample 强制 reason/decided_by 非空（自红队补正）
+5c0801062102273fbd17202418eaf41eb362c90a RT-1: promotion.decide approved 强制 approver+basis 非空（自红队补正）

@@ -1,0 +1,6 @@
+/home/hatch/workspace/l2-remediation/market-first/evidence/judge-p0-audit-freeze-20261123-v3/01_source_and_commits/unified-arch.bundle is okay
+The bundle contains this ref:
+bf2135b47e1a2ad407192f20e624274c7c53667e refs/heads/market-first/unified-arch
+The bundle requires this ref:
+c490424939422639280d19fa36bcccd34da83184 
+The bundle uses this hash algorithm: sha1

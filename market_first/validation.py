@@ -683,6 +683,12 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
     必须非空（空白/纯空格视为无，与 P0-3「空白即无依据」口径
     一致）；缺失在写库前抛 ValueError，排除不落字、样本与
     统计构成不变。
+
+    RT-2 原子性强化（2026-11-23 红队集中修复第 2 项强化）：
+    排除行与审计留痕（candidate_history 的 sample_exclusion
+    行，actor=decided_by、reason=reason）在同一事务内写入，
+    单次 commit；任一步失败整体 rollback——排除不落字、审计
+    不落字、连接不留悬挂事务，forward_stats 构成不变。
     """
     if not (reason and str(reason).strip()):
         raise ValueError("excluding a sample requires reason")
@@ -691,21 +697,32 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
     conn, owns = _resolve_conn(pool)
     try:
         _ensure(conn)
-        if get_sample(pool, sample_id) is None:
+        sample = get_sample(pool, sample_id)
+        if sample is None:
             raise ValueError("validation sample not found: id=%r"
                              % (sample_id,))
         try:
+            now = _now_iso()
             cur = conn.execute(
                 "INSERT INTO sample_exclusions "
                 "(sample_id, excluded_from, reason, decided_by, "
                 " created_at) VALUES (?, ?, ?, ?, ?)",
-                (sample_id, excluded_from, reason, decided_by,
-                 _now_iso()))
+                (sample_id, excluded_from, reason, decided_by, now))
+            conn.execute(
+                "INSERT INTO candidate_history "
+                "(candidate_id, field, old_value, new_value, actor,"
+                " reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sample["candidate_id"], "sample_exclusion", None,
+                 str(excluded_from), decided_by, reason, now))
             conn.commit()
         except sqlite3.IntegrityError as e:
+            conn.rollback()
             raise ValueError(
                 "sample %r already excluded from %r (%s)"
                 % (sample_id, excluded_from, e)) from e
+        except Exception:
+            conn.rollback()
+            raise
         return cur.lastrowid
     finally:
         if owns:

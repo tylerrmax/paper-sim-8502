@@ -88,3 +88,54 @@ def test_exclude_with_full_info_positive_control(tmp_path):
         (xid,)).fetchone()
     assert row["reason"] == "审计裁定排除"
     assert row["decided_by"] == "independent_audit"
+
+
+# ---------------------------------------------------------------------------
+# RT-2 强化（2026-11-23 红队集中修复第 2 项强化）：原子性
+# 排除行与 candidate_history 审计行同事务写入；失败整体回滚，
+# forward_stats 构成不变（以 excluded_sample_ids 为构成口径实证）。
+# ---------------------------------------------------------------------------
+
+def _audit_rows(pool):
+    return pool.conn.execute(
+        "SELECT COUNT(*) c FROM candidate_history"
+        " WHERE field='sample_exclusion'").fetchone()["c"]
+
+
+def test_exclude_writes_audit_history_atomically(tmp_path):
+    """成功路径：排除行与审计行同时存在，审计行带
+    actor=decided_by / reason / excluded_from。"""
+    pool, sid = _pool_with_sample(tmp_path)
+    exclude_sample(pool, sid, "forward_stats", "审计裁定排除",
+                   decided_by="independent_audit")
+    assert _exclusion_rows(pool) == 1
+    assert _audit_rows(pool) == 1
+    row = pool.conn.execute(
+        "SELECT * FROM candidate_history"
+        " WHERE field='sample_exclusion'").fetchone()
+    assert row["actor"] == "independent_audit"
+    assert row["reason"] == "审计裁定排除"
+    assert row["new_value"] == "forward_stats"
+
+
+def test_failed_exclude_rolls_back_both_writes(tmp_path):
+    """失败回滚实证：重复排除（UNIQUE 冲突）在写审计行前失败
+    ——但即使冲突发生在第二写，也必须整体回滚：排除行仍为
+    1、审计行仍为 1、forward_stats 构成不变，且连接不在悬挂
+    事务中（后续正常排除其他口径可成功）。"""
+    pool, sid = _pool_with_sample(tmp_path)
+    exclude_sample(pool, sid, "forward_stats", "审计裁定排除",
+                   decided_by="independent_audit")
+    stats_before = excluded_sample_ids(pool)
+    with pytest.raises(ValueError):
+        exclude_sample(pool, sid, "forward_stats", "重复排除",
+                       decided_by="independent_audit")
+    assert _exclusion_rows(pool) == 1
+    assert _audit_rows(pool) == 1
+    assert excluded_sample_ids(pool) == stats_before == {sid}
+    # 回滚后连接可用：另一口径排除成功，两行同步增长
+    exclude_sample(pool, sid, "judge_stats", "法官口径排除",
+                   decided_by="independent_audit")
+    assert _exclusion_rows(pool) == 2
+    assert _audit_rows(pool) == 2
+    assert excluded_sample_ids(pool, "judge_stats") == {sid}

@@ -677,7 +677,17 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
 
     只新增 sample_exclusions 行，绝不改动样本行本身。重复排除
     同一 (sample_id, excluded_from) 抛 ValueError。
+
+    RT-2 来源强制（2026-11-23 自红队补正）：排除记录直接改变
+    forward_stats 与 judge 的样本构成，reason 与 decided_by
+    必须非空（空白/纯空格视为无，与 P0-3「空白即无依据」口径
+    一致）；缺失在写库前抛 ValueError，排除不落字、样本与
+    统计构成不变。
     """
+    if not (reason and str(reason).strip()):
+        raise ValueError("excluding a sample requires reason")
+    if not (decided_by and str(decided_by).strip()):
+        raise ValueError("excluding a sample requires decided_by")
     conn, owns = _resolve_conn(pool)
     try:
         _ensure(conn)

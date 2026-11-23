@@ -11,6 +11,7 @@ from datetime import date, timedelta
 import pytest
 
 from market_first import validation
+from market_first import bars as bars_mod
 from market_first.models import DiscoveryEvent
 from market_first.pool import CandidatePool
 from market_first.promotion import IllegalTransitionError, transition
@@ -75,6 +76,7 @@ def _mature_forward(pool, cid):
     sid = validation.create_sample(
         pool, cid, ev["source_id"], kind="forward",
         discovery_event_id=ev["id"], bars=bars)
+    bars_mod.store_bars(pool.get_by_id(cid)["symbol"], bars, "test-fixture", pool.db_path)  # RT-5 夹具迁移（2026-11-23）：经 bars 层受控通道落库 fetched_bars，evaluate 校验依据；断言未改动。
     validation.evaluate_sample(pool, sid, bars)
     return sid
 
@@ -121,6 +123,7 @@ def test_judge_immature_forward_not_passed(tmp_path):
     sid = validation.create_sample(
         pool, cid, ev["source_id"], kind="forward",
         discovery_event_id=ev["id"], bars=bars)
+    bars_mod.store_bars(pool.get_by_id(cid)["symbol"], bars, "test-fixture", pool.db_path)  # RT-5 夹具迁移（2026-11-23）：经 bars 层受控通道落库 fetched_bars，evaluate 校验依据；断言未改动。
     validation.evaluate_sample(pool, sid, bars[:8])  # 只给少量 bars
     sample = validation.get_sample(pool, sid)
     assert sample["maturity_status"] == "immature"

@@ -71,6 +71,7 @@ import pytest
 
 from market_first import calendar as cal
 from market_first import validation
+from market_first import bars as bars_mod
 from market_first.db import DEFAULT_DB_PATH
 from market_first.models import DiscoveryEvent
 from market_first.pool import CandidatePool
@@ -130,6 +131,7 @@ def test_a1_direct_sql_benchmark_update_delete_forbidden(tmp_path):
     assert after["benchmark_price"] == before["benchmark_price"]
     assert after["benchmark_date"] == before["benchmark_date"]
     # 正常评估回写不受触发器影响（不触碰 benchmark 三列）
+    bars_mod.store_bars(pool.get_by_id(_cid)["symbol"], BARS, "test-fixture", pool.db_path)  # RT-5 夹具迁移（2026-11-23）：经 bars 层受控通道落库 fetched_bars，evaluate 校验依据；断言未改动。
     validation.evaluate_sample(pool, sid, BARS)
     assert validation.get_sample(pool, sid)["benchmark_price"] \
         == before["benchmark_price"]
@@ -282,6 +284,7 @@ def test_c7_every_validation_passed_has_passed_decision(tmp_path):
     sid2 = validation.create_sample(
         pool, cid2, ev2_row["source_id"], kind="forward",
         discovery_event_id=ev2_row["id"], bars=bars)
+    bars_mod.store_bars(pool.get_by_id(cid2)["symbol"], bars, "test-fixture", pool.db_path)  # RT-5 夹具迁移（2026-11-23）：经 bars 层受控通道落库 fetched_bars，evaluate 校验依据；断言未改动。
     validation.evaluate_sample(pool, sid2, bars)
     rid = "adv_c7_rule"
     try:

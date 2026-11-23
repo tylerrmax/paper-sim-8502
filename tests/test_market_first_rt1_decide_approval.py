@@ -20,6 +20,7 @@ from datetime import date, timedelta
 import pytest
 
 from market_first import validation
+from market_first import bars as bars_mod
 from market_first.models import DiscoveryEvent
 from market_first.pool import CandidatePool
 from market_first.promotion import decide, transition
@@ -62,6 +63,7 @@ def _judge_pass(pool, cid):
         pool, cid, ev["source_id"], kind="forward",
         discovery_event_id=ev["id"], bars=bars,
         fetched_at="2026-11-17T16:00:00+08:00")
+    bars_mod.store_bars(pool.get_by_id(cid)["symbol"], bars, "test-fixture", pool.db_path)  # RT-5 夹具迁移（2026-11-23）：经 bars 层受控通道落库 fetched_bars，evaluate 校验依据；断言未改动。
     validation.evaluate_sample(pool, sid, bars)
     out = validation.judge_validation(
         pool, cid, rule_id="test_rule",

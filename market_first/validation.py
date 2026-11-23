@@ -572,6 +572,46 @@ def get_sample(pool, sample_id) -> dict:
             conn.close()
 
 
+def _verify_eval_bars(pool, sample, bars):
+    """RT-5 bars 可信校验（2026-11-23 红队集中修复第 7 项）。
+
+    返回 None 表示可信；返回原因字符串表示不可信。校验口径：
+    标的取样本 candidate 的库内 symbol（非调用方声称）；调用方
+    bars 必须与系统自有行情落库 fetched_bars（bars 取数层
+    经 store_bars/get_bars 落库）逐 bar 一致——日期存在且
+    OHLCV 浮点差 <= 1e-6。fetched_bars 无该标的记录视为
+    无法验证（不可信）。
+    """
+    conn, owns = _resolve_conn(pool)
+    try:
+        _ensure(conn)
+        row = conn.execute(
+            "SELECT symbol FROM candidates WHERE id = ?",
+            (sample["candidate_id"],)).fetchone()
+        symbol = row[0] if row else None
+        if not symbol:
+            return "candidate symbol missing"
+        ref_rows = conn.execute(
+            "SELECT date, open, high, low, close, volume"
+            " FROM fetched_bars WHERE symbol = ?",
+            (str(symbol),)).fetchall()
+        if not ref_rows:
+            return "no fetched_bars for symbol %s" % (symbol,)
+        ref = {str(r[0])[:10]: r for r in ref_rows}
+        for b in bars:
+            d = str(b[0])[:10]
+            r = ref.get(d)
+            if r is None:
+                return "bar date %s not in fetched_bars" % d
+            for i in range(1, 6):
+                if abs(float(b[i]) - float(r[i])) > 1e-6:
+                    return "bar value mismatch on %s" % d
+        return None
+    finally:
+        if owns:
+            conn.close()
+
+
 def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
                     data_version=None) -> dict:
     """评估样本并回写 -> 更新后的样本行 dict。
@@ -580,6 +620,14 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
     bars 日期须为 'YYYY-MM-DD'）。成熟度口径见模块 docstring。
     回写同时记录 bars_asof（本次评估所用 bars 的最大日期）与
     data_version（评估数据版本/来源标识，入参传入）。
+
+    RT-5（2026-11-23）：forward 样本的 bars 不再无条件接受
+    调用方入参——必须先过 _verify_eval_bars（与自有
+    fetched_bars 逐 bar 一致）；不可信/无法验证时不计算任何
+    收益，写 maturity_status='not_evaluable'、
+    missing_reason='bars_untrusted: ...'（与既有 missing
+    口径一致的等价拒绝），不产生有效 forward 结果。
+    data_version 仍只留痕，不作可信依据。
     """
     sample = get_sample(pool, sample_id)
     if sample is None:
@@ -590,23 +638,30 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
     bars_asof = max((str(b[0])[:10] for b in bars), default=None)
     after = [b for b in bars if str(b[0]) > entry_date]
 
+    untrusted = None
+    if bars and sample.get("kind") == "forward":
+        untrusted = _verify_eval_bars(pool, sample, bars)
+
     # fix2-1：benchmark 不可变。当前 bars 中 entry 日收盘与已
     # 记录 benchmark 不一致 = 行情源事后修订：只记录、绝不
     # 覆盖 benchmark，评估继续以原 benchmark 计算。
+    # RT-5：bars 不可信时不据其做修订检测（伪造 bars 不得
+    # 产生 benchmark_revision 留痕）。
     revision = None
-    for b in bars:
-        if str(b[0])[:10] == entry_date:
-            observed_close = float(b[4])
-            if abs(observed_close - benchmark) > 1e-9:
-                revision = {
-                    "detected": True,
-                    "entry_date": entry_date,
-                    "recorded_benchmark": benchmark,
-                    "observed_close": observed_close,
-                    "detected_at": _now_iso(),
-                    "eval_version": eval_version,
-                }
-            break
+    if untrusted is None:
+        for b in bars:
+            if str(b[0])[:10] == entry_date:
+                observed_close = float(b[4])
+                if abs(observed_close - benchmark) > 1e-9:
+                    revision = {
+                        "detected": True,
+                        "entry_date": entry_date,
+                        "recorded_benchmark": benchmark,
+                        "observed_close": observed_close,
+                        "detected_at": _now_iso(),
+                        "eval_version": eval_version,
+                    }
+                break
     if revision is not None:
         pool.record_history(
             sample["candidate_id"], field="benchmark_revision",
@@ -622,7 +677,10 @@ def evaluate_sample(pool, sample_id, bars, eval_version=DEFAULT_EVAL_VERSION,
     max_drawdown = None
     missing_reason = None
 
-    if not bars:
+    if untrusted is not None:
+        maturity_status = "not_evaluable"
+        missing_reason = "bars_untrusted: %s" % untrusted
+    elif not bars:
         maturity_status = "missing"
         missing_reason = "no_price_data"
     elif not after:

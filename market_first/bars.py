@@ -164,6 +164,24 @@ def _own_cache_write(symbol, bars, source, db_path,
         return 0
 
 
+def store_bars(symbol, bars, source, db_path=None):
+    """受控落库通道（RT-5，2026-11-23）：把行情写入自有
+    fetched_bars 表，返回写入条数。
+
+    get_bars 取数成功时本就经此路径落库；本公开入口供
+    validation.evaluate_sample 的 bars 可信校验作依据，并供
+    测试夹具模拟生产取数路径（夹具不得直写 fetched_bars
+    SQL）。db_path 缺省取 bars 层配置路径。
+    """
+    own_db = _resolve_db_path(db_path)
+    bars = list(bars or [])
+    if not bars:
+        return 0
+    return _own_cache_write(
+        symbol, bars, source, own_db,
+        start_str=str(bars[0][0])[:10], end_str=str(bars[-1][0])[:10])
+
+
 def _own_cache_covers(symbol, start_str, end_str, db_path):
     """自有缓存是否已覆盖所请区间：存在 coverage 记录，其
     start <= 所请 start，且（所请 end 非空时）其 end >= 所请

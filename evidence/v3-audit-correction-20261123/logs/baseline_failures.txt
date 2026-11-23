@@ -1,0 +1,7 @@
+FAILED tests/stress_test.py::test_10_datasource_fallback
+FAILED tests/stress_test.py::test_4_exactly_once_commands
+FAILED tests/stress_test.py::test_5_snapshot_atomicity
+FAILED tests/stress_test.py::test_6_ashare_dryrun
+FAILED tests/stress_test.py::test_7_concurrent_apply
+FAILED tests/stress_test.py::test_9_table_consistency
+FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent

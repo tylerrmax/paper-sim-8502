@@ -744,17 +744,23 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
     一致）；缺失在写库前抛 ValueError，排除不落字、样本与
     统计构成不变。
 
-    RT-2 原子性强化（2026-11-23 红队集中修复第 2 项强化）：
-    排除行与审计留痕（candidate_history 的 sample_exclusion
-    行，actor=decided_by、reason=reason）在同一事务内写入，
-    单次 commit；任一步失败整体 rollback——排除不落字、审计
-    不落字、连接不留悬挂事务，forward_stats 构成不变。
+    RT-2 原子性（应用层行为）：排除行与审计留痕
+    （candidate_history 的 sample_exclusion 行，
+    actor=decided_by、reason=reason）由本函数在同一连接
+    单次 commit 内写入，任一步失败整体 rollback——排除
+    不落字、审计不落字、连接不留悬挂事务，forward_stats
+    构成不变。
 
-    RT-2 底层闸配合（2026-11-23 补强批）：DB 触发器
-    trg_rt_sample_exclusions_audit_insert 要求排除行落字时
-    同事务内已有逐字对应的审计行，故本函数写序为先写
-    candidate_history 审计行、后写 sample_exclusions 行
-    （两行集合与字段不变，仍同事务单次 commit）。
+    RT-2 审计证据绑定（2026-11-23 补强批 + V3 补正 P0-2）：
+    排除行以 audit_history_id 显式引用审计行 id 落字，
+    DB 触发器 trg_rt_sample_exclusions_audit_insert 校验
+    绑定必备、引用逐字对应与一对一（同一审计行不得被
+    两条排除引用），被引用的审计行另有触发器禁止改删。
+    口径修订：DB 层证明的是审计证据的存在性、唯一性与
+    不可变性（不可变、一对一关联的审计证据）；审计行与
+    排除行是否同出一事务/同一操作者（同源性）不是触发
+    器能证明的命题，不再以「同事务」表述底层闸证明力。
+    本函数写序为先写审计行、后写带绑定 id 的排除行。
     """
     if not (reason and str(reason).strip()):
         raise ValueError("excluding a sample requires reason")
@@ -769,7 +775,7 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
                              % (sample_id,))
         try:
             now = _now_iso()
-            conn.execute(
+            cur_h = conn.execute(
                 "INSERT INTO candidate_history "
                 "(candidate_id, field, old_value, new_value, actor,"
                 " reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -778,8 +784,10 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
             cur = conn.execute(
                 "INSERT INTO sample_exclusions "
                 "(sample_id, excluded_from, reason, decided_by, "
-                " created_at) VALUES (?, ?, ?, ?, ?)",
-                (sample_id, excluded_from, reason, decided_by, now))
+                " created_at, audit_history_id)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (sample_id, excluded_from, reason, decided_by, now,
+                 cur_h.lastrowid))
             conn.commit()
         except sqlite3.IntegrityError as e:
             conn.rollback()

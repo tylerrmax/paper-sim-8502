@@ -92,12 +92,17 @@ def _register_approved(pool, version, **kw):
 
 
 def test_v1_impl_cannot_impersonate_v2_via_explicit_version(tmp_path):
-    """v1 实现以显式 version='v2' 登记（冒充）：登记条目的
-    impl_version 恒为实现自报的 'v1'，judge v2 必须拒绝。"""
+    """v1 实现冒充 v2：judge v2 必须拒绝。
+
+    构造变更登记（2026-11-23 P0-1 登记期拒绝）：原构造以
+    register_rule_implementation(version='v2') 登记自报 v1 的
+    实现——该冒充构造已被登记期拒绝封口，无法再经 API 产生；
+    改为直写登记表污染（条目 impl_version 仍为实现自报的
+    'v1'），下方全部断言逐字保留。"""
     pool, cid = _candidate_validating(tmp_path)
     _mature_forward(pool, cid)
-    validation.register_rule_implementation(RID, _Rule("v1"),
-                                            version="v2")
+    validation.RULE_IMPLEMENTATIONS[(RID, "v2")] = {
+        "impl_key": RID, "impl_version": "v1", "rule": _Rule("v1")}
     entry = validation.RULE_IMPLEMENTATIONS[(RID, "v2")]
     # 显式 version 只改变登记键，覆盖不了实现自报版本
     assert entry["impl_version"] == "v1"

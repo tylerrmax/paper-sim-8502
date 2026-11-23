@@ -809,11 +809,24 @@ def register_rule_implementation(rule_id, rule, version=None,
     只登记实现不等于批准：正式判定还要求 rule_registry 表中
     有同 (rule_id, version) 的 approved 行且 impl 绑定一致
     （见 register_rule / judge_validation）。
+
+    P0-1 登记期拒绝（2026-11-23 用户定案）：显式 version 与
+    实现自报版本不一致时，登记期直接 ValueError 拒绝——不再
+    允许「以 v1 之名登记 v2 实现」的冒充构造进入登记表；
+    judge 侧的 IMPL_MISMATCH 双边核对保持不变（对直写污染
+    登记表等表外错配继续兜底拒绝）。
     """
     if not hasattr(rule, "evaluate"):
         raise TypeError(
             "rule implementation must provide evaluate(scope, metrics)")
-    ver = str(version or getattr(rule, "version", "") or "")
+    self_version = str(getattr(rule, "version", "") or "")
+    if version is not None and str(version) != self_version:
+        raise ValueError(
+            "registration version %r does not match implementation "
+            "self-reported version %r: mismatched registration "
+            "rejected at registration time (P0-1)"
+            % (str(version), self_version))
+    ver = str(version or self_version)
     if not ver:
         raise ValueError(
             "rule implementation requires a version "

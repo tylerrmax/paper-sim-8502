@@ -131,9 +131,13 @@ def test_no_impl_for_registered_version(tmp_path):
 def test_impl_mismatch_impl_impersonates_version(tmp_path):
     pool, cid = _candidate_validating(tmp_path)
     _mature_forward(pool, cid)
-    # 以 v1 之名登记自报 v2 的实现（冒充）
-    validation.register_rule_implementation(RID, _Rule("v2"),
-                                            version="v1")
+    # 构造变更登记（2026-11-23 P0-1 登记期拒绝）：原构造以
+    # register_rule_implementation(version='v1') 登记自报 v2 的
+    # 实现——该冒充构造已被登记期拒绝封口，无法再经 API 产生；
+    # 改为直写登记表污染（模拟表外错配），judge 的 IMPL_MISMATCH
+    # 双边核对断言与覆盖意图逐字保留。
+    validation.RULE_IMPLEMENTATIONS[(RID, "v1")] = {
+        "impl_key": RID, "impl_version": "v2", "rule": _Rule("v2")}
     _register(pool, "v1")  # 注册表绑定 impl_version=v1
     out = validation.judge_validation(
         pool, cid, rule_id=RID, rule_version="v1")

@@ -30,7 +30,10 @@ def _register_test_rule(pool):
     validation.register_rule_implementation("test_rule", _Rule())
     validation.register_rule(
         pool, "test_rule", _Rule.version, status="approved",
-        approved_by="unit-test")
+        approved_by="unit-test",
+        # P0-3 集成（2026-11-23）：补齐批准信息；断言未改动。
+        actor="unit-test", reason="validation gate test approval",
+        approval_basis="test-only approval (tmp db)")
 
 
 def _judge_with_test_rule(pool, cid):

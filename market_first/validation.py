@@ -63,12 +63,17 @@ Benchmark 收盘完整性（独立验收前补正 fix2-1，写死）：
 approved 规则，judge 恒 not_evaluable。
 
 效率升级 fix3（P0-A/P0-B）：
-- 时间锚信任路径（MF-FWD-002）：create_sample 的发现时间锚
-  = max(调用方声称的 discovered_at 日期, 库内服务器侧
-  ingested_at 日期 discovery_events.created_at)，声称与库内
-  不一致时在 candidate_history 留痕（field=
-  'discovery_time_anchor'）。回填声称不能把 backfill 变
-  forward。
+- 时间锚信任路径（MF-FWD-002，P0-5 集成 2026-11-23 收紧）：
+  create_sample 的发现时间锚 = 库内服务器侧 ingested_at
+  日期（discovery_events.created_at，由 pool.ingest 以
+  服务器时间落字）单一锚；调用方声称的 discovered_at
+  不再参与锚的计算（原 fix3 口径为 max(声称, 入库)），
+  声称与库内不一致时在 candidate_history 留痕（field=
+  'discovery_time_anchor'）。事件行缺 created_at 时无
+  可信锚，forward 以 trusted_ingest_time_missing 留痕
+  拒绝；延迟入库的历史事件（声称发现早、实际入库晚）
+  按入库锚强制 backfill 或拒绝，历史行情不得进入有效
+  forward 统计。
 - 收盘确认日历化（MF-BENCH-003）：bar_close_confirmed 优先
   查 market_first.calendar（交易日/半日市/分市场时区）；
   日历未知时回退 fix2 固定时刻规则（兜底，非日历确认）。
@@ -81,6 +86,23 @@ approved 规则，judge 恒 not_evaluable。
   留痕。validation_decisions 同时保存 rule_id 与
   rule_version；reproduce_decision 按记录版本复现历史判定
   （只读，不改原记录）。
+
+judge P0 集成（2026-11-23，judge-p0-integration，基线
+fix3 936e4c6；只补三项审计 P0，其余 fix3 行为不变）：
+- P0-3 批准信息强制：rule 登记为 approved 或经
+  set_rule_status 转为 approved 时，必须具备明确 actor、
+  reason 与 approval_basis（批准依据）；同事务写入
+  approved_by、approved_at（恒服务器时间，调用方回填值
+  不生效）、approval_basis 与 registry_history 留痕
+  （db.ensure_p0int_schema 建表 + append-only 触发器）。
+  任一项缺失在写库前拒绝，整事务不落字。本基线无
+  source_policy_registry（该机制只在 judge 裁定线、未进
+  fix3），故 source 侧无登记对象，强制只作用于 rule。
+- P0-1 规则版本绑定：fix3 P0-B 已实现精确绑定（登记条目
+  impl_version 恒取实现自报版本，显式 version 参数只能
+  改变登记键、覆盖不了 impl_version；judge 双边核对
+  NO_IMPL/IMPL_MISMATCH）。本轮以对抗测试逐项复核
+  （tests/test_market_first_p0_1_version_binding.py）。
 """
 from __future__ import annotations
 
@@ -159,10 +181,62 @@ def _row_dict(cur, row):
 
 def _ensure(conn):
     from market_first.db import (ensure_fix1_schema, ensure_fix2_schema,
-                                 ensure_fix3_schema)
+                                 ensure_fix3_schema,
+                                 ensure_p0int_schema)
     ensure_fix1_schema(conn)
     ensure_fix2_schema(conn)
     ensure_fix3_schema(conn)
+    ensure_p0int_schema(conn)
+
+
+def _record_registry_history(conn, entity_type, entity_id,
+                             entity_version, field, old_value,
+                             new_value, actor, reason, basis=None):
+    """P0-3 批准留痕：向 registry_history 追加一行。
+
+    append-only：本函数只 INSERT；表自身有触发器禁止 UPDATE/
+    DELETE。调用方须在与业务写入相同的事务内调用、统一
+    commit，任一步失败整体回滚（不留无业务变更的孤儿留痕，
+    也不留无留痕的业务变更）。
+    """
+    conn.execute(
+        "INSERT INTO registry_history "
+        "(entity_type, entity_id, entity_version, field, old_value,"
+        " new_value, actor, reason, basis, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (entity_type, str(entity_id),
+         None if entity_version is None else str(entity_version),
+         field,
+         None if old_value is None else str(old_value),
+         None if new_value is None else str(new_value),
+         actor, reason, basis, _now_iso()))
+
+
+def registry_history(pool, entity_type=None, entity_id=None):
+    """读 registry_history 留痕 -> list[dict]（按 id 升序）。
+
+    可按 entity_type（'rule'）与 entity_id（rule_id）过滤，
+    供审计追溯全部登记与状态变更。
+    """
+    conn, owns = _resolve_conn(pool)
+    try:
+        _ensure(conn)
+        sql = "SELECT * FROM registry_history"
+        clauses, params = [], []
+        if entity_type is not None:
+            clauses.append("entity_type = ?")
+            params.append(str(entity_type))
+        if entity_id is not None:
+            clauses.append("entity_id = ?")
+            params.append(str(entity_id))
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id ASC"
+        cur = conn.execute(sql, params)
+        return [_row_dict(cur, r) for r in cur.fetchall()]
+    finally:
+        if owns:
+            conn.close()
 
 
 def _shanghai_dt(iso_str) -> datetime:
@@ -346,33 +420,35 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
                                discovery_event_id)
         claimed_date = (_shanghai_date(event["discovered_at"])
                         if event else None)
-        # fix3（MF-FWD-002）：时间锚以库内服务器侧记录为准。
-        # discovered_at 由调用方经 DiscoveryEvent 传入、内容可
-        # 回填伪造；discovery_events.created_at 由 pool.ingest
-        # 在入库时以服务器时间落字（ingested_at），事件内容
-        # 无法回填。锚 = max(claimed, ingested)：入场必须晚于
-        # 两者——回填声称的旧 discovered_at 不能把 backfill
-        # 变成 forward。声称值与库内记录不一致时留痕。
+        # 时间锚以库内服务器侧记录为准。discovered_at 由
+        # 调用方经 DiscoveryEvent 传入、内容可回填伪造；
+        # discovery_events.created_at 由 pool.ingest 在入库
+        # 时以服务器时间落字（ingested_at），事件内容无法
+        # 回填。
+        # P0-5 集成（2026-11-23）：锚收紧为服务器实际入库
+        # 时间单一锚——discovered_at 不再参与锚的计算（fix3
+        # MF-FWD-002 原口径为 max(声称, 入库)）；声称值与
+        # 库内记录不一致时仍留痕。事件行缺 created_at 时
+        # 无可信锚：forward 在下方分支以
+        # trusted_ingest_time_missing 留痕拒绝（backfill
+        # 显式入场不受影响）。
         ingested_date = None
         if event is not None and event.get("created_at"):
             ingested_date = _shanghai_date(event["created_at"])
-        discovered_date = claimed_date
-        if ingested_date is not None and (
-                discovered_date is None
-                or ingested_date > discovered_date):
-            discovered_date = ingested_date
+        discovered_date = ingested_date
         if (event is not None and claimed_date is not None
                 and ingested_date is not None
                 and claimed_date != ingested_date):
             pool.record_history(
                 candidate_id, field="discovery_time_anchor",
-                old=claimed_date, new=discovered_date,
+                old=claimed_date, new=ingested_date,
                 actor="validation",
                 reason="discovered_at claim (%s) differs from "
                        "server-side ingested_at date (%s); "
-                       "forward/backfill anchor uses %s"
+                       "forward/backfill anchor uses ingested_at "
+                       "only (%s)"
                        % (claimed_date, ingested_date,
-                          discovered_date))
+                          ingested_date))
         ev_id = event["id"] if event else None
 
         req_entry = str(entry_date)[:10] if entry_date else None
@@ -389,6 +465,16 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
                     pool, candidate_id,
                     "no discovery event linked; forward requires a "
                     "discovery event as its availability anchor")
+            if ingested_date is None:
+                # P0-5：事件行缺服务器入库时间 -> 无可信锚，
+                # 声称的 discovered_at 不可替代，拒绝 Forward。
+                _reject_forward(
+                    pool, candidate_id,
+                    "trusted_ingest_time_missing: discovery event "
+                    "id=%s has no server-side created_at; forward "
+                    "requires a trusted ingest-time anchor and "
+                    "the claimed discovered_at is not trusted"
+                    % (ev_id,))
             bars_use = bars
             prov = None
             if bars_use is None:
@@ -733,23 +819,45 @@ def register_rule_implementation(rule_id, rule, version=None,
 
 def register_rule(pool, rule_id, version, status="draft", params=None,
                   approved_by=None, approved_at=None,
-                  impl_key=None, impl_version=None) -> int:
+                  impl_key=None, impl_version=None,
+                  actor=None, reason=None, approval_basis=None) -> int:
     """向 rule_registry 落库表登记一个规则版本 -> row id。
 
-    status 只许 draft/approved/disabled/test；status='approved'
-    必须带 approved_by（批准留痕）。重复 (rule_id, version)
-    抛 ValueError。注册只新增行，绝不改写既有判定记录；
-    未经用户确认的规则不得以 approved 登记到正式注册表。
+    status 只许 draft/approved/disabled/test；重复
+    (rule_id, version) 抛 ValueError。注册只新增行，绝不
+    改写既有判定记录；未经用户确认的规则不得以 approved
+    登记到正式注册表。
     fix3 P0-B：同时登记实现绑定 impl_key/impl_version（缺省
     分别取 rule_id 与 version）；judge 时与代码侧实现注册表
     逐项核对，不一致 -> IMPL_MISMATCH。
+    P0-3 批准信息强制（2026-11-23 集成）：status='approved'
+    除 approved_by 外还必须带 reason 与 approval_basis
+    （批准依据）；actor 缺省取 approved_by。approved_at 恒
+    以服务器时间落字，调用方传入的 approved_at 不生效
+    （防回填伪造批准时刻）。登记行与 registry_history 留痕
+    同一事务：校验不过在写库前抛 ValueError（整事务不落
+    字），写入失败整体回滚。
     """
     if status not in RULE_STATUSES:
         raise ValueError("invalid rule status: %r (allowed: %s)"
                          % (status, "/".join(RULE_STATUSES)))
-    if status == "approved" and not approved_by:
-        raise ValueError(
-            "approved rule registration requires approved_by")
+    basis = None
+    if status == "approved":
+        if not (approved_by and str(approved_by).strip()):
+            raise ValueError(
+                "approved rule registration requires approved_by")
+        if not (reason and str(reason).strip()):
+            raise ValueError(
+                "approved rule registration requires reason")
+        if not (approval_basis and str(approval_basis).strip()):
+            raise ValueError(
+                "approved rule registration requires approval_basis")
+        basis = str(approval_basis).strip()
+        approved_at = _now_iso()
+    actor_eff = (str(actor).strip()
+                 if actor and str(actor).strip()
+                 else (str(approved_by) if approved_by
+                       else "rule_registry"))
     conn, owns = _resolve_conn(pool)
     try:
         _ensure(conn)
@@ -757,15 +865,21 @@ def register_rule(pool, rule_id, version, status="draft", params=None,
             cur = conn.execute(
                 "INSERT INTO rule_registry "
                 "(rule_id, version, status, approved_by, approved_at,"
-                " params_json, created_at, impl_key, impl_version)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " approval_basis, params_json, created_at, impl_key,"
+                " impl_version)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (str(rule_id), str(version), status, approved_by,
-                 approved_at,
+                 approved_at, basis,
                  json.dumps(params or {}, ensure_ascii=False),
                  _now_iso(), str(impl_key or rule_id),
                  str(impl_version or version)))
+            _record_registry_history(
+                conn, "rule", rule_id, version, "status", None,
+                status, actor_eff, reason or "rule registration",
+                basis)
             conn.commit()
         except sqlite3.IntegrityError as e:
+            conn.rollback()
             raise ValueError(
                 "rule already registered: %s@%s (%s)"
                 % (rule_id, version, e)) from e
@@ -775,11 +889,21 @@ def register_rule(pool, rule_id, version, status="draft", params=None,
             conn.close()
 
 
-def set_rule_status(pool, rule_id, version, status) -> None:
+def set_rule_status(pool, rule_id, version, status, actor=None,
+                    reason=None, approval_basis=None,
+                    approved_by=None) -> None:
     """变更已登记规则版本的状态（如 approved -> disabled）。
 
     只影响之后的判定；既有 validation_decisions 记录（含其
     rule_version 与 metrics）不随注册表变更而改写。
+    P0-3 批准信息强制（2026-11-23 集成）：转为 'approved'
+    必须显式给出 actor、reason 与 approval_basis（批准
+    依据）；同事务写入 approved_by（缺省取 actor）、
+    approved_at（服务器时间）、approval_basis 与
+    registry_history 留痕。任一项缺失在写库前抛 ValueError
+    ——状态、批准字段、留痕均不落字（整事务回滚）。非
+    approved 流转不要求批准信息（兼容既有调用），但仍同
+    事务写留痕。
     """
     if status not in RULE_STATUSES:
         raise ValueError("invalid rule status: %r (allowed: %s)"
@@ -787,14 +911,53 @@ def set_rule_status(pool, rule_id, version, status) -> None:
     conn, owns = _resolve_conn(pool)
     try:
         _ensure(conn)
-        cur = conn.execute(
-            "UPDATE rule_registry SET status = ?"
+        row = conn.execute(
+            "SELECT status FROM rule_registry"
             " WHERE rule_id = ? AND version = ?",
-            (status, str(rule_id), str(version)))
-        conn.commit()
-        if cur.rowcount == 0:
+            (str(rule_id), str(version))).fetchone()
+        if row is None:
             raise ValueError("rule not registered: %s@%s"
                              % (rule_id, version))
+        old_status = row[0]
+        if status == "approved":
+            actor_s = str(actor).strip() if actor else ""
+            if not actor_s:
+                raise ValueError(
+                    "approving a rule requires actor")
+            if not (reason and str(reason).strip()):
+                raise ValueError(
+                    "approving a rule requires reason")
+            basis = (str(approval_basis).strip()
+                     if approval_basis else "")
+            if not basis:
+                raise ValueError(
+                    "approving a rule requires approval_basis")
+            approver = (str(approved_by).strip()
+                        if approved_by and str(approved_by).strip()
+                        else actor_s)
+            conn.execute(
+                "UPDATE rule_registry SET status = ?,"
+                " approved_by = ?, approved_at = ?,"
+                " approval_basis = ?"
+                " WHERE rule_id = ? AND version = ?",
+                (status, approver, _now_iso(), basis,
+                 str(rule_id), str(version)))
+            _record_registry_history(
+                conn, "rule", rule_id, version, "status",
+                old_status, status, actor_s, str(reason), basis)
+        else:
+            conn.execute(
+                "UPDATE rule_registry SET status = ?"
+                " WHERE rule_id = ? AND version = ?",
+                (status, str(rule_id), str(version)))
+            _record_registry_history(
+                conn, "rule", rule_id, version, "status",
+                old_status, status,
+                str(actor).strip()
+                if actor and str(actor).strip()
+                else "rule_registry",
+                reason or "rule status change", None)
+        conn.commit()
     finally:
         if owns:
             conn.close()

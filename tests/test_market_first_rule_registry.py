@@ -77,9 +77,17 @@ def _register(pool, version="v1", status="approved", rule_id="reg_rule"):
     rule = _Rule()
     rule.version = version
     validation.register_rule_implementation(rule_id, rule)
+    # P0-3 集成（2026-11-23）：approved 登记须带 actor/reason/
+    # approval_basis，本 helper 补齐批准信息；断言未改动。
+    extra = {}
+    if status == "approved":
+        extra = dict(actor="unit-test",
+                     reason="registry test approval",
+                     approval_basis="test-only approval (tmp db)")
     return validation.register_rule(
         pool, rule_id, version, status=status,
-        approved_by="unit-test" if status == "approved" else None)
+        approved_by="unit-test" if status == "approved" else None,
+        **extra)
 
 
 def _decisions(pool):

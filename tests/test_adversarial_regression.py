@@ -294,7 +294,10 @@ def test_c7_every_validation_passed_has_passed_decision(tmp_path):
         validation.register_rule_implementation(rid, _PassRule())
         validation.register_rule(
             pool, rid, "v1", status="approved",
-            approved_by="unit-test")
+            approved_by="unit-test",
+            # P0-3 集成（2026-11-23）：补齐批准信息；断言未改动。
+            actor="unit-test", reason="adversarial test approval",
+            approval_basis="test-only approval (tmp db)")
         out = validation.judge_validation(
             pool, cid2, rule_id=rid, rule_version="v1")
         assert out["decision"] == "passed"

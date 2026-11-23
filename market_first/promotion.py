@@ -74,13 +74,16 @@ VALIDATION_GATE_STATES = frozenset({"validation_passed"})
 
 
 def _apply_transition(pool, cid, current, to_state, actor, reason=""):
-    """表内流转的实际执行（调用方已完成合法性判定）。"""
-    pool.set_fields(
-        cid,
-        actor=actor,
-        reason=reason if reason else None,
-        promotion_status=to_state,
-    )
+    """表内流转的实际执行（调用方已完成合法性判定）。
+
+    经 pool 的状态机专用写通道 _transition_promotion_status
+    落字；普通调用方经 set_fields 直改
+    promotion_status='approved' 被 pool 层无条件拒绝
+    （MF-PROMO-001）。
+    """
+    pool._transition_promotion_status(
+        cid, actor=actor, reason=reason if reason else None,
+        new_status=to_state)
     return to_state
 
 

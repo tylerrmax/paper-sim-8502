@@ -63,12 +63,17 @@ Benchmark 收盘完整性（独立验收前补正 fix2-1，写死）：
 approved 规则，judge 恒 not_evaluable。
 
 效率升级 fix3（P0-A/P0-B）：
-- 时间锚信任路径（MF-FWD-002）：create_sample 的发现时间锚
-  = max(调用方声称的 discovered_at 日期, 库内服务器侧
-  ingested_at 日期 discovery_events.created_at)，声称与库内
-  不一致时在 candidate_history 留痕（field=
-  'discovery_time_anchor'）。回填声称不能把 backfill 变
-  forward。
+- 时间锚信任路径（MF-FWD-002，P0-5 集成 2026-11-23 收紧）：
+  create_sample 的发现时间锚 = 库内服务器侧 ingested_at
+  日期（discovery_events.created_at，由 pool.ingest 以
+  服务器时间落字）单一锚；调用方声称的 discovered_at
+  不再参与锚的计算（原 fix3 口径为 max(声称, 入库)），
+  声称与库内不一致时在 candidate_history 留痕（field=
+  'discovery_time_anchor'）。事件行缺 created_at 时无
+  可信锚，forward 以 trusted_ingest_time_missing 留痕
+  拒绝；延迟入库的历史事件（声称发现早、实际入库晚）
+  按入库锚强制 backfill 或拒绝，历史行情不得进入有效
+  forward 统计。
 - 收盘确认日历化（MF-BENCH-003）：bar_close_confirmed 优先
   查 market_first.calendar（交易日/半日市/分市场时区）；
   日历未知时回退 fix2 固定时刻规则（兜底，非日历确认）。
@@ -415,33 +420,35 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
                                discovery_event_id)
         claimed_date = (_shanghai_date(event["discovered_at"])
                         if event else None)
-        # fix3（MF-FWD-002）：时间锚以库内服务器侧记录为准。
-        # discovered_at 由调用方经 DiscoveryEvent 传入、内容可
-        # 回填伪造；discovery_events.created_at 由 pool.ingest
-        # 在入库时以服务器时间落字（ingested_at），事件内容
-        # 无法回填。锚 = max(claimed, ingested)：入场必须晚于
-        # 两者——回填声称的旧 discovered_at 不能把 backfill
-        # 变成 forward。声称值与库内记录不一致时留痕。
+        # 时间锚以库内服务器侧记录为准。discovered_at 由
+        # 调用方经 DiscoveryEvent 传入、内容可回填伪造；
+        # discovery_events.created_at 由 pool.ingest 在入库
+        # 时以服务器时间落字（ingested_at），事件内容无法
+        # 回填。
+        # P0-5 集成（2026-11-23）：锚收紧为服务器实际入库
+        # 时间单一锚——discovered_at 不再参与锚的计算（fix3
+        # MF-FWD-002 原口径为 max(声称, 入库)）；声称值与
+        # 库内记录不一致时仍留痕。事件行缺 created_at 时
+        # 无可信锚：forward 在下方分支以
+        # trusted_ingest_time_missing 留痕拒绝（backfill
+        # 显式入场不受影响）。
         ingested_date = None
         if event is not None and event.get("created_at"):
             ingested_date = _shanghai_date(event["created_at"])
-        discovered_date = claimed_date
-        if ingested_date is not None and (
-                discovered_date is None
-                or ingested_date > discovered_date):
-            discovered_date = ingested_date
+        discovered_date = ingested_date
         if (event is not None and claimed_date is not None
                 and ingested_date is not None
                 and claimed_date != ingested_date):
             pool.record_history(
                 candidate_id, field="discovery_time_anchor",
-                old=claimed_date, new=discovered_date,
+                old=claimed_date, new=ingested_date,
                 actor="validation",
                 reason="discovered_at claim (%s) differs from "
                        "server-side ingested_at date (%s); "
-                       "forward/backfill anchor uses %s"
+                       "forward/backfill anchor uses ingested_at "
+                       "only (%s)"
                        % (claimed_date, ingested_date,
-                          discovered_date))
+                          ingested_date))
         ev_id = event["id"] if event else None
 
         req_entry = str(entry_date)[:10] if entry_date else None
@@ -458,6 +465,16 @@ def create_sample(pool, candidate_id, source_id, entry_date=None,
                     pool, candidate_id,
                     "no discovery event linked; forward requires a "
                     "discovery event as its availability anchor")
+            if ingested_date is None:
+                # P0-5：事件行缺服务器入库时间 -> 无可信锚，
+                # 声称的 discovered_at 不可替代，拒绝 Forward。
+                _reject_forward(
+                    pool, candidate_id,
+                    "trusted_ingest_time_missing: discovery event "
+                    "id=%s has no server-side created_at; forward "
+                    "requires a trusted ingest-time anchor and "
+                    "the claimed discovered_at is not trusted"
+                    % (ev_id,))
             bars_use = bars
             prov = None
             if bars_use is None:

@@ -517,6 +517,49 @@ END;
 """
 
 
+# V3 独立审计补正（2026-11-23）新增结构：
+# - P0-1（RT-1 审批记录持续有效性）：approvals 行是某候选
+#   approved 终态的有效依据时（decision='approved'、
+#   approver/basis 非空、候选当前 promotion_status=
+#   'approved'），禁止 DELETE 该行、禁止 UPDATE 其关键
+#   字段（candidate_id/decision/approver/basis/decided_at）
+#   使其失效或转移——封「事后抽掉依据」路径。
+_V3C_TRIGGERS_SQL = """
+CREATE TRIGGER IF NOT EXISTS trg_rt_approvals_no_delete_live
+BEFORE DELETE ON approvals
+WHEN OLD.decision = 'approved'
+BEGIN
+    SELECT RAISE(ABORT, 'approvals record is the live basis of an approved candidate: DELETE forbidden (RT-1 lifecycle guard)')
+    WHERE OLD.approver IS NOT NULL AND trim(OLD.approver) <> ''
+      AND OLD.basis IS NOT NULL AND trim(OLD.basis) <> ''
+      AND EXISTS (
+        SELECT 1 FROM candidates
+        WHERE id = OLD.candidate_id
+          AND promotion_status = 'approved');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_approvals_no_update_keyfields_live
+BEFORE UPDATE OF candidate_id, decision, approver, basis,
+    decided_at ON approvals
+WHEN OLD.decision = 'approved'
+BEGIN
+    SELECT RAISE(ABORT, 'approvals key fields of a live approval record are immutable (RT-1 lifecycle guard)')
+    WHERE OLD.approver IS NOT NULL AND trim(OLD.approver) <> ''
+      AND OLD.basis IS NOT NULL AND trim(OLD.basis) <> ''
+      AND EXISTS (
+        SELECT 1 FROM candidates
+        WHERE id = OLD.candidate_id
+          AND promotion_status = 'approved')
+      AND (NEW.candidate_id IS NOT OLD.candidate_id
+        OR NEW.decision IS NOT OLD.decision
+        OR NEW.approver IS NOT OLD.approver
+        OR NEW.basis IS NOT OLD.basis
+        OR NEW.decided_at IS NOT OLD.decided_at);
+END;
+
+"""
+
+
 def ensure_redteam_schema(conn) -> None:
     """幂等安装红队集中修复（2026-11-23）的 DB 层保护触发器。
 
@@ -542,9 +585,13 @@ def ensure_redteam_schema(conn) -> None:
       reason=reason；exclude_sample 恒先写审计行后写排除
       行、同事务，天然通过）。设计见 evidence 设计补记
       DESIGN-BOTTOM-LAYER.md。
+    - V3 审计补正（2026-11-23）：approvals 生命周期保护
+      （P0-1）触发器，见 _V3C_TRIGGERS_SQL 注释。
+
     触发器只新增、不动既有数据。
     """
     conn.executescript(_REDTEAM_TRIGGERS_SQL)
+    conn.executescript(_V3C_TRIGGERS_SQL)
     conn.commit()
 
 

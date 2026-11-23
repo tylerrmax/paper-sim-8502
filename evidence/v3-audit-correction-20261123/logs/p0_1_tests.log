@@ -1,0 +1,35 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/hatch/workspace/l2-remediation/v3-audit-correction
+plugins: anyio-4.15.1
+collecting ... collected 26 items
+
+tests/test_market_first_rt1_approval_lifecycle.py::test_delete_live_approval_blocked PASSED [  3%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_delete_all_approvals_of_approved_candidate_blocked PASSED [  7%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET decision='rejected' WHERE id=?-params0] PASSED [ 11%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET approver='' WHERE id=?-params1] PASSED [ 15%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET approver='mallory' WHERE id=?-params2] PASSED [ 19%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET basis='' WHERE id=?-params3] PASSED [ 23%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET basis='\u4e8b\u540e\u7be1\u6539\u4f9d\u636e' WHERE id=?-params4] PASSED [ 26%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET decided_at='2020-01-01T00:00:00+08:00' WHERE id=?-params5] PASSED [ 30%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_update_candidate_id_transfer_blocked PASSED [ 34%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_delete_approval_of_non_approved_candidate_allowed PASSED [ 38%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_update_rejected_record_allowed PASSED [ 42%]
+tests/test_market_first_rt1_approval_lifecycle.py::test_decide_normal_path_and_lifecycle PASSED [ 46%]
+tests/test_market_first_rt1_db_guard.py::test_direct_update_to_approved_without_approvals_blocked PASSED [ 50%]
+tests/test_market_first_rt1_db_guard.py::test_direct_insert_candidate_approved_blocked PASSED [ 53%]
+tests/test_market_first_rt1_db_guard.py::test_update_blocked_when_approvals_fields_empty PASSED [ 57%]
+tests/test_market_first_rt1_db_guard.py::test_update_allowed_with_valid_approvals_record PASSED [ 61%]
+tests/test_market_first_rt1_db_guard.py::test_decide_normal_path_passes_db_guard PASSED [ 65%]
+tests/test_market_first_rt1_decide_approval.py::test_decide_approved_requires_approver PASSED [ 69%]
+tests/test_market_first_rt1_decide_approval.py::test_decide_approved_requires_basis PASSED [ 73%]
+tests/test_market_first_rt1_decide_approval.py::test_decide_approved_with_full_info_positive_control PASSED [ 76%]
+tests/test_market_first_rt1_decide_approval.py::test_decide_rejected_without_basis_still_allowed PASSED [ 80%]
+tests/test_market_first_rt1_entry_census.py::test_transition_direct_approved_rejected_with_trace PASSED [ 84%]
+tests/test_market_first_rt1_entry_census.py::test_transition_direct_validation_passed_rejected PASSED [ 88%]
+tests/test_market_first_rt1_entry_census.py::test_apply_validation_passed_forged_decision_id_rejected PASSED [ 92%]
+tests/test_market_first_rt1_entry_census.py::test_set_fields_crosscheck_still_rejected PASSED [ 96%]
+tests/test_market_first_rt1_entry_census.py::test_decide_is_the_only_path_and_keeps_full_record PASSED [100%]
+
+============================== 26 passed in 0.54s ==============================

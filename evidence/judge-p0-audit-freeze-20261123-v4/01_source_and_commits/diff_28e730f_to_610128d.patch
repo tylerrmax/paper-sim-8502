@@ -1,0 +1,2207 @@
+diff --git a/DELIVERY-V3-CORRECTION-20261123.md b/DELIVERY-V3-CORRECTION-20261123.md
+new file mode 100644
+index 0000000..ad436e8
+--- /dev/null
++++ b/DELIVERY-V3-CORRECTION-20261123.md
+@@ -0,0 +1,93 @@
++# V3 独立审计补正交付（2026-11-23）
++
++基线：unified-arch `28e730f`（代码冻结对象 bf2135b）。
++分支：`market-first/v3-audit-correction-20261123`。
++设计：`evidence/v3-audit-correction-20261123/design/DESIGN-V3-CORRECTION.md`。
++
++## ① 检查对象
++
++V3 冻结包独立审计三项补正：P0-1 RT-1 审批记录持续有效性、
++P0-2 RT-2 审计记录唯一绑定（含口径修订）、P0-3 P0-5 新
++事件 INSERT 时间锚。禁区（生产库/交易逻辑/B31/仓位/策略/
++同步链）未触碰。
++
++## ② 实际证据
++
++**三项独立提交**：
++
++| 项 | 提交 | 内容 | 新增测试 |
++|---|---|---|---|
++| P0-1 | `88cb4c8` | trg_rt_approvals_no_delete_live / no_update_keyfields_live：候选 approved 时其有效 approvals 记录禁删、禁改关键字段（candidate_id/decision/approver/basis/decided_at） | 12 用例（删除/整表删除/六种改写/转移/范围边界/decide 正对照+落字后受保护） |
++| P0-2 | `2927750` | sample_exclusions.audit_history_id 列（ensure ALTER + SCHEMA_SQL）+ UNIQUE 索引；修订版 audit_insert 触发器（绑定必备/引用逐字对应/一对一，原字段校验保留为冗余）；被引用审计行禁改删两触发器；exclude_sample 落绑定 id | 11 用例（绑定正对照/无绑定拒绝/旧行复用/跨样本复用/事后删除/事后修改×4/未引用行边界） |
++| P0-3 | `47f1a55`（部分实施） | trg_rt_discovery_events_created_at_insert_future：INSERT created_at 晚于服务器时间 120 秒拒绝；UPDATE 保护保留 | 5 用例（未来一天/远未来拒绝、当前时间/容差内通过、UPDATE 复核） |
++
++**回归对照**（同命令同环境，原始日志在
++`evidence/v3-audit-correction-20261123/logs/`）：
++命令 `pytest tests/ -q --ignore=tests/test_gapfill.py
++--ignore=tests/test_ui_regression.py`——
++基线 28e730f：368 passed / 7 failed（exit 1）；
++修复后：**396 passed / 7 failed**（+28 恰为新增用例）；
++失败集逐项 diff **完全相同**（6 个 stress_test 环境性
++失败 + 既有基线失败 test_ledger_fingerprint_idempotent），
++**新增失败为零**。分组日志：p0_1_tests.log（26 passed，
++含既有 rt1 三文件）、p0_2_tests.log（33 passed）、
++p0_3_tests.log（28 passed），均为 -v 逐用例输出含退出码。
++
++**口径修订（P0-2 第 5 项）落点**：设计文档（新增
++DESIGN-V3-CORRECTION + DESIGN-BOTTOM-LAYER 补记）、
++db.py 触发器消息与 ensure docstring、validation
++.exclude_sample docstring、rt2_db_guard 测试 docstring、
++台账 MF-VAL-001 残余（追加修订声明）、V4 GAPS。
++统一表述为「不可变、一对一关联的审计证据」，并明示
++同源性（同一事务/同一操作者）不在 DB 层证明范围内。
++
++**既有测试构造迁移登记（断言零改动）**：仅一处——
++tests/test_market_first_rt2_db_guard.py 直写辅助函数
++改为显式传 audit_history_id（_direct_insert_audit
++返回行 id、_direct_insert_exclusion 增参，两个用例的
++调用点改传 id）；全部断言、预期与用例集合一字未动。
++另：本批新文件 test_market_first_rt2_audit_binding.py
++初版第二样本 entry_date 与 forward 样本相撞（唯一键），
++已修正为 2026-11-17——属本批新测试自身构造修正，非
++既有测试改动。
++
++**台账**：MF-PROMO-002 / MF-VAL-001 / MF-FWD-002 追加
++本批提交、测试与残余；19 行 READY 16 / OPEN 3 /
++CLOSED 0，RT-1/RT-2 状态保持 READY_FOR_AUDIT，未自标
++CLOSED。
++
++**生产隔离**：生产库 sim.db SHA256 开工/收工两点均为
++c914ec8c7c0df93d5e4d86a531d16dabe48cbb652cecca2fb24c1c52985e138f。
++
++## ③ 复核方法
++
++每项五类测试（正常/缺参或无绑定拒绝/直写污染对抗/
++回滚留痕/既有回归）；全量同命令双边对照 + 失败集程序
++化 diff；触发器经 init_db 实际安装后由对抗测试以直写
++SQL 验证；台账 JSON 逐行解析计数校验。
++
++## ④ 结论
++
++P0-1、P0-2 已完整落地并通过全量对照；P0-3 **部分实施**
++（未来时间已封；NULL 与历史回填窗口因与既有夹具的真实
++冲突未实施，见 ⑤），不伪报全过。本批状态
++READY_FOR_AUDIT（V4 冻结包为准）。
++
++## ⑤ 剩余风险
++
++1. **P0-3 未实施部分（待审计裁定）**：NULL 拒绝与
++   test_missing_ingest_time_rejects_forward 的被测前提
++   （库内存在 NULL created_at 事件行）直接冲突；历史
++   回填窗口与固定字符串时钟夹具结构性冲突（夹具时刻
++   年龄随墙钟无限增长，任何有限窗口终将无代码变更地
++   击穿夹具；且 DB 层无法区分夹具写入与直写写入）。
++   可选方案 A 受控通道标记 / B 宽限窗口（400 天级，
++   明示时限）/ C 维持现状（INSERT 只封未来 + UPDATE
++   不可变 + validation 层锚校验），详见设计文档。
++2. 全套一致伪造固有界限（先改出 approved 再删记录、
++   先整套伪造审计行再写排除）在本批两闸下形态更新，
++   已写入 V4 GAPS G-05；handoff 下游核验为第二道防线。
++3. approvals.versions_json 未纳入关键字段保护（RT-6
++   已登记 OPEN 单独评估，不在本批范围）。
++4. 存量排除行（本线无生产存量）audit_history_id 为
++   NULL，不受一对一约束追溯影响；新写入强制绑定。
+diff --git a/audit_issues.jsonl b/audit_issues.jsonl
+index 090bf69..4ed4bf5 100644
+--- a/audit_issues.jsonl
++++ b/audit_issues.jsonl
+@@ -1,5 +1,5 @@
+ {"issue_id": "MF-FWD-001", "first_found_in": "fix1-audit", "module": "validation", "severity": "P0", "description": "Forward 时间定义不成立：样本以发现日之前收盘为前向入场基准（回填入场冒充 forward，有前视偏差）", "repro": "样本 1 于 2026-11-16 实际创建却以 2026-11-13 收盘 26.25 为 benchmark", "fix_commits": ["2c4b9f9"], "tests": ["test_market_first_forward_time.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "样本 1 原行保留并经 sample_exclusions 排除于 forward_stats，不入统计"}
+-{"issue_id": "MF-FWD-002", "first_found_in": "fix3-prescreen", "module": "validation", "severity": "P0", "description": "Forward 时间门禁信任路径：create_sample 的时间锚取自 discovery_events.discovered_at，而该值由调用方经 DiscoveryEvent 传入、可回填伪造；库内服务器侧 ingested_at（事件 created_at）未被用作锚", "repro": "构造 discovered_at 回填至过去的 DiscoveryEvent 并 ingest，再以 claimed 发现日之后的 entry 建样本，fix2 口径下可冒充 forward", "fix_commits": ["643b91c", "bbdbe95", "1818018"], "tests": ["test_adversarial_regression.py::test_a3_backdated_discovery_claim_cannot_fake_forward", "test_market_first_p0_5_time_anchor.py", "test_market_first_p0_5_created_at_guard.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "2026-11-23 judge P0 集成收紧（P0-5）：锚由 max(声称, 入库) 改为服务器入库时间单一锚，discovered_at 不再参与锚计算；事件行缺 created_at 时 forward 以 trusted_ingest_time_missing 留痕拒绝；2026-09 声称发现、2026-11 才入库的对抗三形态全过，已随 086b23e 合并入 unified-arch；待独立审计置 CLOSED；2026-11-23 红队集中修复第 6 项：created_at 可信性已落地——触发器禁止 discovery_events.created_at 落字后被 UPDATE篡改，测试改用 CandidatePool 可信时钟夹具（15 处迁移、断言零改动）；诚实残余：直写 INSERT 伪造新事件行与合法 ingest在 DB 层不可区分，待审计裁定；已随 0d93eb8 合并入 unified-arch"}
++{"issue_id": "MF-FWD-002", "first_found_in": "fix3-prescreen", "module": "validation", "severity": "P0", "description": "Forward 时间门禁信任路径：create_sample 的时间锚取自 discovery_events.discovered_at，而该值由调用方经 DiscoveryEvent 传入、可回填伪造；库内服务器侧 ingested_at（事件 created_at）未被用作锚", "repro": "构造 discovered_at 回填至过去的 DiscoveryEvent 并 ingest，再以 claimed 发现日之后的 entry 建样本，fix2 口径下可冒充 forward", "fix_commits": ["643b91c", "bbdbe95", "1818018", "47f1a55"], "tests": ["test_adversarial_regression.py::test_a3_backdated_discovery_claim_cannot_fake_forward", "test_market_first_p0_5_time_anchor.py", "test_market_first_p0_5_created_at_guard.py", "test_market_first_p0_5_insert_anchor.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "2026-11-23 judge P0 集成收紧（P0-5）：锚由 max(声称, 入库) 改为服务器入库时间单一锚，discovered_at 不再参与锚计算；事件行缺 created_at 时 forward 以 trusted_ingest_time_missing 留痕拒绝；2026-09 声称发现、2026-11 才入库的对抗三形态全过，已随 086b23e 合并入 unified-arch；待独立审计置 CLOSED；2026-11-23 红队集中修复第 6 项：created_at 可信性已落地——触发器禁止 discovery_events.created_at 落字后被 UPDATE篡改，测试改用 CandidatePool 可信时钟夹具（15 处迁移、断言零改动）；诚实残余：直写 INSERT 伪造新事件行与合法 ingest在 DB 层不可区分，待审计裁定；已随 0d93eb8 合并入 unified-arch；2026-11-23 V3 审计补正 P0-3（47f1a55，部分实施）：discovery_events 直接 INSERT 的未来时间已封（created_at 晚于服务器时间 120 秒以上拒绝，trg_rt_discovery_events_created_at_insert_future），新增测试 5 用例；NULL 拒绝与历史回填窗口未实施——与既有可信时钟夹具存在真实冲突（夹具以固定字符串模拟历史入库时刻、最老 2026-11-10 且年龄随墙钟无限增长，任何有限窗口终将击穿夹具；且既有用例故意写 NULL 验证缺锚拒绝），冲突全量与可选方案（受控通道标记/宽限窗口/维持现状）见设计文档 DESIGN-V3-CORRECTION.md，待独立审计裁定；待独立审计置 CLOSED"}
+ {"issue_id": "MF-DEDUP-001", "first_found_in": "fix1-audit", "module": "research", "severity": "P0", "description": "机构事件双路同事件双计：同一龙虎榜事件经双路抓取被计两次，机构净买翻倍", "repro": "002623 同一事件（trade_id=100444236）双计 62,637,085.6，应为 31,318,542.80", "fix_commits": ["2c4b9f9"], "tests": ["test_market_first_inst_dedup.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "上游对同一事件给出不同 trade_id 时双路仍各计一次，按审计口径视为独立事件"}
+ {"issue_id": "MF-DEDUP-002", "first_found_in": "fix2-audit", "module": "research", "severity": "P0", "description": "去重退化规则：trade_id 缺失时仅凭全元组相同自动合并，可能误删真实独立事件", "repro": "两条 trade_id 缺失、全元组相同但实为两起事件的记录，fix1 口径下被 drop 一条", "fix_commits": ["7e4e7e3"], "tests": ["test_market_first_inst_dedup.py", "test_adversarial_regression.py (B section)"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "uncertain 全计入为保守口径，若实为同一事件净额会高估，报告已单列影响额供人工判断"}
+ {"issue_id": "MF-BENCH-001", "first_found_in": "fix2-audit", "module": "validation", "severity": "P0", "description": "Benchmark 收盘完整性：仅凭 bars 中存在某日记录即认定该日收盘形成，盘中未完成 bar 可被用作 benchmark", "repro": "取数当日盘中以当日未收盘 bar 建 forward 样本，fix1 口径下可通过", "fix_commits": ["7e4e7e3"], "tests": ["test_market_first_benchmark_integrity.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "fix2 以时间规则判定收盘确认；市场日历完善见 MF-BENCH-003"}
+@@ -11,8 +11,8 @@
+ {"issue_id": "MF-PROMO-001", "first_found_in": "fix1-audit", "module": "pool/promotion", "severity": "P1", "description": "Promotion 存储层下沉保护缺失：pool.set_fields 为通用写原语、无字段级封锁，状态机强制只在 promotion.py 层", "repro": "直接调用 pool.set_fields(promotion_status='approved') 在存储层不被拦截（当前无旁路实证）", "fix_commits": ["bd731e2"], "tests": ["test_market_first_mf_promo_001_set_fields.py", "test_market_first_rt1_entry_census.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "2026-11-23 红队集中修复第 8 项已落地：pool.set_fields 对 promotion_status='approved' 无条件拒绝（字段与 history 不落字），promotion 状态机改走专用写通道 _transition_promotion_status；approved 只能经 decide + 有效 approvals 记录进入，handoff 独立核验行为不变（全套回归实证）；已随 0d93eb8 合并入 unified-arch；待独立审计置 CLOSED"}
+ {"issue_id": "MF-HANDOFF-001", "first_found_in": "fix1-audit", "module": "handoff", "severity": "P1", "description": "Handoff 的 BUY placeholder 语义：模拟交接 payload 含 BUY 占位与 intent_placeholder 标记，语义易被误读为真实下单意图", "repro": "handoffs 表 payload 中 intent='BUY' placeholder（account=None、无价格数量、唯一落点为新库 handoffs 表，生产代码对 market_first 引用为 0）", "fix_commits": [], "tests": [], "status": "OPEN", "audit_verdict": null, "residual_risk": "按独立审计裁定后续改掉占位语义即可、不推倒；本轮（fix3）不修、只登记"}
+ {"issue_id": "MF-REG-003", "first_found_in": "judge-audit-p0fix-20261121", "module": "validation/db", "severity": "P0", "description": "批准信息无强制、无留痕：rule 登记为 approved 只要求 approved_by，set_rule_status 转 approved 无任何批准信息要求，approved_at 可由调用方回填，无 registry_history 留痕表，批准不可追溯", "repro": "fix3 基线 936e4c6：register_rule(status=approved, approved_by 任意字符串, approved_at 回填历史时刻) 直接落库；set_rule_status(draft->approved) 无 actor/reason/依据即成功且不留痕", "fix_commits": ["7d2ec5a", "acf54d9"], "tests": ["test_market_first_p0_3_approval_info.py", "test_market_first_p0_3_db_guard.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "本基线（fix3 线）无 source_policy_registry（该机制只在 judge 裁定线、未进 fix3），source 侧无登记对象，批准强制只作用于 rule_registry；若日后 source policy 机制并入本线，须按同一口径补强制与留痕。已随 086b23e 合并入 unified-arch；2026-11-23 红队集中修复第 5 项：DB 层审批保护已落地（ensure_redteam_schema 触发器：registry 进入 approved 须批准字段非空 + approved_at 与 DB 服务器时间差 ≤120s；history approved 记录须有状态一致的 registry 行对应）；诚实残余：同主体全套一致伪造（当前时间+齐全字段）与应用写入不可区分，属 SQLite 单文件固有界限，待审计裁定；已随 0d93eb8 合并入 unified-arch"}
+-{"issue_id": "MF-PROMO-002", "first_found_in": "self-redteam-20261123", "module": "promotion", "severity": "P0", "description": "晋升批准信息无强制（P0-3 同类）：promotion.decide 对 approver 与 basis 均无非空校验，approver 传空字符串、basis 缺省为空即可完成 approved 终态并落 approvals 行，批准不可追溯", "repro": "冻结对象 c490424 探针 C1/C2：候选置 pending_approval 后 decide(approver='probe-approver', decision='approved') 不传 basis 成功落 approvals.basis=''；decide(approver='', decision='approved', basis='probe basis') 成功落 approvals.approver=''", "fix_commits": ["5c08010", "75b4b88", "f273d5b"], "tests": ["test_market_first_rt1_decide_approval.py", "test_market_first_rt1_entry_census.py", "test_market_first_rt1_db_guard.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "approved 路径已强制 approver+basis 非空（空白视为无、写库前拒绝、整事务回滚）；第 1 项强化已全枚举晋升批准入口（transition 直达/_apply_validation_passed 伪造 decision_id/set_fields 直改均被拒，decide 为唯一入口，普查测试固化）；rejected 不强制 basis（与 P0-3 非 approved 流转兼容口径一致）；approver 仍为调用方自报字符串（本库无认证层，单人本地系统既定信任模型）；已随 0d93eb8 合并入 unified-arch；2026-11-23 补强批底层闸（f273d5b）：candidates 进入 approved 的 INSERT/UPDATE 直写均须有 decision=approved 且 approver/basis 非空的 approvals 行对应（trg_rt_candidates_promotion_approved_insert/_update），入口之外的直写绕过已封；先伪造齐全 approvals 行再改状态的全套一致伪造与应用写入不可区分，属 SQLite 单文件固有界限，待审计裁定；待独立审计置 CLOSED"}
+-{"issue_id": "MF-VAL-001", "first_found_in": "self-redteam-20261123", "module": "validation", "severity": "P1", "description": "样本排除来源可空（P0-3 同类）：validation.exclude_sample 的 reason/decided_by 形参必填但不校验非空，空字符串可成功写入 sample_exclusions，直接改变 forward_stats 与 judge 样本构成的排除动作无来源可追溯", "repro": "冻结对象 c490424 探针 C4：对 forward 样本调用 exclude_sample(..., reason='', decided_by='') 成功，落库行两字段均为空字符串", "fix_commits": ["405ecfc", "ebd7717", "59b2eb7"], "tests": ["test_market_first_rt2_exclude_sample.py", "test_market_first_rt2_db_guard.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "写入路径已强制两字段非空（空白视为无、写库前拒绝）；第 2 项强化：排除行与 candidate_history 审计行同事务原子写入、失败显式 rollback（重复排除回滚实证、forward_stats 构成不变）；历史排除行不回溯校验（本线未部署生产、无存量生产影响）；已随 0d93eb8 合并入 unified-arch；2026-11-23 补强批底层闸（59b2eb7）：sample_exclusions 每条 INSERT 须 reason/decided_by 非空且同事务已有逐字对应的 candidate_history 审计行（trg_rt_sample_exclusions_audit_insert），exclude_sample 写序已配合改为先审计行后排除行；先伪造逐字对应审计行再写排除的全套一致伪造与应用写入不可区分，属 SQLite 单文件固有界限，待审计裁定；待独立审计置 CLOSED"}
++{"issue_id": "MF-PROMO-002", "first_found_in": "self-redteam-20261123", "module": "promotion", "severity": "P0", "description": "晋升批准信息无强制（P0-3 同类）：promotion.decide 对 approver 与 basis 均无非空校验，approver 传空字符串、basis 缺省为空即可完成 approved 终态并落 approvals 行，批准不可追溯", "repro": "冻结对象 c490424 探针 C1/C2：候选置 pending_approval 后 decide(approver='probe-approver', decision='approved') 不传 basis 成功落 approvals.basis=''；decide(approver='', decision='approved', basis='probe basis') 成功落 approvals.approver=''", "fix_commits": ["5c08010", "75b4b88", "f273d5b", "88cb4c8"], "tests": ["test_market_first_rt1_decide_approval.py", "test_market_first_rt1_entry_census.py", "test_market_first_rt1_db_guard.py", "test_market_first_rt1_approval_lifecycle.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "approved 路径已强制 approver+basis 非空（空白视为无、写库前拒绝、整事务回滚）；第 1 项强化已全枚举晋升批准入口（transition 直达/_apply_validation_passed 伪造 decision_id/set_fields 直改均被拒，decide 为唯一入口，普查测试固化）；rejected 不强制 basis（与 P0-3 非 approved 流转兼容口径一致）；approver 仍为调用方自报字符串（本库无认证层，单人本地系统既定信任模型）；已随 0d93eb8 合并入 unified-arch；2026-11-23 补强批底层闸（f273d5b）：candidates 进入 approved 的 INSERT/UPDATE 直写均须有 decision=approved 且 approver/basis 非空的 approvals 行对应（trg_rt_candidates_promotion_approved_insert/_update），入口之外的直写绕过已封；先伪造齐全 approvals 行再改状态的全套一致伪造与应用写入不可区分，属 SQLite 单文件固有界限，待审计裁定；待独立审计置 CLOSED；2026-11-23 V3 审计补正 P0-1（88cb4c8）：审批记录持续有效性已封——候选处于 approved 时其有效 approvals 记录禁止 DELETE、禁止 UPDATE 关键字段（candidate_id/decision/approver/basis/decided_at）使其失效或转移（trg_rt_approvals_no_delete_live / trg_rt_approvals_no_update_keyfields_live），新增对抗 12 用例实证删/改均被拒且记录与状态不变；versions_json 不在保护列内（RT-6 已登记 OPEN）；先直写改出 approved 再删记录的全套一致伪造仍属固有界限；已随本批合并入 unified-arch，待独立审计置 CLOSED"}
++{"issue_id": "MF-VAL-001", "first_found_in": "self-redteam-20261123", "module": "validation", "severity": "P1", "description": "样本排除来源可空（P0-3 同类）：validation.exclude_sample 的 reason/decided_by 形参必填但不校验非空，空字符串可成功写入 sample_exclusions，直接改变 forward_stats 与 judge 样本构成的排除动作无来源可追溯", "repro": "冻结对象 c490424 探针 C4：对 forward 样本调用 exclude_sample(..., reason='', decided_by='') 成功，落库行两字段均为空字符串", "fix_commits": ["405ecfc", "ebd7717", "59b2eb7", "2927750"], "tests": ["test_market_first_rt2_exclude_sample.py", "test_market_first_rt2_db_guard.py", "test_market_first_rt2_audit_binding.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "写入路径已强制两字段非空（空白视为无、写库前拒绝）；第 2 项强化：排除行与 candidate_history 审计行同事务原子写入、失败显式 rollback（重复排除回滚实证、forward_stats 构成不变）；历史排除行不回溯校验（本线未部署生产、无存量生产影响）；已随 0d93eb8 合并入 unified-arch；2026-11-23 补强批底层闸（59b2eb7）：sample_exclusions 每条 INSERT 须 reason/decided_by 非空且同事务已有逐字对应的 candidate_history 审计行（trg_rt_sample_exclusions_audit_insert），exclude_sample 写序已配合改为先审计行后排除行；先伪造逐字对应审计行再写排除的全套一致伪造与应用写入不可区分，属 SQLite 单文件固有界限，待审计裁定；待独立审计置 CLOSED；2026-11-23 V3 审计补正 P0-2（2927750）：审计记录唯一绑定落地——sample_exclusions.audit_history_id 显式引用审计行 id，UNIQUE 索引与触发器双重保证一对一，被引用的审计行禁止 UPDATE/DELETE，新增对抗 11 用例（旧行复用/跨样本复用/事后删除/事后修改全拒）；【口径修订】本条残余此前「同事务原子写入」「同事务已有逐字对应审计行」表述修订为「不可变、一对一关联的审计证据」：DB 层证明审计证据的存在性、唯一性与不可变性，不证明审计行与排除行同出一事务或同一操作者（同源性）；先整套伪造审计行再按其内容写排除行仍属固有界限；待独立审计置 CLOSED"}
+ {"issue_id": "MF-RES-001", "first_found_in": "self-redteam-20261123", "module": "research", "severity": "P1", "description": "研究层因子符号由声称时间决定（P0-5 同类）：research.InstFlowModule 以来源声称 discovered_at 选「最新」事件定 inst_flow subtotal 符号，把任一事件声称日期改到未来即可使其恒为最新、翻转因子符号", "repro": "冻结对象 c490424 探针 C5：真实事件（声称 2026-11-10、inst_net +500）与伪造事件（声称 2027-01-05、inst_net -900）-> subtotal=-8.0；伪造事件声称日期改到 2026-11-09 -> subtotal 回到 +8.0", "fix_commits": ["417d324"], "tests": ["test_market_first_rt3_instflow_anchor.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "排序锚已改为服务器入库时间 created_at（缺失以事件 id 序兜底），discovered_at 只随选中事件留痕；影响面限于研究层因子分，不穿透 forward_stats/judge/晋升闸（修复前亦然）；created_at 并列时以 id 序决胜；已随 0d93eb8 合并入 unified-arch；待独立审计置 CLOSED"}
+ {"issue_id": "MF-VAL-002", "first_found_in": "self-redteam-20261123", "module": "validation", "severity": "P1", "description": "RT-5：evaluate_sample 无条件接受调用方 bars 计算 forward 收益，伪造 bars 可直接制造 ret_t20 与成熟样本，穿透 forward_stats 与 judge", "repro": "冻结对象 c490424 自红队 RT-5 存疑项：evaluate_sample(pool, sid, bars) 对 bars 来源/标的/完整性/版本零校验，任意构造 bars 即可写出 mature + ret_t20", "fix_commits": ["8b16cd5"], "tests": ["test_market_first_rt5_eval_bars.py"], "status": "READY_FOR_AUDIT", "audit_verdict": null, "residual_risk": "forward 样本评估前已强制与自有 fetched_bars 逐 bar 一致校验（标的取 candidate 库内 symbol；不可信/无法验证写 not_evaluable + bars_untrusted 留痕、收益全 NULL）；backfill 样本不在校验口径（不进 forward_stats）；fetched_bars 被直写 SQL 污染时校验被绕过（DB 直写固有界限，同 P0-3/P0-5 残余）；已随 0d93eb8 合并入 unified-arch；待独立审计置 CLOSED"}
+ {"issue_id": "MF-RES-002", "first_found_in": "self-redteam-20261123", "module": "research", "severity": "P2", "description": "RT-4（存疑待裁定）：ResearchEngine 研究报告的 data_asof/data_version 由调用方自报落库，未与行情落库记录核对", "repro": "冻结对象 c490424 自红队 RT-4：run 研究时传入任意 data_asof/data_version 即写入 research_reports，无来源校验", "fix_commits": [], "tests": [], "status": "OPEN", "audit_verdict": null, "residual_risk": "用户 2026-11-23 裁定：RT-4 单独评估，本批不修；研究层留痕字段，不穿透 forward/judge/晋升闸"}
+diff --git a/evidence/redteam-bottom-layer-20261123/design/DESIGN-BOTTOM-LAYER.md b/evidence/redteam-bottom-layer-20261123/design/DESIGN-BOTTOM-LAYER.md
+index dd79a56..d02e79b 100644
+--- a/evidence/redteam-bottom-layer-20261123/design/DESIGN-BOTTOM-LAYER.md
++++ b/evidence/redteam-bottom-layer-20261123/design/DESIGN-BOTTOM-LAYER.md
+@@ -76,3 +76,22 @@ validation._ensure 两处挂载点不变，新旧库一致）：
+   立审计主体的模型下属固有界限，handoff 下游核验与审计抽
+   查仍是第二道防线；本界限登记为待审计裁定项，不在本批
+   扩大范围。
++
++---
++
++## 口径修订补记（2026-11-23，V3 审计补正 P0-2 第 5 项）
++
++本文件与 RT-2 底层闸初版中「同事务已有逐字对应审计行」
++「同事务原子写入」等表述，自本补记起修订为：**不可变、
++一对一关联的审计证据**。SQLite 触发器在排除行 INSERT
++时点只能观察已落字的行，无法证明审计行与排除行由同一
++事务、同一调用方写入——「同事务身份」不是触发器能证明
++的命题。补正后机制实际证明的是：①每条排除以
++audit_history_id 显式绑定一条明确的审计记录；②绑定
++逐字对应且一对一（同一审计记录不得被两条排除引用，
++UNIQUE 索引 + 触发器双重保证）；③被引用的审计记录
++不可修改、不可删除。即证据的存在性、唯一性与不可变
++性成立；同源性不成立、先整套伪造审计行再按其内容写
++排除行仍属全套一致伪造固有界限，待审计裁定。完整设计
++见 evidence/v3-audit-correction-20261123/design/
++DESIGN-V3-CORRECTION.md。
+diff --git a/evidence/v3-audit-correction-20261123/design/DESIGN-V3-CORRECTION.md b/evidence/v3-audit-correction-20261123/design/DESIGN-V3-CORRECTION.md
+new file mode 100644
+index 0000000..dfed4fe
+--- /dev/null
++++ b/evidence/v3-audit-correction-20261123/design/DESIGN-V3-CORRECTION.md
+@@ -0,0 +1,161 @@
++# V3 独立审计补正设计（2026-11-23，基线 28e730f）
++
++对象：V3 冻结包独立审计提出的三项补正——RT-1 审批记录持续
++有效性（P0-1）、RT-2 审计记录唯一绑定（P0-2）、P0-5 新事件
++时间锚 INSERT 校验（P0-3）。机制沿用既有 ensure 体系
++（db.ensure_redteam_schema 幂等安装 `trg_rt_*` 触发器；
++validation._ensure 与 db.init_db 均调用之）。
++
++## P0-1｜approvals 生命周期保护（RT-1）
++
++缺口：既有闸只校验「进入 approved 的瞬间」存在有效 approvals
++行；事后直写 DELETE 该行、或 UPDATE 其 candidate_id /
++decision / approver / basis / decided_at 使其失效或转移，
++候选可继续停留在无有效审批依据的 approved 状态。
++
++设计（两道新触发器，db.py `_V3C_TRIGGERS_SQL`）：
++
++- `trg_rt_approvals_no_delete_live`（BEFORE DELETE ON
++  approvals）：被删行本身是有效批准（decision='approved'、
++  approver/basis 非空）且其候选当前 promotion_status=
++  'approved' 时 RAISE(ABORT)。候选未处于 approved、或行
++  本身非有效批准（如 rejected 记录、字段残缺行）不在此闸
++  范围——它们不是任何 approved 终态的依据。
++- `trg_rt_approvals_no_update_keyfields_live`（BEFORE UPDATE
++  OF candidate_id, decision, approver, basis, decided_at ON
++  approvals）：旧行是有效批准且候选当前 approved 时，五个
++  关键字段任一实际变化（IS NOT 比较）即 RAISE(ABORT)。
++  versions_json 不在保护列内（RT-6 已登记 OPEN 单独评估，
++  不在本批范围）。
++
++正常路径：promotion.decide 只 INSERT approvals、从不
++UPDATE/DELETE，天然通过；既有测试中删除 approvals 的场景
++（rt1_db_guard 在候选仍为 discovered 时清理、stress_test
++操作的是生产 sim.db 模式的另一张 approvals 表、无本组
++触发器）均不受影响（全量回归双边对照实证）。
++
++边界（诚实登记）：先把 candidates.promotion_status 直写
++改出 approved、再删 approvals、再伪造新 approvals 行改回
++approved——属「全套一致伪造」固有界限（改回时仍须有字段
++齐全的 approvals 行，handoff 下游核验仍在）；单步的删/改
++失效路径本批已封。
++
++## P0-2｜sample_exclusions 审计记录唯一绑定（RT-2）
++
++缺口：既有闸以字段逐字相等判断审计行对应，同一审计行可
++被多条排除反复引用（旧行复用/跨样本复用在字段恰好相同时
++不可区分），且被引用的审计行事后可改可删。
++
++设计：
++
++- schema：sample_exclusions 新增 `audit_history_id INTEGER`
++  列（ensure_redteam_schema 内 PRAGMA 检查后 ALTER；
++  SCHEMA_SQL 同步加列供新库）；`CREATE UNIQUE INDEX
++  IF NOT EXISTS idx_sample_exclusions_audit_history_id
++  ON sample_exclusions(audit_history_id)`（SQLite UNIQUE
++  对 NULL 不约束，存量/历史行 NULL 不受影响）。
++- 写入：validation.exclude_sample 写序不变（先审计行后
++  排除行、同连接单次 commit），排除行落字时带上审计行
++  的 lastrowid 作为 audit_history_id。
++- 触发器（修订 trg_rt_sample_exclusions_audit_insert 并
++  新增两道）：
++  - 绑定必备：audit_history_id 为 NULL -> 拒绝；
++  - 引用有效：所引 candidate_history 行必须存在且与排除
++    行逐字对应（candidate_id 随样本、field='sample_exclusion'、
++    new_value=excluded_from、actor=decided_by、reason=reason）
++    ——原字段对应校验保留为冗余校验；
++  - 一对一：所引审计行已被另一条排除引用 -> 拒绝
++    （触发器显式检查 + UNIQUE 索引兜底）；
++  - `trg_rt_candidate_history_no_update_bound` /
++    `trg_rt_candidate_history_no_delete_bound`：被任一
++    排除引用的 candidate_history 行禁止 UPDATE/DELETE。
++    未被引用的历史行不在此闸范围（rt2 既有测试删除未被
++    引用的不匹配审计行场景不受影响，回归实证）。
++
++- 既有测试构造迁移（断言零改动，逐项登记于交付文档）：
++  tests/test_market_first_rt2_db_guard.py 的直写辅助函数
++  改为显式传 audit_history_id（_direct_insert_audit 返回
++  行 id、_direct_insert_exclusion 增参），各用例断言与
++  预期（拒绝/通过、行数、统计构成）一字未动。
++
++### 口径修订（P0-2 第 5 项，强制执行）
++
++旧表述「同事务已有逐字对应审计行」「同事务原子写入」自
++本批起修订为：**不可变、一对一关联的审计证据**。理由：
++SQLite 触发器在排除行 INSERT 时点只能观察已落字的行，
++无法证明审计行与排除行由同一事务、同一调用方写入——
++「同事务身份」不是触发器能证明的命题。本批机制实际
++证明的是：①每条排除绑定一条明确的审计记录（ID 引用）；
++②该审计记录与排除逐字对应且只能被引用一次；③绑定后
++审计记录不可改、不可删。即证据的**存在性、唯一性与
++不可变性**成立；证据的**同源性（同一事务/同一操作者）**
++不成立、无法由 DB 层证明——先整套伪造审计行再按其内容
++写排除行，仍属全套一致伪造固有界限，待审计裁定。
++修订落点：本设计文档、db.py 触发器消息与
++ensure_redteam_schema docstring、validation.exclude_sample
++docstring、DESIGN-BOTTOM-LAYER.md 补记、V4 GAPS、台账
++MF-VAL-001 残余风险。
++
++## P0-3｜discovery_events INSERT 时间锚：部分实施 + 冲突报告
++
++先行普查（可信测试时钟夹具实际写入的 created_at 全量）：
++
++- 时钟夹具经 pool.ingest 写入的 created_at 取值：
++  2026-11-10T16:30、2026-11-13T16:30/16:35、2026-11-16
++  T09:05、2026-11-17T09:05、2026-11-18T09:00、2026-11-20
++  T09:00/18:00（均为固定字符串，模拟历史入库时刻），
++  以及 **None**（test_market_first_p0_5_time_anchor.py::
++  test_missing_ingest_time_rejects_forward 故意写 NULL
++  created_at，验证「无可信锚 -> forward 在 validation 层
++  被拒」这一断言本身）。
++- 全仓无任何夹具写入未来 created_at（最大值 2026-11-20
++  < 冻结日 2026-11-23）；全仓无测试直写 INSERT
++  discovery_events（唯一写入口 pool.ingest）。
++
++冲突判定：
++
++- **未来时间**：与全部夹具无冲突 -> 本批实施。新增
++  `trg_rt_discovery_events_created_at_insert_future`：
++  BEFORE INSERT，created_at 非 NULL 且晚于 DB 服务器
++  时间 120 秒以上（与 P0-3 registry approved_at 窗口
++  同口径）-> RAISE(ABORT)。
++- **NULL**：与 test_missing_ingest_time_rejects_forward
++  存在真实冲突——该用例的被测前提就是「库内存在
++  created_at 为 NULL 的事件行」，DB 层拒绝 NULL 会使
++  前提不可构造（ingest 当场 IntegrityError），断言无从
++  验证。且 NULL 锚在 validation 层已被处理（缺锚 ->
++  ForwardRejectedError + trusted_ingest_time_missing
++  留痕），NULL 行不可能充当 forward 锚，风险方向是
++  「不可用」而非「可伪造」。-> 本批**不实施**，待审计
++  裁定（可选方案见下）。
++- **历史回填窗口**：与夹具存在结构性冲突——夹具以固定
++  字符串模拟历史入库时刻（最老 2026-11-10，距冻结日
++  13 天），其「年龄」随墙钟无限增长；任何以
++  julianday('now') 为参照的有限窗口 W，都会在墙钟越过
++  夹具日期 + W 时无代码变更地击穿既有测试。窗口须
++  ≥13 天才在冻结日成立，而审计攻击面正是天级回填
++  （如 9 月声称、11 月入库约 69 天）——能拦住攻击的
++  窗口（<69 天）至多维持数周即击穿夹具，能长期容纳
++  夹具的窗口（→∞）拦不住攻击。且 DB 触发器无法区分
++  「应用层可信时钟夹具写入」与「直写 SQL 写入」——
++  两者在 DB 层是同一条 INSERT。-> 本批**不实施窗口**，
++  不以时限性窗口冒充长期修复，待审计裁定。
++
++可选方案（交审计/用户裁定，本批不擅自执行）：
++
++- 方案 A（受控通道标记）：ingest 写序改为先写带唯一
++  标记的 candidate_history 行、再写事件行，INSERT 触发
++  器要求同候选存在未被引用的标记行——直写无标记一律
++  拒绝（与时间无关、无时限问题）；代价是全套一致伪造
++  仍可绕过（与 RT-1/RT-2 同级界限），且改变 ingest
++  写序与多处夹具构造。
++- 方案 B（宽限窗口）：接受 400 天级窗口作为「荒谬回填」
++  下限（拒 2025 年以前的 created_at），夹具安全期约
++  一年，文档明示时限与到期处理；拦不住天级攻击。
++- 方案 C（维持现状）：INSERT 侧只封未来（本批已做）+
++  既有 UPDATE 不可变 + validation 层锚校验（缺锚拒绝、
++  锚后入场）构成实际防线；直写 INSERT 历史回填登记为
++  已知界限（V3 GAPS G-05 已载），由审计抽查兜底。
++
++保留：既有 UPDATE 不可变触发器
++trg_rt_discovery_events_created_at_no_update 原样不动。
+diff --git a/evidence/v3-audit-correction-20261123/logs/baseline_failures.txt b/evidence/v3-audit-correction-20261123/logs/baseline_failures.txt
+new file mode 100644
+index 0000000..215be90
+--- /dev/null
++++ b/evidence/v3-audit-correction-20261123/logs/baseline_failures.txt
+@@ -0,0 +1,7 @@
++FAILED tests/stress_test.py::test_10_datasource_fallback
++FAILED tests/stress_test.py::test_4_exactly_once_commands
++FAILED tests/stress_test.py::test_5_snapshot_atomicity
++FAILED tests/stress_test.py::test_6_ashare_dryrun
++FAILED tests/stress_test.py::test_7_concurrent_apply
++FAILED tests/stress_test.py::test_9_table_consistency
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent
+diff --git a/evidence/v3-audit-correction-20261123/logs/baseline_full_28e730f.log b/evidence/v3-audit-correction-20261123/logs/baseline_full_28e730f.log
+new file mode 100644
+index 0000000..8d7cb99
+--- /dev/null
++++ b/evidence/v3-audit-correction-20261123/logs/baseline_full_28e730f.log
+@@ -0,0 +1,361 @@
++...FFFF.FF.............................................................. [ 19%]
++......F................................................................. [ 38%]
++........................................................................ [ 57%]
++........................................................................ [ 76%]
++........................................................................ [ 96%]
++...............                                                          [100%]
++=================================== FAILURES ===================================
++_________________________ test_4_exactly_once_commands _________________________
++
++    def test_4_exactly_once_commands():
++        """指令 exactly-once：同一批指令跑两次，第二次 applied_ids 为空、
++        duplicate_ids 列出重复 id，fills 不得重复，台账有记录。"""
++        fresh_db()
++        con = sqlite3.connect(TEST_DB)
++        # 找一个真实存在、尚未成交的信号（不限 60 天窗口；引擎的审批门禁本身不限窗口）
++        sig = con.execute(
++            "SELECT s.date,s.account,s.symbol,s.side FROM signals s"
++            " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
++            " AND f.symbol=s.symbol AND f.side=s.side"
++            " WHERE f.date IS NULL"
++            " ORDER BY s.date DESC LIMIT 1").fetchone()
++        con.close()
++        cmds = [{"id": "stress-setmode-1", "kind": "set_mode",
++                 "payload_json": json.dumps({"mode": "manual"})}]
++        if sig:
++            d, a, s, side = sig
++            cmds.append({"id": "stress-approve-1", "kind": "approve",
++                         "payload_json": json.dumps(
++                             {"date": d, "account": a, "symbol": s, "side": side})})
++        ids = [c["id"] for c in cmds]
++    
++>       out1 = _apply_once(cmds)
++               ^^^^^^^^^^^^^^^^^
++
++tests/stress_test.py:232: 
++_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
++
++cmds = [{'id': 'stress-setmode-1', 'kind': 'set_mode', 'payload_json': '{"mode": "manual"}'}, {'id': 'stress-approve-1', 'kind': 'approve', 'payload_json': '{"date": "2026-10-30", "account": "sim_a", "symbol": "600150", "side": "SELL"}'}]
++
++    def _apply_once(cmds):
++        env = dict(os.environ)
++        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                           input=json.dumps(cmds), capture_output=True, text=True,
++                           env=env, cwd=BASE, timeout=300)
++>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
++            p.returncode, p.stderr[-500:])
++E       AssertionError: apply_commands 退出码 1，stderr=tch/workspace/l2-remediation/v3-audit-correction/apply_commands.py", line 72, in main
++E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
++E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
++E             raise CalledProcessError(retcode, process.args,
++E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py']' returned non-zero exit status 1.
++E         
++E       assert 1 == 0
++E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati..., \'/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
++
++tests/stress_test.py:204: AssertionError
++__________________________ test_5_snapshot_atomicity ___________________________
++
++    def test_5_snapshot_atomicity():
++        """快照读写并发：300 次并发写 + 持续读，零 torn read；
++        再用真实 sync_snapshot.py 跑 8 次做集成验证。"""
++        from sync_snapshot import atomic_write_json  # noqa: E402
++        path = "/tmp/stress_snap.json"
++        if os.path.exists(path):
++            os.remove(path)
++        stop, errors = threading.Event(), []
++        reads = [0]
++    
++        def writer():
++            try:
++                for i in range(300):
++                    atomic_write_json(path, {"asof": "2026-10-05", "i": i,
++                                             "final": i == 299, "blob": "x" * 20000,
++                                             "accounts": [{"account": "sim_hk"}]})
++            except Exception as e:  # noqa: BLE001
++                errors.append(("writer", repr(e)))
++            finally:
++                stop.set()
++    
++        def reader():
++            try:
++                while not stop.is_set():
++                    try:
++                        with open(path, encoding="utf-8") as f:
++                            d = json.load(f)
++                    except FileNotFoundError:
++                        continue
++                    assert d.get("asof") == "2026-10-05" and "blob" in d and "i" in d
++                    reads[0] += 1
++            except Exception as e:  # noqa: BLE001
++                errors.append(("reader", repr(e)))
++    
++        ts = [threading.Thread(target=writer), threading.Thread(target=reader),
++              threading.Thread(target=reader)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=120)
++        assert not errors, "并发读写出错：%r" % errors[:2]
++        assert reads[0] > 50, "有效读取次数过少：%d" % reads[0]
++    
++        # 集成：真实脚本并发写，持续读
++        path2 = "/tmp/stress_snap2.json"
++        env = dict(os.environ)
++        env["PAPER_SIM_SNAPSHOT"] = path2
++        stop2, errors2, reads2 = threading.Event(), [], [0]
++    
++        def writer2():
++            try:
++                for _ in range(8):
++                    subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")],
++                                   env=env, cwd=BASE, capture_output=True,
++                                   check=True, timeout=300)
++            except Exception as e:  # noqa: BLE001
++                errors2.append(("writer", repr(e)))
++            finally:
++                stop2.set()
++    
++        def reader2():
++            try:
++                while not stop2.is_set():
++                    try:
++                        with open(path2, encoding="utf-8") as f:
++                            d = json.load(f)
++                    except FileNotFoundError:
++                        continue
++                    assert isinstance(d.get("accounts"), list) and d.get("asof")
++                    reads2[0] += 1
++            except Exception as e:  # noqa: BLE001
++                errors2.append(("reader", repr(e)))
++    
++        ts = [threading.Thread(target=writer2), threading.Thread(target=reader2)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=600)
++>       assert not errors2, "集成并发出错：%r" % errors2[:2]
++E       AssertionError: 集成并发出错：[('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py'])")]
++E       assert not [('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py'])")]
++
++tests/stress_test.py:341: AssertionError
++_____________________________ test_6_ashare_dryrun _____________________________
++
++    def test_6_ashare_dryrun():
++        """10-08 A股管道冒烟：只读拉取 002446/688305 前复权日K，不入库；
++        要求有足够历史（>100 行）且最新日期 ≥ 2026-09-30（节前最后交易日）。"""
++>       from data.quotes import fetch_kline  # noqa: E402
++        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++E       ModuleNotFoundError: No module named 'data'
++
++tests/stress_test.py:350: ModuleNotFoundError
++___________________________ test_7_concurrent_apply ____________________________
++
++    def test_7_concurrent_apply():
++        """并发指令竞态：两个 apply_commands 进程同时处理同一批指令。
++        构造可成交场景：清空 fills → manual 跑出 signals → 双进程并发批准最早的 BUY。
++        断言：fills 无 (date,account,symbol,side) 重复键；
++        processed_commands 每 id 恰一行；两进程都正常输出 JSON。
++        注：两进程各自都算“应用了”指令（幂等应用），各自 applied_ids 都含 id；
++        关键不变量是成交不重复、台账不重复行——崩溃恢复语义（先重算、后记账）保持不变。"""
++        dup_evidence = None
++        for attempt in range(6):
++            fresh_db()
++            _set_control("running", "manual")
++            con = sqlite3.connect(TEST_DB)
++            con.execute("DELETE FROM fills")
++            con.commit()
++            con.close()
++            pipe_run(TEST_DB, CFG)  # 生成 signals；manual 无审批 → 零成交
++            buy = _earliest_executable_buy()
++            assert buy, "无可执行 BUY 信号可审批（全部被禁入闸拦截时测试前提不成立）"
++            d, a, s, side = buy
++            cmds = [{"id": "stress7-approve-%d" % attempt, "kind": "approve",
++                     "payload_json": json.dumps(
++                         {"date": d, "account": a, "symbol": s, "side": side})}]
++>           out1, out2 = _apply_concurrent(cmds)
++                         ^^^^^^^^^^^^^^^^^^^^^^^
++
++tests/stress_test.py:442: 
++_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
++
++cmds = [{'id': 'stress7-approve-0', 'kind': 'approve', 'payload_json': '{"date": "2026-10-19", "account": "sim_a", "symbol": "002639", "side": "BUY"}'}]
++
++    def _apply_concurrent(cmds):
++        """真并发：两个 apply_commands 进程同时处理同一批指令。
++        用线程同时 communicate，保证两进程的 stdin 几乎同时送达、
++        pipeline 阶段真实重叠（顺序 communicate 会退化成串行，
++        后进程直接看到前进程的台账，测不到竞态）。返回 (out1, out2)。"""
++        env = dict(os.environ)
++        data = json.dumps(cmds).encode("utf-8")
++        ps = [subprocess.Popen([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
++                               stderr=subprocess.PIPE, env=env, cwd=BASE)
++              for _ in range(2)]
++        results = [None, None]
++    
++        def run_one(i, p):
++            try:
++                stdout, stderr = p.communicate(data, timeout=300)
++                line = [ln for ln in stdout.decode().splitlines() if ln.strip()][-1]
++                results[i] = (p.returncode, json.loads(line), stderr.decode()[-500:])
++            except Exception as e:  # noqa: BLE001
++                results[i] = (None, None, "communicate 异常 %r" % e)
++    
++        ts = [threading.Thread(target=run_one, args=(i, p)) for i, p in enumerate(ps)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=320)
++        outs = []
++        for i, (rc, out, err) in enumerate(results):
++>           assert rc == 0, "并发进程%d异常，退出码 %r，stderr=%s" % (i, rc, err)
++E           AssertionError: 并发进程0异常，退出码 None，stderr=communicate 异常 JSONDecodeError('Expecting value: line 1 column 1 (char 0)')
++E           assert None == 0
++
++tests/stress_test.py:413: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++___________________________ test_9_table_consistency ___________________________
++
++    def test_9_table_consistency():
++        """新表一致性：processed_commands 在各建表入口语义一致。
++        入口① db/schema.sql（经 run_daily.init_db，支持 PAPER_SIM_DB 指向测试库）；
++        入口② apply_commands.py 自包含 DDL。
++        验证：两入口建出的列定义/主键一致（归一化 DDL + PRAGMA 比对）；
++        缺表旧库（当前生产库即第一轮之前的旧库形态）+ apply_commands → 表被补建（迁移路径）。"""
++        # 入口①：init_db 建测试库（PAPER_SIM_DB 已指向测试路径；
++        # 注意：必须在 import 之前设置环境变量，因为 run_daily.DB 在模块加载时绑定）
++        db1 = "/tmp/stress_initdb.db"
++        if os.path.exists(db1):
++            os.remove(db1)
++        os.environ["PAPER_SIM_DB"] = db1
++        from run_daily import init_db  # noqa: E402
++        init_db().close()
++        ddl1, info1 = _table_info(db1, "processed_commands")
++    
++        # 入口②：缺表旧库 + apply_commands（set_mode 触发自包含 DDL）
++        # 注：用 DROP 显式构造“缺表旧库”，不再依赖生产库恰好是旧形态
++        #（2026-10-09 起生产库已有 processed_commands 表）。
++        db2 = "/tmp/stress_legacy.db"
++        if os.path.exists(db2):
++            os.remove(db2)
++        shutil.copyfile(PROD_DB, db2)
++        con = sqlite3.connect(db2)
++        con.execute("DROP TABLE IF EXISTS processed_commands")
++        con.commit()
++        missing = con.execute(
++            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
++            " AND name='processed_commands'").fetchone()[0]
++        con.close()
++        assert missing == 0, "前置条件破坏：旧库构造失败，processed_commands 表仍在"
++        env = dict(os.environ)
++        env["PAPER_SIM_DB"] = db2
++        cmds = [{"id": "stress9-setmode", "kind": "set_mode",
++                 "payload_json": json.dumps({"mode": "manual"})}]
++        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                           input=json.dumps(cmds), capture_output=True, text=True,
++                           env=env, cwd=BASE, timeout=300)
++>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
++            p.returncode, p.stderr[-500:])
++E       AssertionError: apply_commands 退出码 1，stderr=tch/workspace/l2-remediation/v3-audit-correction/apply_commands.py", line 72, in main
++E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
++E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
++E             raise CalledProcessError(retcode, process.args,
++E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py']' returned non-zero exit status 1.
++E         
++E       assert 1 == 0
++E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati..., \'/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
++
++tests/stress_test.py:670: AssertionError
++_________________________ test_10_datasource_fallback __________________________
++
++    def test_10_datasource_fallback():
++        """数据源熔断：腾讯主源异常/空窗口时，自动切换新浪备用源（A股），
++        数据不断档。模拟两种故障：抛异常、返回空列表。"""
++>       from data import quotes  # noqa: E402
++        ^^^^^^^^^^^^^^^^^^^^^^^
++E       ModuleNotFoundError: No module named 'data'
++
++tests/stress_test.py:685: ModuleNotFoundError
++______________________ test_ledger_fingerprint_idempotent ______________________
++
++tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_ledger_fingerprint_idempo0')
++
++    def test_ledger_fingerprint_idempotent(tmp_path):
++        """同库连跑两次（模拟重复跑批/进程重启重跑）：账本指纹不变、
++        不产生重复成交，且与改造前基线全等。"""
++        db = str(tmp_path / "prod_copy.db")
++        shutil.copy2(PROD_DB, db)
++        cfg = _load_cfg()
++        pipeline_run(db, cfg)
++        fp1 = _fingerprint(db)
++        pipeline_run(db, cfg)
++        fp2 = _fingerprint(db)
++        base = json.load(open(os.path.join(EVID, "ledger_fingerprint.json"),
++                              encoding="utf-8"))["baseline_pre_batch2"]
++        _evidence("ledger_fingerprint_idempotent", {
++            "input": "生产库副本 + 现行管线连跑两次",
++            "expected": "两次指纹相等且与改造前基线（行数/逐行哈希/Σqty/Σamount/Σpnl）全等",
++            "actual": {"after_run1": fp1, "after_run2": fp2, "baseline": base},
++            "fills": fp2["fills"]})
++        assert fp1 == fp2
++        for k in ("rows", "sha256", "sum_qty", "sum_amount", "sum_pnl"):
++>           assert fp1["fills"][k] == base["fills"][k], k
++E           AssertionError: rows
++E           assert 50 == 51
++
++tests/test_e2e_batch2.py:609: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++=============================== warnings summary ===============================
++tests/stress_test.py::test_1_missing_quote
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_1_missing_quote returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_2_idempotent_rerun
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_2_idempotent_rerun returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_3_cash_identity
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_3_cash_identity returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_8_control_state_machine
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_8_control_state_machine returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=2377) is multi-threaded, use of fork() may lead to deadlocks in the child.
++    self.pid = os.fork()
++
++tests/test_market_first_cache_isolation.py::test_get_bars_never_touches_prod_shared_cache
++  /home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 002446 数据陈旧: 最新 2026-11-13（距今10天）
++    warnings.warn(
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++=========================== short test summary info ============================
++FAILED tests/stress_test.py::test_4_exactly_once_commands - AssertionError: a...
++FAILED tests/stress_test.py::test_5_snapshot_atomicity - AssertionError: 集成...
++FAILED tests/stress_test.py::test_6_ashare_dryrun - ModuleNotFoundError: No m...
++FAILED tests/stress_test.py::test_7_concurrent_apply - AssertionError: 并发进...
++FAILED tests/stress_test.py::test_9_table_consistency - AssertionError: apply...
++FAILED tests/stress_test.py::test_10_datasource_fallback - ModuleNotFoundErro...
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
++7 failed, 368 passed, 7 warnings in 244.52s (0:04:04)
+diff --git a/evidence/v3-audit-correction-20261123/logs/fixed_failures.txt b/evidence/v3-audit-correction-20261123/logs/fixed_failures.txt
+new file mode 100644
+index 0000000..215be90
+--- /dev/null
++++ b/evidence/v3-audit-correction-20261123/logs/fixed_failures.txt
+@@ -0,0 +1,7 @@
++FAILED tests/stress_test.py::test_10_datasource_fallback
++FAILED tests/stress_test.py::test_4_exactly_once_commands
++FAILED tests/stress_test.py::test_5_snapshot_atomicity
++FAILED tests/stress_test.py::test_6_ashare_dryrun
++FAILED tests/stress_test.py::test_7_concurrent_apply
++FAILED tests/stress_test.py::test_9_table_consistency
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent
+diff --git a/evidence/v3-audit-correction-20261123/logs/fixed_full.log b/evidence/v3-audit-correction-20261123/logs/fixed_full.log
+new file mode 100644
+index 0000000..48a1825
+--- /dev/null
++++ b/evidence/v3-audit-correction-20261123/logs/fixed_full.log
+@@ -0,0 +1,361 @@
++...FFFF.FF.............................................................. [ 17%]
++......F................................................................. [ 35%]
++........................................................................ [ 53%]
++........................................................................ [ 71%]
++........................................................................ [ 89%]
++...........................................                              [100%]
++=================================== FAILURES ===================================
++_________________________ test_4_exactly_once_commands _________________________
++
++    def test_4_exactly_once_commands():
++        """指令 exactly-once：同一批指令跑两次，第二次 applied_ids 为空、
++        duplicate_ids 列出重复 id，fills 不得重复，台账有记录。"""
++        fresh_db()
++        con = sqlite3.connect(TEST_DB)
++        # 找一个真实存在、尚未成交的信号（不限 60 天窗口；引擎的审批门禁本身不限窗口）
++        sig = con.execute(
++            "SELECT s.date,s.account,s.symbol,s.side FROM signals s"
++            " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
++            " AND f.symbol=s.symbol AND f.side=s.side"
++            " WHERE f.date IS NULL"
++            " ORDER BY s.date DESC LIMIT 1").fetchone()
++        con.close()
++        cmds = [{"id": "stress-setmode-1", "kind": "set_mode",
++                 "payload_json": json.dumps({"mode": "manual"})}]
++        if sig:
++            d, a, s, side = sig
++            cmds.append({"id": "stress-approve-1", "kind": "approve",
++                         "payload_json": json.dumps(
++                             {"date": d, "account": a, "symbol": s, "side": side})})
++        ids = [c["id"] for c in cmds]
++    
++>       out1 = _apply_once(cmds)
++               ^^^^^^^^^^^^^^^^^
++
++tests/stress_test.py:232: 
++_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
++
++cmds = [{'id': 'stress-setmode-1', 'kind': 'set_mode', 'payload_json': '{"mode": "manual"}'}, {'id': 'stress-approve-1', 'kind': 'approve', 'payload_json': '{"date": "2026-10-30", "account": "sim_a", "symbol": "600150", "side": "SELL"}'}]
++
++    def _apply_once(cmds):
++        env = dict(os.environ)
++        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                           input=json.dumps(cmds), capture_output=True, text=True,
++                           env=env, cwd=BASE, timeout=300)
++>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
++            p.returncode, p.stderr[-500:])
++E       AssertionError: apply_commands 退出码 1，stderr=tch/workspace/l2-remediation/v3-audit-correction/apply_commands.py", line 72, in main
++E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
++E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
++E             raise CalledProcessError(retcode, process.args,
++E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py']' returned non-zero exit status 1.
++E         
++E       assert 1 == 0
++E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati..., \'/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
++
++tests/stress_test.py:204: AssertionError
++__________________________ test_5_snapshot_atomicity ___________________________
++
++    def test_5_snapshot_atomicity():
++        """快照读写并发：300 次并发写 + 持续读，零 torn read；
++        再用真实 sync_snapshot.py 跑 8 次做集成验证。"""
++        from sync_snapshot import atomic_write_json  # noqa: E402
++        path = "/tmp/stress_snap.json"
++        if os.path.exists(path):
++            os.remove(path)
++        stop, errors = threading.Event(), []
++        reads = [0]
++    
++        def writer():
++            try:
++                for i in range(300):
++                    atomic_write_json(path, {"asof": "2026-10-05", "i": i,
++                                             "final": i == 299, "blob": "x" * 20000,
++                                             "accounts": [{"account": "sim_hk"}]})
++            except Exception as e:  # noqa: BLE001
++                errors.append(("writer", repr(e)))
++            finally:
++                stop.set()
++    
++        def reader():
++            try:
++                while not stop.is_set():
++                    try:
++                        with open(path, encoding="utf-8") as f:
++                            d = json.load(f)
++                    except FileNotFoundError:
++                        continue
++                    assert d.get("asof") == "2026-10-05" and "blob" in d and "i" in d
++                    reads[0] += 1
++            except Exception as e:  # noqa: BLE001
++                errors.append(("reader", repr(e)))
++    
++        ts = [threading.Thread(target=writer), threading.Thread(target=reader),
++              threading.Thread(target=reader)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=120)
++        assert not errors, "并发读写出错：%r" % errors[:2]
++        assert reads[0] > 50, "有效读取次数过少：%d" % reads[0]
++    
++        # 集成：真实脚本并发写，持续读
++        path2 = "/tmp/stress_snap2.json"
++        env = dict(os.environ)
++        env["PAPER_SIM_SNAPSHOT"] = path2
++        stop2, errors2, reads2 = threading.Event(), [], [0]
++    
++        def writer2():
++            try:
++                for _ in range(8):
++                    subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")],
++                                   env=env, cwd=BASE, capture_output=True,
++                                   check=True, timeout=300)
++            except Exception as e:  # noqa: BLE001
++                errors2.append(("writer", repr(e)))
++            finally:
++                stop2.set()
++    
++        def reader2():
++            try:
++                while not stop2.is_set():
++                    try:
++                        with open(path2, encoding="utf-8") as f:
++                            d = json.load(f)
++                    except FileNotFoundError:
++                        continue
++                    assert isinstance(d.get("accounts"), list) and d.get("asof")
++                    reads2[0] += 1
++            except Exception as e:  # noqa: BLE001
++                errors2.append(("reader", repr(e)))
++    
++        ts = [threading.Thread(target=writer2), threading.Thread(target=reader2)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=600)
++>       assert not errors2, "集成并发出错：%r" % errors2[:2]
++E       AssertionError: 集成并发出错：[('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py'])")]
++E       assert not [('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py'])")]
++
++tests/stress_test.py:341: AssertionError
++_____________________________ test_6_ashare_dryrun _____________________________
++
++    def test_6_ashare_dryrun():
++        """10-08 A股管道冒烟：只读拉取 002446/688305 前复权日K，不入库；
++        要求有足够历史（>100 行）且最新日期 ≥ 2026-09-30（节前最后交易日）。"""
++>       from data.quotes import fetch_kline  # noqa: E402
++        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++E       ModuleNotFoundError: No module named 'data'
++
++tests/stress_test.py:350: ModuleNotFoundError
++___________________________ test_7_concurrent_apply ____________________________
++
++    def test_7_concurrent_apply():
++        """并发指令竞态：两个 apply_commands 进程同时处理同一批指令。
++        构造可成交场景：清空 fills → manual 跑出 signals → 双进程并发批准最早的 BUY。
++        断言：fills 无 (date,account,symbol,side) 重复键；
++        processed_commands 每 id 恰一行；两进程都正常输出 JSON。
++        注：两进程各自都算“应用了”指令（幂等应用），各自 applied_ids 都含 id；
++        关键不变量是成交不重复、台账不重复行——崩溃恢复语义（先重算、后记账）保持不变。"""
++        dup_evidence = None
++        for attempt in range(6):
++            fresh_db()
++            _set_control("running", "manual")
++            con = sqlite3.connect(TEST_DB)
++            con.execute("DELETE FROM fills")
++            con.commit()
++            con.close()
++            pipe_run(TEST_DB, CFG)  # 生成 signals；manual 无审批 → 零成交
++            buy = _earliest_executable_buy()
++            assert buy, "无可执行 BUY 信号可审批（全部被禁入闸拦截时测试前提不成立）"
++            d, a, s, side = buy
++            cmds = [{"id": "stress7-approve-%d" % attempt, "kind": "approve",
++                     "payload_json": json.dumps(
++                         {"date": d, "account": a, "symbol": s, "side": side})}]
++>           out1, out2 = _apply_concurrent(cmds)
++                         ^^^^^^^^^^^^^^^^^^^^^^^
++
++tests/stress_test.py:442: 
++_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
++
++cmds = [{'id': 'stress7-approve-0', 'kind': 'approve', 'payload_json': '{"date": "2026-10-19", "account": "sim_a", "symbol": "002639", "side": "BUY"}'}]
++
++    def _apply_concurrent(cmds):
++        """真并发：两个 apply_commands 进程同时处理同一批指令。
++        用线程同时 communicate，保证两进程的 stdin 几乎同时送达、
++        pipeline 阶段真实重叠（顺序 communicate 会退化成串行，
++        后进程直接看到前进程的台账，测不到竞态）。返回 (out1, out2)。"""
++        env = dict(os.environ)
++        data = json.dumps(cmds).encode("utf-8")
++        ps = [subprocess.Popen([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
++                               stderr=subprocess.PIPE, env=env, cwd=BASE)
++              for _ in range(2)]
++        results = [None, None]
++    
++        def run_one(i, p):
++            try:
++                stdout, stderr = p.communicate(data, timeout=300)
++                line = [ln for ln in stdout.decode().splitlines() if ln.strip()][-1]
++                results[i] = (p.returncode, json.loads(line), stderr.decode()[-500:])
++            except Exception as e:  # noqa: BLE001
++                results[i] = (None, None, "communicate 异常 %r" % e)
++    
++        ts = [threading.Thread(target=run_one, args=(i, p)) for i, p in enumerate(ps)]
++        for t in ts:
++            t.start()
++        for t in ts:
++            t.join(timeout=320)
++        outs = []
++        for i, (rc, out, err) in enumerate(results):
++>           assert rc == 0, "并发进程%d异常，退出码 %r，stderr=%s" % (i, rc, err)
++E           AssertionError: 并发进程0异常，退出码 None，stderr=communicate 异常 JSONDecodeError('Expecting value: line 1 column 1 (char 0)')
++E           assert None == 0
++
++tests/stress_test.py:413: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++___________________________ test_9_table_consistency ___________________________
++
++    def test_9_table_consistency():
++        """新表一致性：processed_commands 在各建表入口语义一致。
++        入口① db/schema.sql（经 run_daily.init_db，支持 PAPER_SIM_DB 指向测试库）；
++        入口② apply_commands.py 自包含 DDL。
++        验证：两入口建出的列定义/主键一致（归一化 DDL + PRAGMA 比对）；
++        缺表旧库（当前生产库即第一轮之前的旧库形态）+ apply_commands → 表被补建（迁移路径）。"""
++        # 入口①：init_db 建测试库（PAPER_SIM_DB 已指向测试路径；
++        # 注意：必须在 import 之前设置环境变量，因为 run_daily.DB 在模块加载时绑定）
++        db1 = "/tmp/stress_initdb.db"
++        if os.path.exists(db1):
++            os.remove(db1)
++        os.environ["PAPER_SIM_DB"] = db1
++        from run_daily import init_db  # noqa: E402
++        init_db().close()
++        ddl1, info1 = _table_info(db1, "processed_commands")
++    
++        # 入口②：缺表旧库 + apply_commands（set_mode 触发自包含 DDL）
++        # 注：用 DROP 显式构造“缺表旧库”，不再依赖生产库恰好是旧形态
++        #（2026-10-09 起生产库已有 processed_commands 表）。
++        db2 = "/tmp/stress_legacy.db"
++        if os.path.exists(db2):
++            os.remove(db2)
++        shutil.copyfile(PROD_DB, db2)
++        con = sqlite3.connect(db2)
++        con.execute("DROP TABLE IF EXISTS processed_commands")
++        con.commit()
++        missing = con.execute(
++            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
++            " AND name='processed_commands'").fetchone()[0]
++        con.close()
++        assert missing == 0, "前置条件破坏：旧库构造失败，processed_commands 表仍在"
++        env = dict(os.environ)
++        env["PAPER_SIM_DB"] = db2
++        cmds = [{"id": "stress9-setmode", "kind": "set_mode",
++                 "payload_json": json.dumps({"mode": "manual"})}]
++        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
++                           input=json.dumps(cmds), capture_output=True, text=True,
++                           env=env, cwd=BASE, timeout=300)
++>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
++            p.returncode, p.stderr[-500:])
++E       AssertionError: apply_commands 退出码 1，stderr=tch/workspace/l2-remediation/v3-audit-correction/apply_commands.py", line 72, in main
++E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
++E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
++E             raise CalledProcessError(retcode, process.args,
++E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py']' returned non-zero exit status 1.
++E         
++E       assert 1 == 0
++E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati..., \'/home/hatch/workspace/l2-remediation/v3-audit-correction/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
++
++tests/stress_test.py:670: AssertionError
++_________________________ test_10_datasource_fallback __________________________
++
++    def test_10_datasource_fallback():
++        """数据源熔断：腾讯主源异常/空窗口时，自动切换新浪备用源（A股），
++        数据不断档。模拟两种故障：抛异常、返回空列表。"""
++>       from data import quotes  # noqa: E402
++        ^^^^^^^^^^^^^^^^^^^^^^^
++E       ModuleNotFoundError: No module named 'data'
++
++tests/stress_test.py:685: ModuleNotFoundError
++______________________ test_ledger_fingerprint_idempotent ______________________
++
++tmp_path = PosixPath('/tmp/pytest-of-root/pytest-5/test_ledger_fingerprint_idempo0')
++
++    def test_ledger_fingerprint_idempotent(tmp_path):
++        """同库连跑两次（模拟重复跑批/进程重启重跑）：账本指纹不变、
++        不产生重复成交，且与改造前基线全等。"""
++        db = str(tmp_path / "prod_copy.db")
++        shutil.copy2(PROD_DB, db)
++        cfg = _load_cfg()
++        pipeline_run(db, cfg)
++        fp1 = _fingerprint(db)
++        pipeline_run(db, cfg)
++        fp2 = _fingerprint(db)
++        base = json.load(open(os.path.join(EVID, "ledger_fingerprint.json"),
++                              encoding="utf-8"))["baseline_pre_batch2"]
++        _evidence("ledger_fingerprint_idempotent", {
++            "input": "生产库副本 + 现行管线连跑两次",
++            "expected": "两次指纹相等且与改造前基线（行数/逐行哈希/Σqty/Σamount/Σpnl）全等",
++            "actual": {"after_run1": fp1, "after_run2": fp2, "baseline": base},
++            "fills": fp2["fills"]})
++        assert fp1 == fp2
++        for k in ("rows", "sha256", "sum_qty", "sum_amount", "sum_pnl"):
++>           assert fp1["fills"][k] == base["fills"][k], k
++E           AssertionError: rows
++E           assert 50 == 51
++
++tests/test_e2e_batch2.py:609: AssertionError
++----------------------------- Captured stdout call -----------------------------
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
++WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
++=============================== warnings summary ===============================
++tests/stress_test.py::test_1_missing_quote
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_1_missing_quote returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_2_idempotent_rerun
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_2_idempotent_rerun returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_3_cash_identity
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_3_cash_identity returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/stress_test.py::test_8_control_state_machine
++  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_8_control_state_machine returned <class 'str'>.
++  Did you mean to use `assert` instead of `return`?
++  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
++    warnings.warn(
++
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
++  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=3262) is multi-threaded, use of fork() may lead to deadlocks in the child.
++    self.pid = os.fork()
++
++tests/test_market_first_cache_isolation.py::test_get_bars_never_touches_prod_shared_cache
++  /home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 002446 数据陈旧: 最新 2026-11-13（距今10天）
++    warnings.warn(
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++=========================== short test summary info ============================
++FAILED tests/stress_test.py::test_4_exactly_once_commands - AssertionError: a...
++FAILED tests/stress_test.py::test_5_snapshot_atomicity - AssertionError: 集成...
++FAILED tests/stress_test.py::test_6_ashare_dryrun - ModuleNotFoundError: No m...
++FAILED tests/stress_test.py::test_7_concurrent_apply - AssertionError: 并发进...
++FAILED tests/stress_test.py::test_9_table_consistency - AssertionError: apply...
++FAILED tests/stress_test.py::test_10_datasource_fallback - ModuleNotFoundErro...
++FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
++7 failed, 396 passed, 7 warnings in 240.50s (0:04:00)
+diff --git a/evidence/v3-audit-correction-20261123/logs/p0_1_tests.log b/evidence/v3-audit-correction-20261123/logs/p0_1_tests.log
+new file mode 100644
+index 0000000..660e386
+--- /dev/null
++++ b/evidence/v3-audit-correction-20261123/logs/p0_1_tests.log
+@@ -0,0 +1,35 @@
++============================= test session starts ==============================
++platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
++cachedir: .pytest_cache
++rootdir: /home/hatch/workspace/l2-remediation/v3-audit-correction
++plugins: anyio-4.15.1
++collecting ... collected 26 items
++
++tests/test_market_first_rt1_approval_lifecycle.py::test_delete_live_approval_blocked PASSED [  3%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_delete_all_approvals_of_approved_candidate_blocked PASSED [  7%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET decision='rejected' WHERE id=?-params0] PASSED [ 11%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET approver='' WHERE id=?-params1] PASSED [ 15%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET approver='mallory' WHERE id=?-params2] PASSED [ 19%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET basis='' WHERE id=?-params3] PASSED [ 23%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET basis='\u4e8b\u540e\u7be1\u6539\u4f9d\u636e' WHERE id=?-params4] PASSED [ 26%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_update_keyfields_live_approval_blocked[UPDATE approvals SET decided_at='2020-01-01T00:00:00+08:00' WHERE id=?-params5] PASSED [ 30%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_update_candidate_id_transfer_blocked PASSED [ 34%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_delete_approval_of_non_approved_candidate_allowed PASSED [ 38%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_update_rejected_record_allowed PASSED [ 42%]
++tests/test_market_first_rt1_approval_lifecycle.py::test_decide_normal_path_and_lifecycle PASSED [ 46%]
++tests/test_market_first_rt1_db_guard.py::test_direct_update_to_approved_without_approvals_blocked PASSED [ 50%]
++tests/test_market_first_rt1_db_guard.py::test_direct_insert_candidate_approved_blocked PASSED [ 53%]
++tests/test_market_first_rt1_db_guard.py::test_update_blocked_when_approvals_fields_empty PASSED [ 57%]
++tests/test_market_first_rt1_db_guard.py::test_update_allowed_with_valid_approvals_record PASSED [ 61%]
++tests/test_market_first_rt1_db_guard.py::test_decide_normal_path_passes_db_guard PASSED [ 65%]
++tests/test_market_first_rt1_decide_approval.py::test_decide_approved_requires_approver PASSED [ 69%]
++tests/test_market_first_rt1_decide_approval.py::test_decide_approved_requires_basis PASSED [ 73%]
++tests/test_market_first_rt1_decide_approval.py::test_decide_approved_with_full_info_positive_control PASSED [ 76%]
++tests/test_market_first_rt1_decide_approval.py::test_decide_rejected_without_basis_still_allowed PASSED [ 80%]
++tests/test_market_first_rt1_entry_census.py::test_transition_direct_approved_rejected_with_trace PASSED [ 84%]
++tests/test_market_first_rt1_entry_census.py::test_transition_direct_validation_passed_rejected PASSED [ 88%]
++tests/test_market_first_rt1_entry_census.py::test_apply_validation_passed_forged_decision_id_rejected PASSED [ 92%]
++tests/test_market_first_rt1_entry_census.py::test_set_fields_crosscheck_still_rejected PASSED [ 96%]
++tests/test_market_first_rt1_entry_census.py::test_decide_is_the_only_path_and_keeps_full_record PASSED [100%]
++
++============================== 26 passed in 0.54s ==============================
+diff --git a/evidence/v3-audit-correction-20261123/logs/p0_2_tests.log b/evidence/v3-audit-correction-20261123/logs/p0_2_tests.log
+new file mode 100644
+index 0000000..5eaa6aa
+--- /dev/null
++++ b/evidence/v3-audit-correction-20261123/logs/p0_2_tests.log
+@@ -0,0 +1,42 @@
++============================= test session starts ==============================
++platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
++cachedir: .pytest_cache
++rootdir: /home/hatch/workspace/l2-remediation/v3-audit-correction
++plugins: anyio-4.15.1
++collecting ... collected 33 items
++
++tests/test_market_first_rt2_audit_binding.py::test_exclude_sample_writes_explicit_binding PASSED [  3%]
++tests/test_market_first_rt2_audit_binding.py::test_direct_insert_with_explicit_binding_passes PASSED [  6%]
++tests/test_market_first_rt2_audit_binding.py::test_direct_insert_without_binding_blocked PASSED [  9%]
++tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_reuse_blocked PASSED [ 12%]
++tests/test_market_first_rt2_audit_binding.py::test_cross_candidate_audit_reuse_blocked PASSED [ 15%]
++tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_delete_blocked PASSED [ 18%]
++tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_update_blocked[UPDATE candidate_history SET reason='\u4e8b\u540e\u6539\u7406\u7531' WHERE id=?] PASSED [ 21%]
++tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_update_blocked[UPDATE candidate_history SET actor='someone_else' WHERE id=?] PASSED [ 24%]
++tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_update_blocked[UPDATE candidate_history SET new_value='judge_stats' WHERE id=?] PASSED [ 27%]
++tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_update_blocked[UPDATE candidate_history SET candidate_id=999 WHERE id=?] PASSED [ 30%]
++tests/test_market_first_rt2_audit_binding.py::test_unbound_history_row_not_covered_by_binding_guard PASSED [ 33%]
++tests/test_market_first_rt2_db_guard.py::test_direct_insert_without_audit_row_blocked PASSED [ 36%]
++tests/test_market_first_rt2_db_guard.py::test_direct_insert_blank_fields_blocked PASSED [ 39%]
++tests/test_market_first_rt2_db_guard.py::test_direct_insert_audit_mismatch_blocked PASSED [ 42%]
++tests/test_market_first_rt2_db_guard.py::test_direct_insert_with_matching_audit_row_passes PASSED [ 45%]
++tests/test_market_first_rt2_db_guard.py::test_exclude_sample_normal_path_passes_db_guard PASSED [ 48%]
++tests/test_market_first_rt2_exclude_sample.py::test_exclude_requires_reason PASSED [ 51%]
++tests/test_market_first_rt2_exclude_sample.py::test_exclude_requires_decided_by PASSED [ 54%]
++tests/test_market_first_rt2_exclude_sample.py::test_exclude_with_full_info_positive_control PASSED [ 57%]
++tests/test_market_first_rt2_exclude_sample.py::test_exclude_writes_audit_history_atomically PASSED [ 60%]
++tests/test_market_first_rt2_exclude_sample.py::test_failed_exclude_rolls_back_both_writes PASSED [ 63%]
++tests/test_market_first_validation.py::test_evaluate_mature_exact_values PASSED [ 66%]
++tests/test_market_first_validation.py::test_evaluate_drawdown_uses_benchmark_peak PASSED [ 69%]
++tests/test_market_first_validation.py::test_evaluate_immature_partial_horizons PASSED [ 72%]
++tests/test_market_first_validation.py::test_evaluate_missing_never_zero PASSED [ 75%]
++tests/test_market_first_validation.py::test_duplicate_sample_rejected PASSED [ 78%]
++tests/test_market_first_validation.py::test_create_sample_invalid_kind PASSED [ 81%]
++tests/test_market_first_validation_gate.py::test_transition_validation_passed_direct_rejected PASSED [ 84%]
++tests/test_market_first_validation_gate.py::test_judge_no_rule_not_evaluable PASSED [ 87%]
++tests/test_market_first_validation_gate.py::test_judge_backfill_only_not_passed PASSED [ 90%]
++tests/test_market_first_validation_gate.py::test_judge_immature_forward_not_passed PASSED [ 93%]
++tests/test_market_first_validation_gate.py::test_judge_mature_forward_passes_and_flows PASSED [ 96%]
++tests/test_market_first_validation_gate.py::test_judge_excluded_forward_sample_not_counted PASSED [100%]
++
++============================== 33 passed in 0.73s ==============================
+diff --git a/evidence/v3-audit-correction-20261123/logs/p0_3_tests.log b/evidence/v3-audit-correction-20261123/logs/p0_3_tests.log
+new file mode 100644
+index 0000000..6d53ba6
+--- /dev/null
++++ b/evidence/v3-audit-correction-20261123/logs/p0_3_tests.log
+@@ -0,0 +1,37 @@
++============================= test session starts ==============================
++platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
++cachedir: .pytest_cache
++rootdir: /home/hatch/workspace/l2-remediation/v3-audit-correction
++plugins: anyio-4.15.1
++collecting ... collected 28 items
++
++tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_future_created_at_blocked PASSED [  3%]
++tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_far_future_created_at_blocked PASSED [  7%]
++tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_current_server_time_passes PASSED [ 10%]
++tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_within_tolerance_passes PASSED [ 14%]
++tests/test_market_first_p0_5_insert_anchor.py::test_update_guard_still_active PASSED [ 17%]
++tests/test_market_first_p0_5_created_at_guard.py::test_created_at_update_backfill_blocked PASSED [ 21%]
++tests/test_market_first_p0_5_created_at_guard.py::test_created_at_update_forward_shift_blocked PASSED [ 25%]
++tests/test_market_first_p0_5_created_at_guard.py::test_clock_fixture_controls_ingest_time_via_app_path PASSED [ 28%]
++tests/test_market_first_p0_5_created_at_guard.py::test_clock_assignable_between_ingests PASSED [ 32%]
++tests/test_market_first_p0_5_created_at_guard.py::test_production_default_uses_server_time PASSED [ 35%]
++tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_explicit_entry_forced_backfill PASSED [ 39%]
++tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_history_bars_only_rejected PASSED [ 42%]
++tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_entry_anchored_at_ingest PASSED [ 46%]
++tests/test_market_first_p0_5_time_anchor.py::test_missing_ingest_time_rejects_forward PASSED [ 50%]
++tests/test_market_first_p0_5_time_anchor.py::test_claimed_discovery_after_ingest_does_not_extend_anchor PASSED [ 53%]
++tests/test_market_first_p0_5_time_anchor.py::test_same_day_ingest_positive_control PASSED [ 57%]
++tests/test_market_first_forward_time.py::test_forward_entry_is_next_trading_day_after_close_discovery PASSED [ 60%]
++tests/test_market_first_forward_time.py::test_forward_intraday_discovery_still_next_trading_day PASSED [ 64%]
++tests/test_market_first_forward_time.py::test_forward_weekend_discovery_entry_monday PASSED [ 67%]
++tests/test_market_first_forward_time.py::test_entry_before_discovery_forced_backfill PASSED [ 71%]
++tests/test_market_first_forward_time.py::test_historical_backfill_long_gap PASSED [ 75%]
++tests/test_market_first_forward_time.py::test_forward_price_missing_rejected_and_traced PASSED [ 78%]
++tests/test_market_first_forward_time.py::test_forward_without_discovery_event_rejected PASSED [ 82%]
++tests/test_market_first_forward_time.py::test_excluded_sample_not_in_forward_stats_and_row_unchanged PASSED [ 85%]
++tests/test_market_first_rt3_instflow_anchor.py::test_forged_future_discovered_at_cannot_flip_sign PASSED [ 89%]
++tests/test_market_first_rt3_instflow_anchor.py::test_claimed_date_variation_does_not_change_subtotal PASSED [ 92%]
++tests/test_market_first_rt3_instflow_anchor.py::test_latest_selected_by_created_at_positive_control PASSED [ 96%]
++tests/test_market_first_rt3_instflow_anchor.py::test_missing_created_at_falls_back_to_id_order PASSED [100%]
++
++============================== 28 passed in 0.37s ==============================
+diff --git a/market_first/db.py b/market_first/db.py
+index dfe4220..7ea2a52 100644
+--- a/market_first/db.py
++++ b/market_first/db.py
+@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS sample_exclusions (
+     reason TEXT,
+     decided_by TEXT,
+     created_at TEXT,
++    audit_history_id INTEGER,
+     UNIQUE(sample_id, excluded_from)
+ );
+ 
+@@ -216,6 +217,7 @@ CREATE TABLE IF NOT EXISTS sample_exclusions (
+     reason TEXT,
+     decided_by TEXT,
+     created_at TEXT,
++    audit_history_id INTEGER,
+     UNIQUE(sample_id, excluded_from)
+ );
+ 
+@@ -504,7 +506,7 @@ BEGIN
+     WHERE NEW.reason IS NULL OR trim(NEW.reason) = '';
+     SELECT RAISE(ABORT, 'sample_exclusions requires non-empty decided_by (RT-2 db guard)')
+     WHERE NEW.decided_by IS NULL OR trim(NEW.decided_by) = '';
+-    SELECT RAISE(ABORT, 'sample_exclusions requires matching candidate_history audit row in same transaction (RT-2 db guard)')
++    SELECT RAISE(ABORT, 'sample_exclusions requires a corresponding candidate_history audit row (RT-2 db guard)')
+     WHERE NOT EXISTS (
+         SELECT 1 FROM candidate_history h
+         JOIN validation_samples s ON s.id = NEW.sample_id
+@@ -517,6 +519,134 @@ END;
+ """
+ 
+ 
++# V3 独立审计补正（2026-11-23）新增结构：
++# - P0-3（P0-5 INSERT 时间锚，未来时间部分）：discovery_events
++#   直接 INSERT 的 created_at 不得晚于 DB 服务器时间
++#   120 秒（与 registry approved_at 窗口同口径）。NULL 与
++#   历史回填窗口与既有可信时钟夹具存在真实冲突（夹具以
++#   固定字符串模拟历史入库时刻、且有故意写 NULL 以验证
++#   缺锚拒绝的用例），本批不实施，冲突全量与可选方案见
++#   evidence 设计文档 DESIGN-V3-CORRECTION.md。
++# - P0-1（RT-1 审批记录持续有效性）：approvals 行是某候选
++#   approved 终态的有效依据时（decision='approved'、
++#   approver/basis 非空、候选当前 promotion_status=
++#   'approved'），禁止 DELETE 该行、禁止 UPDATE 其关键
++#   字段（candidate_id/decision/approver/basis/decided_at）
++#   使其失效或转移——封「事后抽掉依据」路径。
++_V3C_TRIGGERS_SQL = """
++CREATE TRIGGER IF NOT EXISTS trg_rt_approvals_no_delete_live
++BEFORE DELETE ON approvals
++WHEN OLD.decision = 'approved'
++BEGIN
++    SELECT RAISE(ABORT, 'approvals record is the live basis of an approved candidate: DELETE forbidden (RT-1 lifecycle guard)')
++    WHERE OLD.approver IS NOT NULL AND trim(OLD.approver) <> ''
++      AND OLD.basis IS NOT NULL AND trim(OLD.basis) <> ''
++      AND EXISTS (
++        SELECT 1 FROM candidates
++        WHERE id = OLD.candidate_id
++          AND promotion_status = 'approved');
++END;
++
++CREATE TRIGGER IF NOT EXISTS trg_rt_discovery_events_created_at_insert_future
++BEFORE INSERT ON discovery_events
++WHEN NEW.created_at IS NOT NULL
++BEGIN
++    SELECT RAISE(ABORT, 'discovery_events.created_at must not be later than server time + 120s (P0-5 insert guard)')
++    WHERE julianday(NEW.created_at) - julianday('now')
++        > 120.0 / 86400.0;
++END;
++
++CREATE TRIGGER IF NOT EXISTS trg_rt_approvals_no_update_keyfields_live
++BEFORE UPDATE OF candidate_id, decision, approver, basis,
++    decided_at ON approvals
++WHEN OLD.decision = 'approved'
++BEGIN
++    SELECT RAISE(ABORT, 'approvals key fields of a live approval record are immutable (RT-1 lifecycle guard)')
++    WHERE OLD.approver IS NOT NULL AND trim(OLD.approver) <> ''
++      AND OLD.basis IS NOT NULL AND trim(OLD.basis) <> ''
++      AND EXISTS (
++        SELECT 1 FROM candidates
++        WHERE id = OLD.candidate_id
++          AND promotion_status = 'approved')
++      AND (NEW.candidate_id IS NOT OLD.candidate_id
++        OR NEW.decision IS NOT OLD.decision
++        OR NEW.approver IS NOT OLD.approver
++        OR NEW.basis IS NOT OLD.basis
++        OR NEW.decided_at IS NOT OLD.decided_at);
++END;
++
++"""
++
++
++# V3 独立审计补正 P0-2（RT-2 审计记录唯一绑定）：
++# - sample_exclusions.audit_history_id 显式引用其审计记录
++#   （candidate_history 行 id），UNIQUE 索引保证一对一；
++# - trg_rt_sample_exclusions_audit_insert 修订版（ensure 内
++#   先 DROP 旧同名触发器再以本定义重建）：在原字段非空与
++#   逐字对应校验（保留为冗余校验）之上，增加绑定必备、
++#   引用逐字对应、一对一三项检查；
++# - 被任一排除引用的 candidate_history 行禁止 UPDATE /
++#   DELETE（trg_rt_candidate_history_no_update_bound /
++#   no_delete_bound）。
++# 口径（P0-2 第 5 项修订）：本机制证明的是审计证据的
++# 存在性、唯一性与不可变性——「不可变、一对一关联的审计
++# 证据」；触发器无法证明审计行与排除行同出一事务或同一
++# 操作者（同源性），不得再以「同事务」表述本闸的证明力。
++_V3C2_TRIGGERS_SQL = """
++CREATE TRIGGER trg_rt_sample_exclusions_audit_insert
++BEFORE INSERT ON sample_exclusions
++BEGIN
++    SELECT RAISE(ABORT, 'sample_exclusions requires non-empty reason (RT-2 db guard)')
++    WHERE NEW.reason IS NULL OR trim(NEW.reason) = '';
++    SELECT RAISE(ABORT, 'sample_exclusions requires non-empty decided_by (RT-2 db guard)')
++    WHERE NEW.decided_by IS NULL OR trim(NEW.decided_by) = '';
++    SELECT RAISE(ABORT, 'sample_exclusions requires audit_history_id binding to an audit record (RT-2 unique binding)')
++    WHERE NEW.audit_history_id IS NULL;
++    SELECT RAISE(ABORT, 'sample_exclusions audit_history_id must reference the corresponding candidate_history audit row (RT-2 unique binding)')
++    WHERE NOT EXISTS (
++        SELECT 1 FROM candidate_history h
++        JOIN validation_samples s ON s.id = NEW.sample_id
++        WHERE h.id = NEW.audit_history_id
++          AND h.candidate_id = s.candidate_id
++          AND h.field = 'sample_exclusion'
++          AND h.new_value = NEW.excluded_from
++          AND h.actor = NEW.decided_by
++          AND h.reason = NEW.reason);
++    SELECT RAISE(ABORT, 'candidate_history audit row is already bound to another exclusion (RT-2 one-to-one binding)')
++    WHERE EXISTS (
++        SELECT 1 FROM sample_exclusions e
++        WHERE e.audit_history_id = NEW.audit_history_id);
++    SELECT RAISE(ABORT, 'sample_exclusions requires a corresponding candidate_history audit row (RT-2 db guard)')
++    WHERE NOT EXISTS (
++        SELECT 1 FROM candidate_history h
++        JOIN validation_samples s ON s.id = NEW.sample_id
++        WHERE h.candidate_id = s.candidate_id
++          AND h.field = 'sample_exclusion'
++          AND h.new_value = NEW.excluded_from
++          AND h.actor = NEW.decided_by
++          AND h.reason = NEW.reason);
++END;
++
++CREATE TRIGGER IF NOT EXISTS trg_rt_candidate_history_no_update_bound
++BEFORE UPDATE ON candidate_history
++BEGIN
++    SELECT RAISE(ABORT, 'candidate_history audit row bound to a sample exclusion is immutable (RT-2 binding guard)')
++    WHERE EXISTS (
++        SELECT 1 FROM sample_exclusions e
++        WHERE e.audit_history_id = OLD.id);
++END;
++
++CREATE TRIGGER IF NOT EXISTS trg_rt_candidate_history_no_delete_bound
++BEFORE DELETE ON candidate_history
++BEGIN
++    SELECT RAISE(ABORT, 'candidate_history audit row bound to a sample exclusion cannot be deleted (RT-2 binding guard)')
++    WHERE EXISTS (
++        SELECT 1 FROM sample_exclusions e
++        WHERE e.audit_history_id = OLD.id);
++END;
++"""
++
++
+ def ensure_redteam_schema(conn) -> None:
+     """幂等安装红队集中修复（2026-11-23）的 DB 层保护触发器。
+ 
+@@ -535,16 +665,39 @@ def ensure_redteam_schema(conn) -> None:
+       流转）必须有 decision='approved' 且 approver/basis
+       均非空的 approvals 行对应（decide 恒先写 approvals
+       后流转、同事务，天然通过）。
+-    - RT-2 底层闸（2026-11-23 补强批）：sample_exclusions
+-      每条 INSERT 必须 reason/decided_by 非空，且同事务内
+-      已有逐字对应的 candidate_history 审计行
+-      （field='sample_exclusion'、actor=decided_by、
+-      reason=reason；exclude_sample 恒先写审计行后写排除
+-      行、同事务，天然通过）。设计见 evidence 设计补记
+-      DESIGN-BOTTOM-LAYER.md。
++    - RT-2 底层闸（2026-11-23 补强批，V3 补正 P0-2 修订）：
++      sample_exclusions 每条 INSERT 必须 reason/decided_by
++      非空，并以 audit_history_id 显式绑定一条逐字对应的
++      candidate_history 审计行（一对一、绑定后审计行不可
++      改删）——不可变、一对一关联的审计证据；触发器不
++      证明审计行与排除行同出一事务（见 _V3C2 注释）。
++      exclude_sample 恒先写审计行后写排除行并落绑定 id，
++      天然通过。设计见 evidence 设计补记
++      DESIGN-BOTTOM-LAYER.md 与 DESIGN-V3-CORRECTION.md。
++    - V3 审计补正（2026-11-23）：approvals 生命周期保护
++      （P0-1）与 discovery_events INSERT 未来时间拒绝
++      （P0-3）触发器，见 _V3C_TRIGGERS_SQL 注释。
++
+     触发器只新增、不动既有数据。
+     """
+     conn.executescript(_REDTEAM_TRIGGERS_SQL)
++    # P0-2 schema 迁移：audit_history_id 列 + 一对一唯一索引
++    # （存量行为 NULL，SQLite UNIQUE 不约束 NULL）。
++    cols = {r[1] for r in conn.execute(
++        "PRAGMA table_info(sample_exclusions)")}
++    if cols and "audit_history_id" not in cols:
++        conn.execute(
++            "ALTER TABLE sample_exclusions"
++            " ADD COLUMN audit_history_id INTEGER")
++    conn.execute(
++        "CREATE UNIQUE INDEX IF NOT EXISTS"
++        " idx_sample_exclusions_audit_history_id"
++        " ON sample_exclusions(audit_history_id)")
++    # P0-2 修订版 audit_insert 触发器替换旧同名定义。
++    conn.execute(
++        "DROP TRIGGER IF EXISTS trg_rt_sample_exclusions_audit_insert")
++    conn.executescript(_V3C2_TRIGGERS_SQL)
++    conn.executescript(_V3C_TRIGGERS_SQL)
+     conn.commit()
+ 
+ 
+diff --git a/market_first/validation.py b/market_first/validation.py
+index 4b18e82..8e35b27 100644
+--- a/market_first/validation.py
++++ b/market_first/validation.py
+@@ -744,17 +744,23 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
+     一致）；缺失在写库前抛 ValueError，排除不落字、样本与
+     统计构成不变。
+ 
+-    RT-2 原子性强化（2026-11-23 红队集中修复第 2 项强化）：
+-    排除行与审计留痕（candidate_history 的 sample_exclusion
+-    行，actor=decided_by、reason=reason）在同一事务内写入，
+-    单次 commit；任一步失败整体 rollback——排除不落字、审计
+-    不落字、连接不留悬挂事务，forward_stats 构成不变。
+-
+-    RT-2 底层闸配合（2026-11-23 补强批）：DB 触发器
+-    trg_rt_sample_exclusions_audit_insert 要求排除行落字时
+-    同事务内已有逐字对应的审计行，故本函数写序为先写
+-    candidate_history 审计行、后写 sample_exclusions 行
+-    （两行集合与字段不变，仍同事务单次 commit）。
++    RT-2 原子性（应用层行为）：排除行与审计留痕
++    （candidate_history 的 sample_exclusion 行，
++    actor=decided_by、reason=reason）由本函数在同一连接
++    单次 commit 内写入，任一步失败整体 rollback——排除
++    不落字、审计不落字、连接不留悬挂事务，forward_stats
++    构成不变。
++
++    RT-2 审计证据绑定（2026-11-23 补强批 + V3 补正 P0-2）：
++    排除行以 audit_history_id 显式引用审计行 id 落字，
++    DB 触发器 trg_rt_sample_exclusions_audit_insert 校验
++    绑定必备、引用逐字对应与一对一（同一审计行不得被
++    两条排除引用），被引用的审计行另有触发器禁止改删。
++    口径修订：DB 层证明的是审计证据的存在性、唯一性与
++    不可变性（不可变、一对一关联的审计证据）；审计行与
++    排除行是否同出一事务/同一操作者（同源性）不是触发
++    器能证明的命题，不再以「同事务」表述底层闸证明力。
++    本函数写序为先写审计行、后写带绑定 id 的排除行。
+     """
+     if not (reason and str(reason).strip()):
+         raise ValueError("excluding a sample requires reason")
+@@ -769,7 +775,7 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
+                              % (sample_id,))
+         try:
+             now = _now_iso()
+-            conn.execute(
++            cur_h = conn.execute(
+                 "INSERT INTO candidate_history "
+                 "(candidate_id, field, old_value, new_value, actor,"
+                 " reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+@@ -778,8 +784,10 @@ def exclude_sample(pool, sample_id, excluded_from, reason,
+             cur = conn.execute(
+                 "INSERT INTO sample_exclusions "
+                 "(sample_id, excluded_from, reason, decided_by, "
+-                " created_at) VALUES (?, ?, ?, ?, ?)",
+-                (sample_id, excluded_from, reason, decided_by, now))
++                " created_at, audit_history_id)"
++                " VALUES (?, ?, ?, ?, ?, ?)",
++                (sample_id, excluded_from, reason, decided_by, now,
++                 cur_h.lastrowid))
+             conn.commit()
+         except sqlite3.IntegrityError as e:
+             conn.rollback()
+diff --git a/tests/test_market_first_p0_5_insert_anchor.py b/tests/test_market_first_p0_5_insert_anchor.py
+new file mode 100644
+index 0000000..ea866ca
+--- /dev/null
++++ b/tests/test_market_first_p0_5_insert_anchor.py
+@@ -0,0 +1,121 @@
++# -*- coding: utf-8 -*-
++"""P0-5 新事件 INSERT 时间锚测试（2026-11-23 V3 审计补正 P0-3）。
++
++缺口（V3 独立审计）：discovery_events.created_at 此前只有
++UPDATE 不可变保护，直接 INSERT 可写任意时刻，时间锚的
++「新事件」一侧无 DB 层校验。
++
++本批实施（与既有夹具无冲突的部分）：
++- trg_rt_discovery_events_created_at_insert_future：
++  直接 INSERT 的 created_at 晚于 DB 服务器时间 120 秒
++  以上 -> RAISE(ABORT)（未来时间拒绝）；
++- 正常服务器时间 INSERT 放行（正对照，含 120 秒容差内）；
++- 既有 UPDATE 不可变保护保留（p0_5_created_at_guard 组
++  回归实证，本文件亦含一条复核）。
++
++未实施（如实登记，待审计裁定）：NULL 拒绝与历史回填
++窗口与既有可信测试时钟夹具存在真实冲突——夹具以固定
++字符串模拟历史入库时刻（最老 2026-11-10，其年龄随墙钟
++无限增长，任何有限窗口都会在未来某日无代码变更地击穿
++夹具），且 test_missing_ingest_time_rejects_forward 的
++被测前提就是库内存在 created_at=NULL 的事件行。冲突
++全量与可选方案（受控通道标记/宽限窗口/维持现状）见
++evidence/v3-audit-correction-20261123/design/
++DESIGN-V3-CORRECTION.md，本文件不以时限性窗口冒充修复。
++"""
++import sqlite3
++from datetime import datetime, timedelta
++
++import pytest
++
++from market_first.models import DiscoveryEvent
++from market_first.pool import CandidatePool
++
++
++def _pool_with_candidate(tmp_path):
++    pool = CandidatePool(db_path=str(tmp_path / "mf.db"))
++    ev = DiscoveryEvent(
++        market="SH", symbol="603893", name="测试标的",
++        source_id="inst_lhb_stored",
++        discovered_at="2026-11-16T09:00:00+08:00",
++        trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
++    cid, _ = pool.ingest(ev)
++    return pool, cid
++
++
++def _direct_insert_event(pool, cid, created_at):
++    pool.conn.execute(
++        "INSERT INTO discovery_events (candidate_id, source_id,"
++        " market, symbol, discovered_at, trigger_condition,"
++        " price_at_discovery, price_data_time, evidence_json,"
++        " created_at) VALUES (?, 'inst_lhb_stored', 'SH',"
++        " '603893', '2026-11-16T09:00:00+08:00', 'inst_net>0',"
++        " 10.0, '2026-11-16', '{}', ?)", (cid, created_at))
++
++
++def _event_count(pool, cid):
++    return pool.conn.execute(
++        "SELECT COUNT(*) c FROM discovery_events"
++        " WHERE candidate_id=?", (cid,)).fetchone()["c"]
++
++
++def _iso(dt):
++    return dt.astimezone().isoformat(timespec="seconds")
++
++
++# --- 未来时间拒绝 ---------------------------------------------------------
++
++def test_direct_insert_future_created_at_blocked(tmp_path):
++    """直写 INSERT created_at 为明天 -> 拒绝，行不落库。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    future = _iso(datetime.now().astimezone() + timedelta(days=1))
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_insert_event(pool, cid, future)
++    pool.conn.rollback()
++    assert _event_count(pool, cid) == 1
++
++
++def test_direct_insert_far_future_created_at_blocked(tmp_path):
++    """直写 INSERT created_at 为 2030 年 -> 拒绝。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_insert_event(pool, cid, "2030-01-01T00:00:00+08:00")
++    pool.conn.rollback()
++    assert _event_count(pool, cid) == 1
++
++
++# --- 正常服务器时间正对照 ---------------------------------------------------
++
++def test_direct_insert_current_server_time_passes(tmp_path):
++    """直写 INSERT created_at 为当前服务器时间 -> 通过。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    _direct_insert_event(pool, cid, _iso(datetime.now().astimezone()))
++    pool.conn.commit()
++    assert _event_count(pool, cid) == 2
++
++
++def test_direct_insert_within_tolerance_passes(tmp_path):
++    """created_at 晚于服务器时间但在 120 秒容差内 -> 通过
++    （与 registry approved_at 窗口同口径）。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    near = _iso(datetime.now().astimezone() + timedelta(seconds=60))
++    _direct_insert_event(pool, cid, near)
++    pool.conn.commit()
++    assert _event_count(pool, cid) == 2
++
++
++# --- 既有 UPDATE 保护保留复核 -------------------------------------------------
++
++def test_update_guard_still_active(tmp_path):
++    """INSERT 侧新闸不影响既有 UPDATE 不可变保护：落字后
++    改写 created_at（回填或前移）仍被拒。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    before = pool.events_for(cid)[0]["created_at"]
++    for forged in ("2026-09-01T09:00:00+08:00",
++                   "2030-01-01T00:00:00+08:00"):
++        with pytest.raises(sqlite3.IntegrityError):
++            pool.conn.execute(
++                "UPDATE discovery_events SET created_at=?"
++                " WHERE candidate_id=?", (forged, cid))
++        pool.conn.rollback()
++    assert pool.events_for(cid)[0]["created_at"] == before
+diff --git a/tests/test_market_first_rt1_approval_lifecycle.py b/tests/test_market_first_rt1_approval_lifecycle.py
+new file mode 100644
+index 0000000..b87b1ec
+--- /dev/null
++++ b/tests/test_market_first_rt1_approval_lifecycle.py
+@@ -0,0 +1,239 @@
++# -*- coding: utf-8 -*-
++"""RT-1 审批记录持续有效性对抗测试（2026-11-23 V3 审计补正 P0-1）。
++
++缺口（V3 独立审计）：既有底层闸只校验「进入 approved 的
++瞬间」存在有效 approvals 行；事后直写 DELETE 该行、或
++UPDATE 其 candidate_id/decision/approver/basis 等关键
++字段使其失效或转移，均无拦截——候选可继续停留在无有效
++审批依据的 approved 状态。
++
++修复（db.ensure_redteam_schema，_V3C_TRIGGERS_SQL）：
++- trg_rt_approvals_no_delete_live：被删行是有效批准
++  （decision='approved'、approver/basis 非空）且候选当前
++  promotion_status='approved' 时，DELETE -> RAISE(ABORT)；
++- trg_rt_approvals_no_update_keyfields_live：同等条件下，
++  candidate_id/decision/approver/basis/decided_at 任一
++  实际变化 -> RAISE(ABORT)。
++
++范围边界：候选未处于 approved、或行本身非有效批准
++（rejected 记录等）不在此闸范围；decide 正常路径只
++INSERT approvals，天然通过（本文件正对照实证）。
++"""
++import sqlite3
++from datetime import date, timedelta
++
++import pytest
++
++from market_first import bars as bars_mod
++from market_first import validation
++from market_first.models import DiscoveryEvent
++from market_first.pool import CandidatePool
++from market_first.promotion import decide, transition
++
++
++class _TestRule:
++    version = "test-rule-0"
++
++    def evaluate(self, scope, metrics):
++        return "passed", "test rule: mature forward samples present"
++
++
++def _register_test_rule(pool):
++    validation.register_rule_implementation("test_rule", _TestRule())
++    validation.register_rule(
++        pool, "test_rule", _TestRule.version, status="approved",
++        approved_by="unit-test", actor="unit-test",
++        reason="rt1 lifecycle test",
++        approval_basis="test-only approval (tmp db)")
++
++
++def _gen_bars():
++    out = []
++    d = date(2026, 11, 13)
++    i = 0
++    while d <= date(2026, 12, 20):
++        if d.weekday() < 5:
++            c = 10.0 + 0.1 * i
++            out.append((d.isoformat(), c, c, c, c, 1000.0))
++            i += 1
++        d += timedelta(days=1)
++    return out
++
++
++def _pool_with_candidate(tmp_path, symbol="603893"):
++    pool = CandidatePool(db_path=str(tmp_path / "mf.db"))
++    ev = DiscoveryEvent(
++        market="SH", symbol=symbol, name="测试标的",
++        source_id="inst_lhb_stored",
++        discovered_at="2026-11-16T09:00:00+08:00",
++        trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
++    pool.clock = lambda: ev.discovered_at
++    cid, _ = pool.ingest(ev)
++    return pool, cid
++
++
++def _insert_approvals(pool, cid, decision="approved",
++                      approver="alice", basis="依据充分"):
++    cur = pool.conn.execute(
++        "INSERT INTO approvals (candidate_id, decision, approver,"
++        " decided_at, basis, versions_json) VALUES (?, ?, ?,"
++        " '2026-11-23T10:00:00+08:00', ?, '{}')",
++        (cid, decision, approver, basis))
++    pool.conn.commit()
++    return cur.lastrowid
++
++
++def _approved_candidate(tmp_path):
++    """构造「已 approved + 有效 approvals 行」的候选（经既有
++    底层闸的正对照路径落字）。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    aid = _insert_approvals(pool, cid)
++    pool.conn.execute(
++        "UPDATE candidates SET promotion_status='approved'"
++        " WHERE id=?", (cid,))
++    pool.conn.commit()
++    assert pool.get_by_id(cid)["promotion_status"] == "approved"
++    return pool, cid, aid
++
++
++def _approval_row(pool, aid):
++    return pool.conn.execute(
++        "SELECT * FROM approvals WHERE id=?", (aid,)).fetchone()
++
++
++def _valid_basis_count(pool, cid):
++    return pool.conn.execute(
++        "SELECT COUNT(*) c FROM approvals WHERE candidate_id=?"
++        " AND decision='approved' AND approver IS NOT NULL"
++        " AND trim(approver) <> '' AND basis IS NOT NULL"
++        " AND trim(basis) <> ''", (cid,)).fetchone()["c"]
++
++
++# --- 事后删除对抗 -------------------------------------------------------
++
++def test_delete_live_approval_blocked(tmp_path):
++    """候选 approved 时直写 DELETE 其有效 approvals 记录 ->
++    拒绝；记录与状态均不变，候选不失去审批依据。"""
++    pool, cid, aid = _approved_candidate(tmp_path)
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute("DELETE FROM approvals WHERE id=?",
++                          (aid,))
++    pool.conn.rollback()
++    assert _approval_row(pool, aid) is not None
++    assert pool.get_by_id(cid)["promotion_status"] == "approved"
++    assert _valid_basis_count(pool, cid) == 1
++
++
++def test_delete_all_approvals_of_approved_candidate_blocked(tmp_path):
++    """整表式 DELETE（WHERE candidate_id）同样被拒。"""
++    pool, cid, aid = _approved_candidate(tmp_path)
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute(
++            "DELETE FROM approvals WHERE candidate_id=?", (cid,))
++    pool.conn.rollback()
++    assert _valid_basis_count(pool, cid) == 1
++
++
++# --- 事后修改关键字段对抗 -----------------------------------------------
++
++@pytest.mark.parametrize("sql,params", [
++    ("UPDATE approvals SET decision='rejected' WHERE id=?", ()),
++    ("UPDATE approvals SET approver='' WHERE id=?", ()),
++    ("UPDATE approvals SET approver='mallory' WHERE id=?", ()),
++    ("UPDATE approvals SET basis='' WHERE id=?", ()),
++    ("UPDATE approvals SET basis='事后篡改依据' WHERE id=?", ()),
++    ("UPDATE approvals SET decided_at='2020-01-01T00:00:00+08:00'"
++     " WHERE id=?", ()),
++])
++def test_update_keyfields_live_approval_blocked(tmp_path, sql, params):
++    """使有效批准失效或改写的关键字段 UPDATE -> 拒绝，
++    记录逐字不变。"""
++    pool, cid, aid = _approved_candidate(tmp_path)
++    before = dict(_approval_row(pool, aid))
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute(sql, (aid,) + params)
++    pool.conn.rollback()
++    after = dict(_approval_row(pool, aid))
++    assert after == before
++    assert _valid_basis_count(pool, cid) == 1
++
++
++def test_update_candidate_id_transfer_blocked(tmp_path):
++    """把有效批准转移给另一候选（改 candidate_id）-> 拒绝，
++    原候选依据仍在、另一候选未凭空获得依据。"""
++    pool, cid, aid = _approved_candidate(tmp_path)
++    # 在同一库内另建一候选
++    ev = DiscoveryEvent(
++        market="SZ", symbol="000999", name="另一标的",
++        source_id="inst_lhb_stored",
++        discovered_at="2026-11-16T09:00:00+08:00",
++        trigger_condition="inst_net>0", evidence={"inst_net": 1.0})
++    cid2, _ = pool.ingest(ev)
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute(
++            "UPDATE approvals SET candidate_id=? WHERE id=?",
++            (cid2, aid))
++    pool.conn.rollback()
++    assert _approval_row(pool, aid)["candidate_id"] == cid
++    assert _valid_basis_count(pool, cid) == 1
++    assert _valid_basis_count(pool, cid2) == 0
++
++
++# --- 范围边界（不误伤） ---------------------------------------------------
++
++def test_delete_approval_of_non_approved_candidate_allowed(tmp_path):
++    """候选未处于 approved 时，其 approvals 行不是任何终态
++    的依据，DELETE 不在此闸范围（回归：rt1_db_guard 既有
++    清理场景口径不变）。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    aid = _insert_approvals(pool, cid)
++    pool.conn.execute("DELETE FROM approvals WHERE id=?", (aid,))
++    pool.conn.commit()
++    assert _approval_row(pool, aid) is None
++
++
++def test_update_rejected_record_allowed(tmp_path):
++    """rejected 决策记录非 approved 依据，关键字段修改
++    不在此闸范围。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    aid = _insert_approvals(pool, cid, decision="rejected",
++                            approver="alice", basis="不通过")
++    pool.conn.execute(
++        "UPDATE approvals SET basis='补充说明' WHERE id=?", (aid,))
++    pool.conn.commit()
++    assert _approval_row(pool, aid)["basis"] == "补充说明"
++
++
++# --- 正常路径正对照 -------------------------------------------------------
++
++def test_decide_normal_path_and_lifecycle(tmp_path):
++    """decide 全链正常落字（INSERT approvals + 流转），且
++    落字后的有效记录随即受生命周期保护（DELETE 被拒）。"""
++    pool, cid = _pool_with_candidate(tmp_path)
++    for state in ("pending_research", "researching", "validating"):
++        transition(pool, cid, state, actor="tester", reason="walk")
++    _register_test_rule(pool)
++    ev = pool.events_for(cid)[0]
++    bars = _gen_bars()
++    sid = validation.create_sample(
++        pool, cid, ev["source_id"], kind="forward",
++        discovery_event_id=ev["id"], bars=bars,
++        fetched_at="2026-11-17T16:00:00+08:00")
++    bars_mod.store_bars(pool.get_by_id(cid)["symbol"], bars,
++                        "test-fixture", pool.db_path)
++    validation.evaluate_sample(pool, sid, bars)
++    out = validation.judge_validation(
++        pool, cid, rule_id="test_rule",
++        rule_version=_TestRule.version)
++    assert out["decision"] == "passed"
++    transition(pool, cid, "pending_approval", actor="tester",
++               reason="walk")
++    aid = decide(pool, cid, approver="alice", decision="approved",
++                 basis="研究与验证完整")
++    assert pool.get_by_id(cid)["promotion_status"] == "approved"
++    assert _valid_basis_count(pool, cid) == 1
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute("DELETE FROM approvals WHERE id=?",
++                          (aid,))
++    pool.conn.rollback()
++    assert _valid_basis_count(pool, cid) == 1
+diff --git a/tests/test_market_first_rt2_audit_binding.py b/tests/test_market_first_rt2_audit_binding.py
+new file mode 100644
+index 0000000..8148aaa
+--- /dev/null
++++ b/tests/test_market_first_rt2_audit_binding.py
+@@ -0,0 +1,239 @@
++# -*- coding: utf-8 -*-
++"""RT-2 审计记录唯一绑定对抗测试（2026-11-23 V3 审计补正 P0-2）。
++
++缺口（V3 独立审计）：既有底层闸靠字段逐字相等判断审计
++行对应，同一审计行可被多条排除反复引用；被引用的审计
++行事后可改可删，证据生命周期不闭合。
++
++修复：
++- sample_exclusions.audit_history_id 显式引用审计行 id
++  （candidate_history.id），UNIQUE 索引 + 触发器双重
++  保证一对一；
++- 触发器校验绑定必备与引用逐字对应（原字段对应校验
++  保留为冗余校验）；
++- trg_rt_candidate_history_no_update_bound /
++  no_delete_bound：被任一排除引用的审计行禁止改删；
++- exclude_sample 落字时写入绑定 id。
++
++口径修订（P0-2 第 5 项）：本机制证明审计证据的存在性、
++唯一性与不可变性——「不可变、一对一关联的审计证据」；
++不声称证明审计行与排除行同出一事务（同源性），该界限
++在设计文档与 GAPS 中明示。
++"""
++import sqlite3
++
++import pytest
++
++from market_first.models import DiscoveryEvent
++from market_first.pool import CandidatePool
++from market_first.validation import (create_sample, exclude_sample,
++                                     excluded_sample_ids)
++
++BARS = [
++    ("2026-11-12", 25.0, 25.5, 24.5, 25.2, 1000.0),
++    ("2026-11-13", 26.0, 26.5, 25.8, 26.25, 1000.0),
++    ("2026-11-16", 26.8, 27.2, 26.6, 27.00, 1000.0),
++    ("2026-11-17", 27.1, 27.4, 26.9, 27.30, 1000.0),
++]
++
++REASON = "审计裁定排除"
++DECIDER = "independent_audit"
++NOW = "2026-11-23T10:00:00+08:00"
++
++
++def _pool_with_candidate(tmp_path, symbol="002623", market="SZ"):
++    pool = CandidatePool(db_path=str(tmp_path / "mf.db"))
++    ev = DiscoveryEvent(
++        market=market, symbol=symbol, name="测试标的",
++        source_id="inst_lhb_live",
++        discovered_at="2026-11-13T16:30:00+08:00",
++        trigger_condition="inst_net>0", evidence={"inst_net": 100.0})
++    pool.clock = lambda: ev.discovered_at
++    cid, _ = pool.ingest(ev)
++    return pool, cid
++
++
++def _pool_with_sample(tmp_path):
++    pool, cid = _pool_with_candidate(tmp_path)
++    ev_id = pool.events_for(cid)[0]["id"]
++    sid = create_sample(pool, cid, "inst_lhb_live", kind="forward",
++                        discovery_event_id=ev_id, bars=BARS)
++    return pool, cid, sid
++
++
++def _second_sample(pool, cid, entry_date="2026-11-17"):
++    """同候选的第二条样本行（直写行，仅作排除对象）。"""
++    cur = pool.conn.execute(
++        "INSERT INTO validation_samples (candidate_id, source_id,"
++        " kind, entry_date, created_at) VALUES (?, 'inst_lhb_live',"
++        " 'backfill', ?, ?)", (cid, entry_date, NOW))
++    pool.conn.commit()
++    return cur.lastrowid
++
++
++def _audit_row_for(pool, xid):
++    return pool.conn.execute(
++        "SELECT h.* FROM sample_exclusions e"
++        " JOIN candidate_history h ON h.id = e.audit_history_id"
++        " WHERE e.id=?", (xid,)).fetchone()
++
++
++def _direct_audit(pool, cid, reason=REASON, actor=DECIDER):
++    cur = pool.conn.execute(
++        "INSERT INTO candidate_history (candidate_id, field,"
++        " old_value, new_value, actor, reason, created_at) VALUES"
++        " (?, 'sample_exclusion', NULL, 'forward_stats', ?, ?, ?)",
++        (cid, actor, reason, NOW))
++    pool.conn.commit()
++    return cur.lastrowid
++
++
++def _direct_exclusion(pool, sid, audit_history_id,
++                      reason=REASON, decided_by=DECIDER):
++    pool.conn.execute(
++        "INSERT INTO sample_exclusions (sample_id, excluded_from,"
++        " reason, decided_by, created_at, audit_history_id) VALUES"
++        " (?, 'forward_stats', ?, ?, ?, ?)",
++        (sid, reason, decided_by, NOW, audit_history_id))
++
++
++# --- 绑定正对照 -----------------------------------------------------------
++
++def test_exclude_sample_writes_explicit_binding(tmp_path):
++    """正常路径：exclude_sample 落字的排除行带 audit_history_id，
++    且恰指向那条逐字对应的审计行。"""
++    pool, cid, sid = _pool_with_sample(tmp_path)
++    xid = exclude_sample(pool, sid, "forward_stats", REASON,
++                         decided_by=DECIDER)
++    row = pool.conn.execute(
++        "SELECT * FROM sample_exclusions WHERE id=?",
++        (xid,)).fetchone()
++    assert row["audit_history_id"] is not None
++    audit = _audit_row_for(pool, xid)
++    assert audit is not None
++    assert audit["candidate_id"] == cid
++    assert audit["field"] == "sample_exclusion"
++    assert audit["actor"] == DECIDER
++    assert audit["reason"] == REASON
++    assert excluded_sample_ids(pool) == {sid}
++
++
++def test_direct_insert_with_explicit_binding_passes(tmp_path):
++    """DB 层正对照：审计行先行 + 排除行显式绑定其 id -> 通过。"""
++    pool, cid, sid = _pool_with_sample(tmp_path)
++    hid = _direct_audit(pool, cid)
++    _direct_exclusion(pool, sid, hid)
++    pool.conn.commit()
++    assert excluded_sample_ids(pool) == {sid}
++
++
++def test_direct_insert_without_binding_blocked(tmp_path):
++    """字段逐字对应的审计行存在，但排除行不带绑定 id ->
++    拒绝：字段相等不再足以放行，绑定必备。"""
++    pool, cid, sid = _pool_with_sample(tmp_path)
++    _direct_audit(pool, cid)
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_exclusion(pool, sid, None)
++    pool.conn.rollback()
++    assert excluded_sample_ids(pool) == set()
++
++
++# --- 对抗 1：旧审计行复用 ---------------------------------------------------
++
++def test_bound_audit_row_reuse_blocked(tmp_path):
++    """已被一条排除绑定的审计行，再被第二条排除引用 ->
++    一对一校验拒绝，第二条样本不被排除。"""
++    pool, cid, sid1 = _pool_with_sample(tmp_path)
++    xid = exclude_sample(pool, sid1, "forward_stats", REASON,
++                         decided_by=DECIDER)
++    hid = pool.conn.execute(
++        "SELECT audit_history_id FROM sample_exclusions"
++        " WHERE id=?", (xid,)).fetchone()["audit_history_id"]
++    sid2 = _second_sample(pool, cid)
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_exclusion(pool, sid2, hid)
++    pool.conn.rollback()
++    assert excluded_sample_ids(pool) == {sid1}
++
++
++# --- 对抗 2：跨样本复用 -----------------------------------------------------
++
++def test_cross_candidate_audit_reuse_blocked(tmp_path):
++    """甲候选的审计行被拿去绑定乙候选样本的排除 -> 引用
++    对应校验拒绝（审计行 candidate_id 与样本候选不一致）。"""
++    pool, cid1, sid1 = _pool_with_sample(tmp_path)
++    ev = DiscoveryEvent(
++        market="SH", symbol="603893", name="另一标的",
++        source_id="inst_lhb_live",
++        discovered_at="2026-11-13T16:30:00+08:00",
++        trigger_condition="inst_net>0", evidence={"inst_net": 1.0})
++    cid2, _ = pool.ingest(ev)
++    sid2 = _second_sample(pool, cid2)
++    hid = _direct_audit(pool, cid1)
++    with pytest.raises(sqlite3.IntegrityError):
++        _direct_exclusion(pool, sid2, hid)
++    pool.conn.rollback()
++    assert excluded_sample_ids(pool) == set()
++
++
++# --- 对抗 3：事后删除被引用审计行 ---------------------------------------------
++
++def test_bound_audit_row_delete_blocked(tmp_path):
++    """排除完成后直写 DELETE 其被绑定的审计行 -> 拒绝，
++    审计行与排除行均原样保留。"""
++    pool, cid, sid = _pool_with_sample(tmp_path)
++    xid = exclude_sample(pool, sid, "forward_stats", REASON,
++                         decided_by=DECIDER)
++    hid = pool.conn.execute(
++        "SELECT audit_history_id FROM sample_exclusions"
++        " WHERE id=?", (xid,)).fetchone()["audit_history_id"]
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute(
++            "DELETE FROM candidate_history WHERE id=?", (hid,))
++    pool.conn.rollback()
++    assert _audit_row_for(pool, xid) is not None
++    assert excluded_sample_ids(pool) == {sid}
++
++
++# --- 对抗 4：事后修改被引用审计行 ---------------------------------------------
++
++@pytest.mark.parametrize("sql", [
++    "UPDATE candidate_history SET reason='事后改理由' WHERE id=?",
++    "UPDATE candidate_history SET actor='someone_else' WHERE id=?",
++    "UPDATE candidate_history SET new_value='judge_stats' WHERE id=?",
++    "UPDATE candidate_history SET candidate_id=999 WHERE id=?",
++])
++def test_bound_audit_row_update_blocked(tmp_path, sql):
++    """排除完成后直写 UPDATE 其被绑定的审计行任一字段 ->
++    拒绝，审计行逐字不变。"""
++    pool, cid, sid = _pool_with_sample(tmp_path)
++    xid = exclude_sample(pool, sid, "forward_stats", REASON,
++                         decided_by=DECIDER)
++    hid = pool.conn.execute(
++        "SELECT audit_history_id FROM sample_exclusions"
++        " WHERE id=?", (xid,)).fetchone()["audit_history_id"]
++    before = dict(pool.conn.execute(
++        "SELECT * FROM candidate_history WHERE id=?",
++        (hid,)).fetchone())
++    with pytest.raises(sqlite3.IntegrityError):
++        pool.conn.execute(sql, (hid,))
++    pool.conn.rollback()
++    after = dict(pool.conn.execute(
++        "SELECT * FROM candidate_history WHERE id=?",
++        (hid,)).fetchone())
++    assert after == before
++
++
++# --- 范围边界 -----------------------------------------------------------------
++
++def test_unbound_history_row_not_covered_by_binding_guard(tmp_path):
++    """未被任何排除引用的历史行不在绑定闸范围（删除放行）：
++    rt2 既有「删未引用不匹配审计行」场景口径不变。"""
++    pool, cid, sid = _pool_with_sample(tmp_path)
++    hid = _direct_audit(pool, cid, reason="未被引用的审计行")
++    pool.conn.execute(
++        "DELETE FROM candidate_history WHERE id=?", (hid,))
++    pool.conn.commit()
++    assert pool.conn.execute(
++        "SELECT COUNT(*) c FROM candidate_history WHERE id=?",
++        (hid,)).fetchone()["c"] == 0
+diff --git a/tests/test_market_first_rt2_db_guard.py b/tests/test_market_first_rt2_db_guard.py
+index 22a57df..9ace0cc 100644
+--- a/tests/test_market_first_rt2_db_guard.py
++++ b/tests/test_market_first_rt2_db_guard.py
+@@ -10,15 +10,24 @@ reason/decided_by 非空、且排除行与 candidate_history 审计行
+ 
+ 修复（db.ensure_redteam_schema，设计补记 DESIGN-BOTTOM-LAYER.md）：
+ - trg_rt_sample_exclusions_audit_insert：每条排除 INSERT
+-  必须 reason/decided_by 非空，且同事务内已有逐字对应的
++  必须 reason/decided_by 非空，且已有逐字对应的
+   candidate_history 审计行（field='sample_exclusion'、
+   new_value=excluded_from、actor=decided_by、reason=reason），
+   否则 RAISE(ABORT)；
+-- exclude_sample 写序配合改为先写审计行、后写排除行（同
+-  事务单次 commit，RT-2 原子性语义不变），天然通过。
+-
+-诚实残余：先伪造一条逐字对应的审计行再写排除行，与应用
+-写入不可区分，属 SQLite 单文件固有界限，登记待审计裁定。
++- exclude_sample 写序配合改为先写审计行、后写排除行
++  （应用层单次 commit），天然通过。
++
++V3 补正 P0-2（2026-11-23）修订：排除行须以
++audit_history_id 显式绑定审计行（一对一、被引用审计行
++不可改删），口径为「不可变、一对一关联的审计证据」，
++不再声称触发器证明同事务身份；本文件直写辅助函数已
++迁移为显式传绑定 id（构造迁移，断言未改动，登记见
++DELIVERY-V3-CORRECTION）。唯一绑定与四类复用/篡改对抗
++见 test_market_first_rt2_audit_binding.py。
++
++诚实残余：先伪造一条逐字对应的审计行再按其内容写排除
++行，与应用写入不可区分，属 SQLite 单文件固有界限，
++登记待审计裁定。
+ """
+ import sqlite3
+ 
+@@ -67,26 +76,28 @@ def _audit_rows(pool):
+         " WHERE field='sample_exclusion'").fetchone()["c"]
+ 
+ 
+-def _direct_insert_exclusion(pool, sid, reason=REASON,
+-                             decided_by=DECIDER):
++def _direct_insert_exclusion(pool, sid, audit_history_id=None,
++                             reason=REASON, decided_by=DECIDER):
+     pool.conn.execute(
+         "INSERT INTO sample_exclusions (sample_id, excluded_from,"
+-        " reason, decided_by, created_at) VALUES (?, 'forward_stats',"
+-        " ?, ?, ?)", (sid, reason, decided_by, NOW))
++        " reason, decided_by, created_at, audit_history_id) VALUES"
++        " (?, 'forward_stats', ?, ?, ?, ?)",
++        (sid, reason, decided_by, NOW, audit_history_id))
+ 
+ 
+ def _direct_insert_audit(pool, cid, reason=REASON, actor=DECIDER):
+-    pool.conn.execute(
++    cur = pool.conn.execute(
+         "INSERT INTO candidate_history (candidate_id, field,"
+         " old_value, new_value, actor, reason, created_at) VALUES"
+         " (?, 'sample_exclusion', NULL, 'forward_stats', ?, ?, ?)",
+         (cid, actor, reason, NOW))
++    return cur.lastrowid
+ 
+ 
+ # --- 直写 SQL 污染对抗 -------------------------------------------------
+ 
+ def test_direct_insert_without_audit_row_blocked(tmp_path):
+-    """字段齐全但同事务内无审计行 -> 拒绝；排除不落字、
++    """字段齐全但无审计行绑定 -> 拒绝；排除不落字、
+     统计构成不变、样本行不动。"""
+     pool, cid, sid = _pool_with_sample(tmp_path)
+     with pytest.raises(sqlite3.IntegrityError):
+@@ -112,19 +123,19 @@ def test_direct_insert_audit_mismatch_blocked(tmp_path):
+     """审计行存在但与排除行不一致（理由不同 / 决定人不同）
+     -> 拒绝：防「随便留一行痕再排除」。"""
+     pool, cid, sid = _pool_with_sample(tmp_path)
+-    _direct_insert_audit(pool, cid, reason="另一条理由")
++    hid = _direct_insert_audit(pool, cid, reason="另一条理由")
+     pool.conn.commit()
+     with pytest.raises(sqlite3.IntegrityError):
+-        _direct_insert_exclusion(pool, sid)
++        _direct_insert_exclusion(pool, sid, audit_history_id=hid)
+     pool.conn.rollback()
+     assert _exclusion_rows(pool) == 0
+ 
+     pool.conn.execute(
+         "DELETE FROM candidate_history WHERE field='sample_exclusion'")
+-    _direct_insert_audit(pool, cid, actor="someone_else")
++    hid = _direct_insert_audit(pool, cid, actor="someone_else")
+     pool.conn.commit()
+     with pytest.raises(sqlite3.IntegrityError):
+-        _direct_insert_exclusion(pool, sid)
++        _direct_insert_exclusion(pool, sid, audit_history_id=hid)
+     pool.conn.rollback()
+     assert _exclusion_rows(pool) == 0
+     assert excluded_sample_ids(pool) == set()
+@@ -133,11 +144,12 @@ def test_direct_insert_audit_mismatch_blocked(tmp_path):
+ # --- 底层正对照 ---------------------------------------------------------
+ 
+ def test_direct_insert_with_matching_audit_row_passes(tmp_path):
+-    """DB 层正对照：逐字对应的审计行先行落字后，排除 INSERT
+-    通过——闸的放行依据是审计留痕本身。"""
++    """DB 层正对照：逐字对应的审计行先行落字、排除行显式
++    绑定其 id 后，排除 INSERT 通过——闸的放行依据是被
++    绑定的审计留痕本身。"""
+     pool, cid, sid = _pool_with_sample(tmp_path)
+-    _direct_insert_audit(pool, cid)
+-    _direct_insert_exclusion(pool, sid)
++    hid = _direct_insert_audit(pool, cid)
++    _direct_insert_exclusion(pool, sid, audit_history_id=hid)
+     pool.conn.commit()
+     assert _exclusion_rows(pool) == 1
+     assert excluded_sample_ids(pool) == {sid}

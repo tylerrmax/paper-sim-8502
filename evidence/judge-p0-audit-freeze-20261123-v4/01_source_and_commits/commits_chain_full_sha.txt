@@ -1,0 +1,5 @@
+610128d12f5b291295da811e8eb5eca5e3d71636 Merge V3 独立审计补正 (P0-1 审批记录持续有效性 + P0-2 审计记录唯一绑定 + P0-3 INSERT 未来时间锚) into unified-arch
+65ee1f930e86e631397c3bcf6301af1f654ff537 V3审计补正交付: 台账三条追加本批引用 + DELIVERY 五项交账 + 修复后全量日志 (396 passed/7 failed, 失败集与基线逐项相同)
+47f1a55307ee1aa55bd9c1dfd32f90358047d1e2 P0-3 (V3审计补正, 部分实施): P0-5 新事件 INSERT 时间锚——未来时间拒绝
+292775013e311326bc8c4d68baa044f27e5cf6d9 P0-2 (V3审计补正): RT-2 审计记录唯一绑定——audit_history_id 显式引用 + 一对一 + 被引用审计行不可改删
+88cb4c81b6ae7305e4146c0feb5fb2e4b1e2ebd7 P0-1 (V3审计补正): RT-1 审批记录持续有效性——approvals 生命周期 DB 闸

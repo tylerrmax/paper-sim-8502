@@ -520,6 +520,13 @@ END;
 
 
 # V3 独立审计补正（2026-11-23）新增结构：
+# - P0-3（P0-5 INSERT 时间锚，未来时间部分）：discovery_events
+#   直接 INSERT 的 created_at 不得晚于 DB 服务器时间
+#   120 秒（与 registry approved_at 窗口同口径）。NULL 与
+#   历史回填窗口与既有可信时钟夹具存在真实冲突（夹具以
+#   固定字符串模拟历史入库时刻、且有故意写 NULL 以验证
+#   缺锚拒绝的用例），本批不实施，冲突全量与可选方案见
+#   evidence 设计文档 DESIGN-V3-CORRECTION.md。
 # - P0-1（RT-1 审批记录持续有效性）：approvals 行是某候选
 #   approved 终态的有效依据时（decision='approved'、
 #   approver/basis 非空、候选当前 promotion_status=
@@ -538,6 +545,15 @@ BEGIN
         SELECT 1 FROM candidates
         WHERE id = OLD.candidate_id
           AND promotion_status = 'approved');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_discovery_events_created_at_insert_future
+BEFORE INSERT ON discovery_events
+WHEN NEW.created_at IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'discovery_events.created_at must not be later than server time + 120s (P0-5 insert guard)')
+    WHERE julianday(NEW.created_at) - julianday('now')
+        > 120.0 / 86400.0;
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_rt_approvals_no_update_keyfields_live
@@ -659,7 +675,8 @@ def ensure_redteam_schema(conn) -> None:
       天然通过。设计见 evidence 设计补记
       DESIGN-BOTTOM-LAYER.md 与 DESIGN-V3-CORRECTION.md。
     - V3 审计补正（2026-11-23）：approvals 生命周期保护
-      （P0-1）触发器，见 _V3C_TRIGGERS_SQL 注释。
+      （P0-1）与 discovery_events INSERT 未来时间拒绝
+      （P0-3）触发器，见 _V3C_TRIGGERS_SQL 注释。
 
     触发器只新增、不动既有数据。
     """

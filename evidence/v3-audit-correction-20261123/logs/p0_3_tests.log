@@ -1,0 +1,37 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/hatch/workspace/l2-remediation/v3-audit-correction
+plugins: anyio-4.15.1
+collecting ... collected 28 items
+
+tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_future_created_at_blocked PASSED [  3%]
+tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_far_future_created_at_blocked PASSED [  7%]
+tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_current_server_time_passes PASSED [ 10%]
+tests/test_market_first_p0_5_insert_anchor.py::test_direct_insert_within_tolerance_passes PASSED [ 14%]
+tests/test_market_first_p0_5_insert_anchor.py::test_update_guard_still_active PASSED [ 17%]
+tests/test_market_first_p0_5_created_at_guard.py::test_created_at_update_backfill_blocked PASSED [ 21%]
+tests/test_market_first_p0_5_created_at_guard.py::test_created_at_update_forward_shift_blocked PASSED [ 25%]
+tests/test_market_first_p0_5_created_at_guard.py::test_clock_fixture_controls_ingest_time_via_app_path PASSED [ 28%]
+tests/test_market_first_p0_5_created_at_guard.py::test_clock_assignable_between_ingests PASSED [ 32%]
+tests/test_market_first_p0_5_created_at_guard.py::test_production_default_uses_server_time PASSED [ 35%]
+tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_explicit_entry_forced_backfill PASSED [ 39%]
+tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_history_bars_only_rejected PASSED [ 42%]
+tests/test_market_first_p0_5_time_anchor.py::test_sept_event_ingested_in_nov_entry_anchored_at_ingest PASSED [ 46%]
+tests/test_market_first_p0_5_time_anchor.py::test_missing_ingest_time_rejects_forward PASSED [ 50%]
+tests/test_market_first_p0_5_time_anchor.py::test_claimed_discovery_after_ingest_does_not_extend_anchor PASSED [ 53%]
+tests/test_market_first_p0_5_time_anchor.py::test_same_day_ingest_positive_control PASSED [ 57%]
+tests/test_market_first_forward_time.py::test_forward_entry_is_next_trading_day_after_close_discovery PASSED [ 60%]
+tests/test_market_first_forward_time.py::test_forward_intraday_discovery_still_next_trading_day PASSED [ 64%]
+tests/test_market_first_forward_time.py::test_forward_weekend_discovery_entry_monday PASSED [ 67%]
+tests/test_market_first_forward_time.py::test_entry_before_discovery_forced_backfill PASSED [ 71%]
+tests/test_market_first_forward_time.py::test_historical_backfill_long_gap PASSED [ 75%]
+tests/test_market_first_forward_time.py::test_forward_price_missing_rejected_and_traced PASSED [ 78%]
+tests/test_market_first_forward_time.py::test_forward_without_discovery_event_rejected PASSED [ 82%]
+tests/test_market_first_forward_time.py::test_excluded_sample_not_in_forward_stats_and_row_unchanged PASSED [ 85%]
+tests/test_market_first_rt3_instflow_anchor.py::test_forged_future_discovered_at_cannot_flip_sign PASSED [ 89%]
+tests/test_market_first_rt3_instflow_anchor.py::test_claimed_date_variation_does_not_change_subtotal PASSED [ 92%]
+tests/test_market_first_rt3_instflow_anchor.py::test_latest_selected_by_created_at_positive_control PASSED [ 96%]
+tests/test_market_first_rt3_instflow_anchor.py::test_missing_created_at_falls_back_to_id_order PASSED [100%]
+
+============================== 28 passed in 0.37s ==============================

@@ -1,0 +1,5 @@
+086b23e 合并 judge P0 三项补正集成（P0-1/P0-3/P0-5）入 unified-arch
+bbdbe95 P0-5 集成：Forward 时间锚收紧为服务器入库时间单一锚 + 缺锚拒绝
+b2badaa P0-1 集成：规则版本绑定对抗复核（fix3 P0-B 已实现，逐项验证）
+7d2ec5a P0-3 集成：批准信息强制（actor/reason/批准依据）+ registry_history 同事务留痕
+78009cf Market-First fix3 交付：自动审计包 evidence/fix3（READY_FOR_AUDIT）+ DELIVERY-FIX3 五项交账 + 台账 fix3 四项转 READY_FOR_AUDIT

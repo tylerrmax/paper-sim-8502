@@ -167,6 +167,12 @@ def decide(pool, cid, approver, decision, basis="", versions=None):
     decision 只接受 'approved' / 'rejected'；当前状态必须为
     pending_approval，否则走非法路径（留痕 + IllegalTransitionError）。
     同一事务内写 approvals 一行并流转到对应终态，返回 approval_id。
+
+    RT-1 批准信息强制（2026-11-23 自红队补正）：decision 为
+    'approved' 时必须显式给出非空 approver 与非空 basis
+    （批准依据；空白/纯空格视为无）——与 rule 侧 P0-3 的
+    set_rule_status approved 分支同口径。任一项缺失在写库前
+    抛 ValueError，approvals 不落行、状态不变（整事务回滚）。
     """
     if decision not in ("approved", "rejected"):
         raise ValueError(
@@ -181,6 +187,14 @@ def decide(pool, cid, approver, decision, basis="", versions=None):
             "decide(decision=%s) 要求当前状态为 pending_approval，"
             "实际为 %s" % (decision, current),
         )
+    if decision == "approved":
+        # RT-1：批准必须带批准人与批准依据，缺一在写库前拒绝。
+        if not (approver and str(approver).strip()):
+            raise ValueError(
+                "approving a candidate requires approver")
+        if not (basis and str(basis).strip()):
+            raise ValueError(
+                "approving a candidate requires basis（批准依据）")
     versions_payload = versions if versions is not None else dict(DEFAULT_VERSIONS)
     conn = pool.conn
     try:

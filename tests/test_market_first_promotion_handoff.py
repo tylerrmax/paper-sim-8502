@@ -32,7 +32,10 @@ def _register_test_rule(pool):
     validation.register_rule_implementation("test_rule", _TestRule())
     validation.register_rule(
         pool, "test_rule", _TestRule.version, status="approved",
-        approved_by="unit-test")
+        approved_by="unit-test",
+        # P0-3 集成（2026-11-23）：补齐批准信息；断言未改动。
+        actor="unit-test", reason="promotion handoff test approval",
+        approval_basis="test-only approval (tmp db)")
 
 
 def _gen_bars():

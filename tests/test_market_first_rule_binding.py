@@ -77,6 +77,12 @@ def _clean_impls():
 
 
 def _register(pool, version, status="approved", **kw):
+    # P0-3 集成（2026-11-23）：approved 登记须带 actor/reason/
+    # approval_basis，本 helper 补齐批准信息；断言未改动。
+    if status == "approved":
+        kw.setdefault("actor", "unit-test")
+        kw.setdefault("reason", "binding test approval")
+        kw.setdefault("approval_basis", "test-only approval (tmp db)")
     return validation.register_rule(
         pool, RID, version, status=status,
         approved_by="unit-test" if status == "approved" else None,

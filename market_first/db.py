@@ -96,11 +96,26 @@ CREATE TABLE IF NOT EXISTS rule_registry (
         CHECK (status IN ('draft', 'approved', 'disabled', 'test')),
     approved_by TEXT,
     approved_at TEXT,
+    approval_basis TEXT,
     params_json TEXT DEFAULT '{}',
     created_at TEXT,
     impl_key TEXT,
     impl_version TEXT,
     PRIMARY KEY (rule_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS registry_history (
+    id INTEGER PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    entity_version TEXT,
+    field TEXT,
+    old_value TEXT,
+    new_value TEXT,
+    actor TEXT,
+    reason TEXT,
+    basis TEXT,
+    created_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sample_exclusions (
@@ -351,6 +366,66 @@ def ensure_fix3_schema(conn) -> None:
     conn.commit()
 
 
+# judge P0 集成（2026-11-23，judge-p0-integration）新增结构，
+# 服务 P0-3 批准信息强制：
+# - rule_registry 增加 approval_basis 列（批准依据落字）；
+# - registry_history append-only 留痕表：规则登记与每次状态
+#   变更同事务写入（entity/field/old/new/actor/reason/basis/
+#   时间）；表自身带触发器禁止 UPDATE/DELETE（RAISE 消息为
+#   单行字符串——SQLite RAISE 内不拼接相邻字面量）。
+# 迁移幂等：列用 PRAGMA 检查后 ALTER，表/触发器 IF NOT EXISTS。
+_P0INT_REGISTRY_COLUMNS = {
+    "approval_basis": "TEXT",
+}
+
+_P0INT_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS registry_history (
+    id INTEGER PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    entity_version TEXT,
+    field TEXT,
+    old_value TEXT,
+    new_value TEXT,
+    actor TEXT,
+    reason TEXT,
+    basis TEXT,
+    created_at TEXT
+);
+"""
+
+_P0INT_TRIGGERS_SQL = """
+CREATE TRIGGER IF NOT EXISTS trg_p0int_registry_history_no_update
+BEFORE UPDATE ON registry_history
+BEGIN
+    SELECT RAISE(ABORT, 'registry_history is append-only: UPDATE forbidden');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_p0int_registry_history_no_delete
+BEFORE DELETE ON registry_history
+BEGIN
+    SELECT RAISE(ABORT, 'registry_history is append-only: DELETE forbidden');
+END;
+"""
+
+
+def ensure_p0int_schema(conn) -> None:
+    """幂等补齐 P0 集成结构：approval_basis 列 + registry_history
+    表与 append-only 触发器。对既有行只新增 NULL 列，绝不
+    UPDATE/DELETE 既有数据。"""
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(rule_registry)")}
+    if cols:
+        for name, typ in _P0INT_REGISTRY_COLUMNS.items():
+            if name not in cols:
+                conn.execute(
+                    "ALTER TABLE rule_registry ADD COLUMN %s %s"
+                    % (name, typ))
+    conn.executescript(_P0INT_TABLES_SQL)
+    conn.executescript(_P0INT_TRIGGERS_SQL)
+    conn.commit()
+
+
 def init_db(db_path: str | None = None) -> str:
     """建表（幂等）并返回实际库路径。"""
     path = _resolve(db_path)
@@ -361,6 +436,7 @@ def init_db(db_path: str | None = None) -> str:
         ensure_fix1_schema(conn)
         ensure_fix2_schema(conn)
         ensure_fix3_schema(conn)
+        ensure_p0int_schema(conn)
     finally:
         conn.close()
     return path

@@ -1,0 +1,362 @@
+...FFFF.FF.............................................................. [ 17%]
+......F................................................................. [ 34%]
+........................................................................ [ 52%]
+........................................................................ [ 69%]
+........................................................................ [ 86%]
+.......................................................                  [100%]
+=================================== FAILURES ===================================
+_________________________ test_4_exactly_once_commands _________________________
+
+    def test_4_exactly_once_commands():
+        """指令 exactly-once：同一批指令跑两次，第二次 applied_ids 为空、
+        duplicate_ids 列出重复 id，fills 不得重复，台账有记录。"""
+        fresh_db()
+        con = sqlite3.connect(TEST_DB)
+        # 找一个真实存在、尚未成交的信号（不限 60 天窗口；引擎的审批门禁本身不限窗口）
+        sig = con.execute(
+            "SELECT s.date,s.account,s.symbol,s.side FROM signals s"
+            " LEFT JOIN fills f ON f.date=s.date AND f.account=s.account"
+            " AND f.symbol=s.symbol AND f.side=s.side"
+            " WHERE f.date IS NULL"
+            " ORDER BY s.date DESC LIMIT 1").fetchone()
+        con.close()
+        cmds = [{"id": "stress-setmode-1", "kind": "set_mode",
+                 "payload_json": json.dumps({"mode": "manual"})}]
+        if sig:
+            d, a, s, side = sig
+            cmds.append({"id": "stress-approve-1", "kind": "approve",
+                         "payload_json": json.dumps(
+                             {"date": d, "account": a, "symbol": s, "side": side})})
+        ids = [c["id"] for c in cmds]
+    
+>       out1 = _apply_once(cmds)
+               ^^^^^^^^^^^^^^^^^
+
+tests/stress_test.py:232: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+cmds = [{'id': 'stress-setmode-1', 'kind': 'set_mode', 'payload_json': '{"mode": "manual"}'}, {'id': 'stress-approve-1', 'kind': 'approve', 'payload_json': '{"date": "2026-10-30", "account": "sim_a", "symbol": "600150", "side": "SELL"}'}]
+
+    def _apply_once(cmds):
+        env = dict(os.environ)
+        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
+                           input=json.dumps(cmds), capture_output=True, text=True,
+                           env=env, cwd=BASE, timeout=300)
+>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
+            p.returncode, p.stderr[-500:])
+E       AssertionError: apply_commands 退出码 1，stderr= "/home/hatch/workspace/l2-remediation/p0-3-channel-a/apply_commands.py", line 72, in main
+E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
+E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
+E             raise CalledProcessError(retcode, process.args,
+E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py']' returned non-zero exit status 1.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati...hon\', \'/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
+
+tests/stress_test.py:204: AssertionError
+__________________________ test_5_snapshot_atomicity ___________________________
+
+    def test_5_snapshot_atomicity():
+        """快照读写并发：300 次并发写 + 持续读，零 torn read；
+        再用真实 sync_snapshot.py 跑 8 次做集成验证。"""
+        from sync_snapshot import atomic_write_json  # noqa: E402
+        path = "/tmp/stress_snap.json"
+        if os.path.exists(path):
+            os.remove(path)
+        stop, errors = threading.Event(), []
+        reads = [0]
+    
+        def writer():
+            try:
+                for i in range(300):
+                    atomic_write_json(path, {"asof": "2026-10-05", "i": i,
+                                             "final": i == 299, "blob": "x" * 20000,
+                                             "accounts": [{"account": "sim_hk"}]})
+            except Exception as e:  # noqa: BLE001
+                errors.append(("writer", repr(e)))
+            finally:
+                stop.set()
+    
+        def reader():
+            try:
+                while not stop.is_set():
+                    try:
+                        with open(path, encoding="utf-8") as f:
+                            d = json.load(f)
+                    except FileNotFoundError:
+                        continue
+                    assert d.get("asof") == "2026-10-05" and "blob" in d and "i" in d
+                    reads[0] += 1
+            except Exception as e:  # noqa: BLE001
+                errors.append(("reader", repr(e)))
+    
+        ts = [threading.Thread(target=writer), threading.Thread(target=reader),
+              threading.Thread(target=reader)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=120)
+        assert not errors, "并发读写出错：%r" % errors[:2]
+        assert reads[0] > 50, "有效读取次数过少：%d" % reads[0]
+    
+        # 集成：真实脚本并发写，持续读
+        path2 = "/tmp/stress_snap2.json"
+        env = dict(os.environ)
+        env["PAPER_SIM_SNAPSHOT"] = path2
+        stop2, errors2, reads2 = threading.Event(), [], [0]
+    
+        def writer2():
+            try:
+                for _ in range(8):
+                    subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")],
+                                   env=env, cwd=BASE, capture_output=True,
+                                   check=True, timeout=300)
+            except Exception as e:  # noqa: BLE001
+                errors2.append(("writer", repr(e)))
+            finally:
+                stop2.set()
+    
+        def reader2():
+            try:
+                while not stop2.is_set():
+                    try:
+                        with open(path2, encoding="utf-8") as f:
+                            d = json.load(f)
+                    except FileNotFoundError:
+                        continue
+                    assert isinstance(d.get("accounts"), list) and d.get("asof")
+                    reads2[0] += 1
+            except Exception as e:  # noqa: BLE001
+                errors2.append(("reader", repr(e)))
+    
+        ts = [threading.Thread(target=writer2), threading.Thread(target=reader2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=600)
+>       assert not errors2, "集成并发出错：%r" % errors2[:2]
+E       AssertionError: 集成并发出错：[('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py'])")]
+E       assert not [('writer', "CalledProcessError(1, ['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py'])")]
+
+tests/stress_test.py:341: AssertionError
+_____________________________ test_6_ashare_dryrun _____________________________
+
+    def test_6_ashare_dryrun():
+        """10-08 A股管道冒烟：只读拉取 002446/688305 前复权日K，不入库；
+        要求有足够历史（>100 行）且最新日期 ≥ 2026-09-30（节前最后交易日）。"""
+>       from data.quotes import fetch_kline  # noqa: E402
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       ModuleNotFoundError: No module named 'data'
+
+tests/stress_test.py:350: ModuleNotFoundError
+___________________________ test_7_concurrent_apply ____________________________
+
+    def test_7_concurrent_apply():
+        """并发指令竞态：两个 apply_commands 进程同时处理同一批指令。
+        构造可成交场景：清空 fills → manual 跑出 signals → 双进程并发批准最早的 BUY。
+        断言：fills 无 (date,account,symbol,side) 重复键；
+        processed_commands 每 id 恰一行；两进程都正常输出 JSON。
+        注：两进程各自都算“应用了”指令（幂等应用），各自 applied_ids 都含 id；
+        关键不变量是成交不重复、台账不重复行——崩溃恢复语义（先重算、后记账）保持不变。"""
+        dup_evidence = None
+        for attempt in range(6):
+            fresh_db()
+            _set_control("running", "manual")
+            con = sqlite3.connect(TEST_DB)
+            con.execute("DELETE FROM fills")
+            con.commit()
+            con.close()
+            pipe_run(TEST_DB, CFG)  # 生成 signals；manual 无审批 → 零成交
+            buy = _earliest_executable_buy()
+            assert buy, "无可执行 BUY 信号可审批（全部被禁入闸拦截时测试前提不成立）"
+            d, a, s, side = buy
+            cmds = [{"id": "stress7-approve-%d" % attempt, "kind": "approve",
+                     "payload_json": json.dumps(
+                         {"date": d, "account": a, "symbol": s, "side": side})}]
+>           out1, out2 = _apply_concurrent(cmds)
+                         ^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/stress_test.py:442: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+cmds = [{'id': 'stress7-approve-0', 'kind': 'approve', 'payload_json': '{"date": "2026-10-19", "account": "sim_a", "symbol": "002639", "side": "BUY"}'}]
+
+    def _apply_concurrent(cmds):
+        """真并发：两个 apply_commands 进程同时处理同一批指令。
+        用线程同时 communicate，保证两进程的 stdin 几乎同时送达、
+        pipeline 阶段真实重叠（顺序 communicate 会退化成串行，
+        后进程直接看到前进程的台账，测不到竞态）。返回 (out1, out2)。"""
+        env = dict(os.environ)
+        data = json.dumps(cmds).encode("utf-8")
+        ps = [subprocess.Popen([sys.executable, os.path.join(BASE, "apply_commands.py")],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, env=env, cwd=BASE)
+              for _ in range(2)]
+        results = [None, None]
+    
+        def run_one(i, p):
+            try:
+                stdout, stderr = p.communicate(data, timeout=300)
+                line = [ln for ln in stdout.decode().splitlines() if ln.strip()][-1]
+                results[i] = (p.returncode, json.loads(line), stderr.decode()[-500:])
+            except Exception as e:  # noqa: BLE001
+                results[i] = (None, None, "communicate 异常 %r" % e)
+    
+        ts = [threading.Thread(target=run_one, args=(i, p)) for i, p in enumerate(ps)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=320)
+        outs = []
+        for i, (rc, out, err) in enumerate(results):
+>           assert rc == 0, "并发进程%d异常，退出码 %r，stderr=%s" % (i, rc, err)
+E           AssertionError: 并发进程0异常，退出码 None，stderr=communicate 异常 JSONDecodeError('Expecting value: line 1 column 1 (char 0)')
+E           assert None == 0
+
+tests/stress_test.py:413: AssertionError
+----------------------------- Captured stdout call -----------------------------
+市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
+WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+___________________________ test_9_table_consistency ___________________________
+
+    def test_9_table_consistency():
+        """新表一致性：processed_commands 在各建表入口语义一致。
+        入口① db/schema.sql（经 run_daily.init_db，支持 PAPER_SIM_DB 指向测试库）；
+        入口② apply_commands.py 自包含 DDL。
+        验证：两入口建出的列定义/主键一致（归一化 DDL + PRAGMA 比对）；
+        缺表旧库（当前生产库即第一轮之前的旧库形态）+ apply_commands → 表被补建（迁移路径）。"""
+        # 入口①：init_db 建测试库（PAPER_SIM_DB 已指向测试路径；
+        # 注意：必须在 import 之前设置环境变量，因为 run_daily.DB 在模块加载时绑定）
+        db1 = "/tmp/stress_initdb.db"
+        if os.path.exists(db1):
+            os.remove(db1)
+        os.environ["PAPER_SIM_DB"] = db1
+        from run_daily import init_db  # noqa: E402
+        init_db().close()
+        ddl1, info1 = _table_info(db1, "processed_commands")
+    
+        # 入口②：缺表旧库 + apply_commands（set_mode 触发自包含 DDL）
+        # 注：用 DROP 显式构造“缺表旧库”，不再依赖生产库恰好是旧形态
+        #（2026-10-09 起生产库已有 processed_commands 表）。
+        db2 = "/tmp/stress_legacy.db"
+        if os.path.exists(db2):
+            os.remove(db2)
+        shutil.copyfile(PROD_DB, db2)
+        con = sqlite3.connect(db2)
+        con.execute("DROP TABLE IF EXISTS processed_commands")
+        con.commit()
+        missing = con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+            " AND name='processed_commands'").fetchone()[0]
+        con.close()
+        assert missing == 0, "前置条件破坏：旧库构造失败，processed_commands 表仍在"
+        env = dict(os.environ)
+        env["PAPER_SIM_DB"] = db2
+        cmds = [{"id": "stress9-setmode", "kind": "set_mode",
+                 "payload_json": json.dumps({"mode": "manual"})}]
+        p = subprocess.run([sys.executable, os.path.join(BASE, "apply_commands.py")],
+                           input=json.dumps(cmds), capture_output=True, text=True,
+                           env=env, cwd=BASE, timeout=300)
+>       assert p.returncode == 0, "apply_commands 退出码 %d，stderr=%s" % (
+            p.returncode, p.stderr[-500:])
+E       AssertionError: apply_commands 退出码 1，stderr= "/home/hatch/workspace/l2-remediation/p0-3-channel-a/apply_commands.py", line 72, in main
+E             subprocess.run([sys.executable, os.path.join(BASE, "sync_snapshot.py")], check=True)
+E           File "/usr/lib/python3.12/subprocess.py", line 571, in run
+E             raise CalledProcessError(retcode, process.args,
+E         subprocess.CalledProcessError: Command '['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py']' returned non-zero exit status 1.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/hatch/workspace/paper-trading-sim/.venv/bin/python', '/home/hatch/workspace/l2-remediati...hon\', \'/home/hatch/workspace/l2-remediation/p0-3-channel-a/sync_snapshot.py\']\' returned non-zero exit status 1.\n').returncode
+
+tests/stress_test.py:670: AssertionError
+_________________________ test_10_datasource_fallback __________________________
+
+    def test_10_datasource_fallback():
+        """数据源熔断：腾讯主源异常/空窗口时，自动切换新浪备用源（A股），
+        数据不断档。模拟两种故障：抛异常、返回空列表。"""
+>       from data import quotes  # noqa: E402
+        ^^^^^^^^^^^^^^^^^^^^^^^
+E       ModuleNotFoundError: No module named 'data'
+
+tests/stress_test.py:685: ModuleNotFoundError
+______________________ test_ledger_fingerprint_idempotent ______________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-9/test_ledger_fingerprint_idempo0')
+
+    def test_ledger_fingerprint_idempotent(tmp_path):
+        """同库连跑两次（模拟重复跑批/进程重启重跑）：账本指纹不变、
+        不产生重复成交，且与改造前基线全等。"""
+        db = str(tmp_path / "prod_copy.db")
+        shutil.copy2(PROD_DB, db)
+        cfg = _load_cfg()
+        pipeline_run(db, cfg)
+        fp1 = _fingerprint(db)
+        pipeline_run(db, cfg)
+        fp2 = _fingerprint(db)
+        base = json.load(open(os.path.join(EVID, "ledger_fingerprint.json"),
+                              encoding="utf-8"))["baseline_pre_batch2"]
+        _evidence("ledger_fingerprint_idempotent", {
+            "input": "生产库副本 + 现行管线连跑两次",
+            "expected": "两次指纹相等且与改造前基线（行数/逐行哈希/Σqty/Σamount/Σpnl）全等",
+            "actual": {"after_run1": fp1, "after_run2": fp2, "baseline": base},
+            "fills": fp2["fills"]})
+        assert fp1 == fp2
+        for k in ("rows", "sha256", "sum_qty", "sum_amount", "sum_pnl"):
+>           assert fp1["fills"][k] == base["fills"][k], k
+E           AssertionError: rows
+E           assert 50 == 51
+
+tests/test_e2e_batch2.py:609: AssertionError
+----------------------------- Captured stdout call -----------------------------
+市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
+WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+市场环境态：禁止新开仓（自动计算与母板B31对账一致：上证未站上20日线（收盘 3599.02 < MA20 3735.83，指数日 2026-10-30），B31=否）
+WARN 688305 最新行情 2026-10-29，早于账户 sim_a 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+WARN HK9660 最新行情 2026-10-29，早于账户 sim_hk 内最新日期 2026-10-30；缺失日估值沿用上个收盘价
+=============================== warnings summary ===============================
+tests/stress_test.py::test_1_missing_quote
+  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_1_missing_quote returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/stress_test.py::test_2_idempotent_rerun
+  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_2_idempotent_rerun returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/stress_test.py::test_3_cash_identity
+  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_3_cash_identity returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/stress_test.py::test_8_control_state_machine
+  /home/hatch/workspace/paper-trading-sim/.venv/lib/python3.12/site-packages/_pytest/python.py:171: PytestReturnNotNoneWarning: Test functions should return None, but tests/stress_test.py::test_8_control_state_machine returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+tests/test_audit_remediation.py::test_transition_multiprocess_single_winner
+  /usr/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=5824) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+tests/test_market_first_cache_isolation.py::test_get_bars_never_touches_prod_shared_cache
+  /home/hatch/workspace/market_data/quality.py:60: DataQualityWarning: 002446 数据陈旧: 最新 2026-11-13（距今10天）
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/stress_test.py::test_4_exactly_once_commands - AssertionError: a...
+FAILED tests/stress_test.py::test_5_snapshot_atomicity - AssertionError: 集成...
+FAILED tests/stress_test.py::test_6_ashare_dryrun - ModuleNotFoundError: No m...
+FAILED tests/stress_test.py::test_7_concurrent_apply - AssertionError: 并发进...
+FAILED tests/stress_test.py::test_9_table_consistency - AssertionError: apply...
+FAILED tests/stress_test.py::test_10_datasource_fallback - ModuleNotFoundErro...
+FAILED tests/test_e2e_batch2.py::test_ledger_fingerprint_idempotent - Asserti...
+7 failed, 408 passed, 7 warnings in 241.15s (0:04:01)
+FIXED_EXIT=1

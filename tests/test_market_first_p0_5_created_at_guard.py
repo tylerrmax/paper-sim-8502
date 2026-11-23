@@ -14,8 +14,11 @@ forward 时间锚的唯一可信依据，但表无写入保护——直写 UPDAT
 - 旧测试 15 处直写 UPDATE created_at 已全量迁移到时钟夹具
   （逐项登记见交付说明，断言零改动）。
 
-残余（如实登记）：直写 INSERT 一条带任意 created_at 的新
-事件行在 DB 层与合法 ingest 不可区分，本批不拦，待审计裁定。
+残余更新（2026-11-23 P0-3 方案 A 落地）：直写 INSERT
+新事件行已由受控通道标记闸收口——无有效标记的 NULL/
+回填 INSERT 被拒（test_market_first_p0_5_channel_marks
+.py）；仅余「直写自造标记整套一致伪造」固有界限（实测
+放行、如实登记），待审计裁定。
 """
 import sqlite3
 from datetime import datetime

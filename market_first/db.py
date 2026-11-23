@@ -472,6 +472,30 @@ BEGIN
           AND approved_by IS NOT NULL AND trim(approved_by) <> ''
           AND approval_basis IS NOT NULL AND trim(approval_basis) <> '');
 END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_candidates_promotion_approved_insert
+BEFORE INSERT ON candidates
+WHEN NEW.promotion_status = 'approved'
+BEGIN
+    SELECT RAISE(ABORT, 'candidates promotion to approved requires a valid approvals record (RT-1 db guard)')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM approvals
+        WHERE candidate_id = NEW.id AND decision = 'approved'
+          AND approver IS NOT NULL AND trim(approver) <> ''
+          AND basis IS NOT NULL AND trim(basis) <> '');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_candidates_promotion_approved_update
+BEFORE UPDATE OF promotion_status ON candidates
+WHEN NEW.promotion_status = 'approved' AND OLD.promotion_status <> 'approved'
+BEGIN
+    SELECT RAISE(ABORT, 'candidates promotion to approved requires a valid approvals record (RT-1 db guard)')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM approvals
+        WHERE candidate_id = NEW.id AND decision = 'approved'
+          AND approver IS NOT NULL AND trim(approver) <> ''
+          AND basis IS NOT NULL AND trim(basis) <> '');
+END;
 """
 
 
@@ -488,6 +512,11 @@ def ensure_redteam_schema(conn) -> None:
       （应用路径恒先写 registry 后写 history、同事务，天然
       通过）。设计与诚实残余见 evidence 设计文档
       DESIGN-P0-3-P0-5-RT-5.md。
+    - RT-1 底层闸（2026-11-23 补强批）：candidates 进入
+      promotion_status='approved'（INSERT 或 status UPDATE
+      流转）必须有 decision='approved' 且 approver/basis
+      均非空的 approvals 行对应（decide 恒先写 approvals
+      后流转、同事务，天然通过）。
     触发器只新增、不动既有数据。
     """
     conn.executescript(_REDTEAM_TRIGGERS_SQL)

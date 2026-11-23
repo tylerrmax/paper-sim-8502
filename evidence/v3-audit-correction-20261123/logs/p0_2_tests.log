@@ -1,0 +1,42 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /home/hatch/workspace/paper-trading-sim/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/hatch/workspace/l2-remediation/v3-audit-correction
+plugins: anyio-4.15.1
+collecting ... collected 33 items
+
+tests/test_market_first_rt2_audit_binding.py::test_exclude_sample_writes_explicit_binding PASSED [  3%]
+tests/test_market_first_rt2_audit_binding.py::test_direct_insert_with_explicit_binding_passes PASSED [  6%]
+tests/test_market_first_rt2_audit_binding.py::test_direct_insert_without_binding_blocked PASSED [  9%]
+tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_reuse_blocked PASSED [ 12%]
+tests/test_market_first_rt2_audit_binding.py::test_cross_candidate_audit_reuse_blocked PASSED [ 15%]
+tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_delete_blocked PASSED [ 18%]
+tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_update_blocked[UPDATE candidate_history SET reason='\u4e8b\u540e\u6539\u7406\u7531' WHERE id=?] PASSED [ 21%]
+tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_update_blocked[UPDATE candidate_history SET actor='someone_else' WHERE id=?] PASSED [ 24%]
+tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_update_blocked[UPDATE candidate_history SET new_value='judge_stats' WHERE id=?] PASSED [ 27%]
+tests/test_market_first_rt2_audit_binding.py::test_bound_audit_row_update_blocked[UPDATE candidate_history SET candidate_id=999 WHERE id=?] PASSED [ 30%]
+tests/test_market_first_rt2_audit_binding.py::test_unbound_history_row_not_covered_by_binding_guard PASSED [ 33%]
+tests/test_market_first_rt2_db_guard.py::test_direct_insert_without_audit_row_blocked PASSED [ 36%]
+tests/test_market_first_rt2_db_guard.py::test_direct_insert_blank_fields_blocked PASSED [ 39%]
+tests/test_market_first_rt2_db_guard.py::test_direct_insert_audit_mismatch_blocked PASSED [ 42%]
+tests/test_market_first_rt2_db_guard.py::test_direct_insert_with_matching_audit_row_passes PASSED [ 45%]
+tests/test_market_first_rt2_db_guard.py::test_exclude_sample_normal_path_passes_db_guard PASSED [ 48%]
+tests/test_market_first_rt2_exclude_sample.py::test_exclude_requires_reason PASSED [ 51%]
+tests/test_market_first_rt2_exclude_sample.py::test_exclude_requires_decided_by PASSED [ 54%]
+tests/test_market_first_rt2_exclude_sample.py::test_exclude_with_full_info_positive_control PASSED [ 57%]
+tests/test_market_first_rt2_exclude_sample.py::test_exclude_writes_audit_history_atomically PASSED [ 60%]
+tests/test_market_first_rt2_exclude_sample.py::test_failed_exclude_rolls_back_both_writes PASSED [ 63%]
+tests/test_market_first_validation.py::test_evaluate_mature_exact_values PASSED [ 66%]
+tests/test_market_first_validation.py::test_evaluate_drawdown_uses_benchmark_peak PASSED [ 69%]
+tests/test_market_first_validation.py::test_evaluate_immature_partial_horizons PASSED [ 72%]
+tests/test_market_first_validation.py::test_evaluate_missing_never_zero PASSED [ 75%]
+tests/test_market_first_validation.py::test_duplicate_sample_rejected PASSED [ 78%]
+tests/test_market_first_validation.py::test_create_sample_invalid_kind PASSED [ 81%]
+tests/test_market_first_validation_gate.py::test_transition_validation_passed_direct_rejected PASSED [ 84%]
+tests/test_market_first_validation_gate.py::test_judge_no_rule_not_evaluable PASSED [ 87%]
+tests/test_market_first_validation_gate.py::test_judge_backfill_only_not_passed PASSED [ 90%]
+tests/test_market_first_validation_gate.py::test_judge_immature_forward_not_passed PASSED [ 93%]
+tests/test_market_first_validation_gate.py::test_judge_mature_forward_passes_and_flows PASSED [ 96%]
+tests/test_market_first_validation_gate.py::test_judge_excluded_forward_sample_not_counted PASSED [100%]
+
+============================== 33 passed in 0.73s ==============================

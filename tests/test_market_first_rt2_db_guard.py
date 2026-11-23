@@ -10,15 +10,24 @@ reason/decided_by 非空、且排除行与 candidate_history 审计行
 
 修复（db.ensure_redteam_schema，设计补记 DESIGN-BOTTOM-LAYER.md）：
 - trg_rt_sample_exclusions_audit_insert：每条排除 INSERT
-  必须 reason/decided_by 非空，且同事务内已有逐字对应的
+  必须 reason/decided_by 非空，且已有逐字对应的
   candidate_history 审计行（field='sample_exclusion'、
   new_value=excluded_from、actor=decided_by、reason=reason），
   否则 RAISE(ABORT)；
-- exclude_sample 写序配合改为先写审计行、后写排除行（同
-  事务单次 commit，RT-2 原子性语义不变），天然通过。
+- exclude_sample 写序配合改为先写审计行、后写排除行
+  （应用层单次 commit），天然通过。
 
-诚实残余：先伪造一条逐字对应的审计行再写排除行，与应用
-写入不可区分，属 SQLite 单文件固有界限，登记待审计裁定。
+V3 补正 P0-2（2026-11-23）修订：排除行须以
+audit_history_id 显式绑定审计行（一对一、被引用审计行
+不可改删），口径为「不可变、一对一关联的审计证据」，
+不再声称触发器证明同事务身份；本文件直写辅助函数已
+迁移为显式传绑定 id（构造迁移，断言未改动，登记见
+DELIVERY-V3-CORRECTION）。唯一绑定与四类复用/篡改对抗
+见 test_market_first_rt2_audit_binding.py。
+
+诚实残余：先伪造一条逐字对应的审计行再按其内容写排除
+行，与应用写入不可区分，属 SQLite 单文件固有界限，
+登记待审计裁定。
 """
 import sqlite3
 
@@ -67,26 +76,28 @@ def _audit_rows(pool):
         " WHERE field='sample_exclusion'").fetchone()["c"]
 
 
-def _direct_insert_exclusion(pool, sid, reason=REASON,
-                             decided_by=DECIDER):
+def _direct_insert_exclusion(pool, sid, audit_history_id=None,
+                             reason=REASON, decided_by=DECIDER):
     pool.conn.execute(
         "INSERT INTO sample_exclusions (sample_id, excluded_from,"
-        " reason, decided_by, created_at) VALUES (?, 'forward_stats',"
-        " ?, ?, ?)", (sid, reason, decided_by, NOW))
+        " reason, decided_by, created_at, audit_history_id) VALUES"
+        " (?, 'forward_stats', ?, ?, ?, ?)",
+        (sid, reason, decided_by, NOW, audit_history_id))
 
 
 def _direct_insert_audit(pool, cid, reason=REASON, actor=DECIDER):
-    pool.conn.execute(
+    cur = pool.conn.execute(
         "INSERT INTO candidate_history (candidate_id, field,"
         " old_value, new_value, actor, reason, created_at) VALUES"
         " (?, 'sample_exclusion', NULL, 'forward_stats', ?, ?, ?)",
         (cid, actor, reason, NOW))
+    return cur.lastrowid
 
 
 # --- 直写 SQL 污染对抗 -------------------------------------------------
 
 def test_direct_insert_without_audit_row_blocked(tmp_path):
-    """字段齐全但同事务内无审计行 -> 拒绝；排除不落字、
+    """字段齐全但无审计行绑定 -> 拒绝；排除不落字、
     统计构成不变、样本行不动。"""
     pool, cid, sid = _pool_with_sample(tmp_path)
     with pytest.raises(sqlite3.IntegrityError):
@@ -112,19 +123,19 @@ def test_direct_insert_audit_mismatch_blocked(tmp_path):
     """审计行存在但与排除行不一致（理由不同 / 决定人不同）
     -> 拒绝：防「随便留一行痕再排除」。"""
     pool, cid, sid = _pool_with_sample(tmp_path)
-    _direct_insert_audit(pool, cid, reason="另一条理由")
+    hid = _direct_insert_audit(pool, cid, reason="另一条理由")
     pool.conn.commit()
     with pytest.raises(sqlite3.IntegrityError):
-        _direct_insert_exclusion(pool, sid)
+        _direct_insert_exclusion(pool, sid, audit_history_id=hid)
     pool.conn.rollback()
     assert _exclusion_rows(pool) == 0
 
     pool.conn.execute(
         "DELETE FROM candidate_history WHERE field='sample_exclusion'")
-    _direct_insert_audit(pool, cid, actor="someone_else")
+    hid = _direct_insert_audit(pool, cid, actor="someone_else")
     pool.conn.commit()
     with pytest.raises(sqlite3.IntegrityError):
-        _direct_insert_exclusion(pool, sid)
+        _direct_insert_exclusion(pool, sid, audit_history_id=hid)
     pool.conn.rollback()
     assert _exclusion_rows(pool) == 0
     assert excluded_sample_ids(pool) == set()
@@ -133,11 +144,12 @@ def test_direct_insert_audit_mismatch_blocked(tmp_path):
 # --- 底层正对照 ---------------------------------------------------------
 
 def test_direct_insert_with_matching_audit_row_passes(tmp_path):
-    """DB 层正对照：逐字对应的审计行先行落字后，排除 INSERT
-    通过——闸的放行依据是审计留痕本身。"""
+    """DB 层正对照：逐字对应的审计行先行落字、排除行显式
+    绑定其 id 后，排除 INSERT 通过——闸的放行依据是被
+    绑定的审计留痕本身。"""
     pool, cid, sid = _pool_with_sample(tmp_path)
-    _direct_insert_audit(pool, cid)
-    _direct_insert_exclusion(pool, sid)
+    hid = _direct_insert_audit(pool, cid)
+    _direct_insert_exclusion(pool, sid, audit_history_id=hid)
     pool.conn.commit()
     assert _exclusion_rows(pool) == 1
     assert excluded_sample_ids(pool) == {sid}

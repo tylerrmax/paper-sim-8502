@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS sample_exclusions (
     reason TEXT,
     decided_by TEXT,
     created_at TEXT,
+    audit_history_id INTEGER,
     UNIQUE(sample_id, excluded_from)
 );
 
@@ -216,6 +217,7 @@ CREATE TABLE IF NOT EXISTS sample_exclusions (
     reason TEXT,
     decided_by TEXT,
     created_at TEXT,
+    audit_history_id INTEGER,
     UNIQUE(sample_id, excluded_from)
 );
 
@@ -504,7 +506,7 @@ BEGIN
     WHERE NEW.reason IS NULL OR trim(NEW.reason) = '';
     SELECT RAISE(ABORT, 'sample_exclusions requires non-empty decided_by (RT-2 db guard)')
     WHERE NEW.decided_by IS NULL OR trim(NEW.decided_by) = '';
-    SELECT RAISE(ABORT, 'sample_exclusions requires matching candidate_history audit row in same transaction (RT-2 db guard)')
+    SELECT RAISE(ABORT, 'sample_exclusions requires a corresponding candidate_history audit row (RT-2 db guard)')
     WHERE NOT EXISTS (
         SELECT 1 FROM candidate_history h
         JOIN validation_samples s ON s.id = NEW.sample_id
@@ -560,6 +562,75 @@ END;
 """
 
 
+# V3 独立审计补正 P0-2（RT-2 审计记录唯一绑定）：
+# - sample_exclusions.audit_history_id 显式引用其审计记录
+#   （candidate_history 行 id），UNIQUE 索引保证一对一；
+# - trg_rt_sample_exclusions_audit_insert 修订版（ensure 内
+#   先 DROP 旧同名触发器再以本定义重建）：在原字段非空与
+#   逐字对应校验（保留为冗余校验）之上，增加绑定必备、
+#   引用逐字对应、一对一三项检查；
+# - 被任一排除引用的 candidate_history 行禁止 UPDATE /
+#   DELETE（trg_rt_candidate_history_no_update_bound /
+#   no_delete_bound）。
+# 口径（P0-2 第 5 项修订）：本机制证明的是审计证据的
+# 存在性、唯一性与不可变性——「不可变、一对一关联的审计
+# 证据」；触发器无法证明审计行与排除行同出一事务或同一
+# 操作者（同源性），不得再以「同事务」表述本闸的证明力。
+_V3C2_TRIGGERS_SQL = """
+CREATE TRIGGER trg_rt_sample_exclusions_audit_insert
+BEFORE INSERT ON sample_exclusions
+BEGIN
+    SELECT RAISE(ABORT, 'sample_exclusions requires non-empty reason (RT-2 db guard)')
+    WHERE NEW.reason IS NULL OR trim(NEW.reason) = '';
+    SELECT RAISE(ABORT, 'sample_exclusions requires non-empty decided_by (RT-2 db guard)')
+    WHERE NEW.decided_by IS NULL OR trim(NEW.decided_by) = '';
+    SELECT RAISE(ABORT, 'sample_exclusions requires audit_history_id binding to an audit record (RT-2 unique binding)')
+    WHERE NEW.audit_history_id IS NULL;
+    SELECT RAISE(ABORT, 'sample_exclusions audit_history_id must reference the corresponding candidate_history audit row (RT-2 unique binding)')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM candidate_history h
+        JOIN validation_samples s ON s.id = NEW.sample_id
+        WHERE h.id = NEW.audit_history_id
+          AND h.candidate_id = s.candidate_id
+          AND h.field = 'sample_exclusion'
+          AND h.new_value = NEW.excluded_from
+          AND h.actor = NEW.decided_by
+          AND h.reason = NEW.reason);
+    SELECT RAISE(ABORT, 'candidate_history audit row is already bound to another exclusion (RT-2 one-to-one binding)')
+    WHERE EXISTS (
+        SELECT 1 FROM sample_exclusions e
+        WHERE e.audit_history_id = NEW.audit_history_id);
+    SELECT RAISE(ABORT, 'sample_exclusions requires a corresponding candidate_history audit row (RT-2 db guard)')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM candidate_history h
+        JOIN validation_samples s ON s.id = NEW.sample_id
+        WHERE h.candidate_id = s.candidate_id
+          AND h.field = 'sample_exclusion'
+          AND h.new_value = NEW.excluded_from
+          AND h.actor = NEW.decided_by
+          AND h.reason = NEW.reason);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_candidate_history_no_update_bound
+BEFORE UPDATE ON candidate_history
+BEGIN
+    SELECT RAISE(ABORT, 'candidate_history audit row bound to a sample exclusion is immutable (RT-2 binding guard)')
+    WHERE EXISTS (
+        SELECT 1 FROM sample_exclusions e
+        WHERE e.audit_history_id = OLD.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_rt_candidate_history_no_delete_bound
+BEFORE DELETE ON candidate_history
+BEGIN
+    SELECT RAISE(ABORT, 'candidate_history audit row bound to a sample exclusion cannot be deleted (RT-2 binding guard)')
+    WHERE EXISTS (
+        SELECT 1 FROM sample_exclusions e
+        WHERE e.audit_history_id = OLD.id);
+END;
+"""
+
+
 def ensure_redteam_schema(conn) -> None:
     """幂等安装红队集中修复（2026-11-23）的 DB 层保护触发器。
 
@@ -578,19 +649,37 @@ def ensure_redteam_schema(conn) -> None:
       流转）必须有 decision='approved' 且 approver/basis
       均非空的 approvals 行对应（decide 恒先写 approvals
       后流转、同事务，天然通过）。
-    - RT-2 底层闸（2026-11-23 补强批）：sample_exclusions
-      每条 INSERT 必须 reason/decided_by 非空，且同事务内
-      已有逐字对应的 candidate_history 审计行
-      （field='sample_exclusion'、actor=decided_by、
-      reason=reason；exclude_sample 恒先写审计行后写排除
-      行、同事务，天然通过）。设计见 evidence 设计补记
-      DESIGN-BOTTOM-LAYER.md。
+    - RT-2 底层闸（2026-11-23 补强批，V3 补正 P0-2 修订）：
+      sample_exclusions 每条 INSERT 必须 reason/decided_by
+      非空，并以 audit_history_id 显式绑定一条逐字对应的
+      candidate_history 审计行（一对一、绑定后审计行不可
+      改删）——不可变、一对一关联的审计证据；触发器不
+      证明审计行与排除行同出一事务（见 _V3C2 注释）。
+      exclude_sample 恒先写审计行后写排除行并落绑定 id，
+      天然通过。设计见 evidence 设计补记
+      DESIGN-BOTTOM-LAYER.md 与 DESIGN-V3-CORRECTION.md。
     - V3 审计补正（2026-11-23）：approvals 生命周期保护
       （P0-1）触发器，见 _V3C_TRIGGERS_SQL 注释。
 
     触发器只新增、不动既有数据。
     """
     conn.executescript(_REDTEAM_TRIGGERS_SQL)
+    # P0-2 schema 迁移：audit_history_id 列 + 一对一唯一索引
+    # （存量行为 NULL，SQLite UNIQUE 不约束 NULL）。
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(sample_exclusions)")}
+    if cols and "audit_history_id" not in cols:
+        conn.execute(
+            "ALTER TABLE sample_exclusions"
+            " ADD COLUMN audit_history_id INTEGER")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS"
+        " idx_sample_exclusions_audit_history_id"
+        " ON sample_exclusions(audit_history_id)")
+    # P0-2 修订版 audit_insert 触发器替换旧同名定义。
+    conn.execute(
+        "DROP TRIGGER IF EXISTS trg_rt_sample_exclusions_audit_insert")
+    conn.executescript(_V3C2_TRIGGERS_SQL)
     conn.executescript(_V3C_TRIGGERS_SQL)
     conn.commit()
 

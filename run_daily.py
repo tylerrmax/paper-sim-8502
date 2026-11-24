@@ -41,6 +41,23 @@ if _USE_MD:
 # --- 迁移结束 ---
 
 
+def _hk_expected_day():
+    """港股日志判定用的期望数据日期：复用页面新鲜度的同一口径
+    （engine.page_freshness，交易日 17:30 后应到当日），now 按
+    Asia/Shanghai 传（本机为 UTC，行情服务的本地时区口径在此不可用）。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from engine.page_freshness import expected_data_date
+    return expected_data_date(datetime.now(ZoneInfo("Asia/Shanghai")))
+
+
+def _hk_stale(rows):
+    """港股行是否滞后于期望数据日期（取数失败沿用旧行的日志判定）。
+    2026-11-23：腾讯全线失效时港股静默沿用 11-20 旧行却记 OK，
+    故港股末 bar 滞后时改记 WARN 并带 last 日期，不再记 OK。"""
+    return bool(rows) and rows[-1][0] < _hk_expected_day()
+
+
 def init_db():
     os.makedirs(os.path.join(BASE, "db"), exist_ok=True)
     con = sqlite3.connect(DB)
@@ -189,7 +206,11 @@ def main():
             rows = fn()
             upsert_klines(con, symbol, market, rows)
             if rows:
-                print("OK %s rows=%d last=%s" % (symbol, len(rows), rows[-1][0]))
+                if market == "hk" and _hk_stale(rows):
+                    print("WARN %s rows=%d last=%s（滞后于期望数据日期 %s，沿用旧行）"
+                          % (symbol, len(rows), rows[-1][0], _hk_expected_day()))
+                else:
+                    print("OK %s rows=%d last=%s" % (symbol, len(rows), rows[-1][0]))
             else:
                 # 空结果≠成功：接口可能失败，明确告警并沿用库内旧数据（不编造）
                 print("WARN %s 拉取到 0 行（接口疑似失败），沿用库内旧数据" % symbol)
